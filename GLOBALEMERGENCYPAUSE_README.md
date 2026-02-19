@@ -17,7 +17,7 @@ This README documents the pause semantics, role usage, recovery steps, and test/
 - Read-only methods and event inspection remain available while paused.
 - Events are emitted for `initialize`, `pause`, and `unpause` so external monitors can detect toggles.
 
-## APIs (high level)
+## APIs 
 
 Use the generated client (`RevoraRevenueShareClient`) from the Soroban SDK to call these contract methods.
 
