@@ -78,16 +78,22 @@ impl RevoraRevenueShare {
         // set safety if provided
         if let Some(s) = safety {
             env.storage().persistent().set(&KEY_SAFETY, &s.clone());
-            env.events().publish((symbol_short!("init"), admin.clone()), (true,));
+            env.events()
+                .publish((symbol_short!("init"), admin.clone()), (true,));
         } else {
-            env.events().publish((symbol_short!("init"), admin.clone()), (false,));
+            env.events()
+                .publish((symbol_short!("init"), admin.clone()), (false,));
         }
     }
 
     /// Activate emergency pause as admin. Caller must provide the admin address and sign.
     pub fn pause_admin(env: Env, admin: Address) {
         // verify admin matches stored admin and is authorized
-        let stored: Address = env.storage().persistent().get(&KEY_ADMIN).expect("no admin");
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .expect("no admin");
         if stored != admin {
             panic!("admin mismatch");
         }
@@ -98,7 +104,11 @@ impl RevoraRevenueShare {
 
     /// Deactivate emergency pause as admin.
     pub fn unpause_admin(env: Env, admin: Address) {
-        let stored: Address = env.storage().persistent().get(&KEY_ADMIN).expect("no admin");
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_ADMIN)
+            .expect("no admin");
         if stored != admin {
             panic!("admin mismatch");
         }
@@ -109,7 +119,11 @@ impl RevoraRevenueShare {
 
     /// Activate emergency pause as safety role. Caller must provide the safety address and sign.
     pub fn pause_safety(env: Env, safety: Address) {
-        let stored: Address = env.storage().persistent().get(&KEY_SAFETY).expect("no safety role");
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_SAFETY)
+            .expect("no safety role");
         if stored != safety {
             panic!("safety mismatch");
         }
@@ -120,7 +134,11 @@ impl RevoraRevenueShare {
 
     /// Deactivate emergency pause as safety role.
     pub fn unpause_safety(env: Env, safety: Address) {
-        let stored: Address = env.storage().persistent().get(&KEY_SAFETY).expect("no safety role");
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&KEY_SAFETY)
+            .expect("no safety role");
         if stored != safety {
             panic!("safety mismatch");
         }
@@ -136,12 +154,10 @@ impl RevoraRevenueShare {
 }
 
 fn is_paused(env: &Env) -> bool {
-    match env.storage().persistent().get::<Symbol, bool>(&KEY_PAUSED) {
-        Some(v) => v,
-        None => false,
-    }
+    env.storage()
+        .persistent()
+        .get::<Symbol, bool>(&KEY_PAUSED)
+        .unwrap_or_default()
 }
 
-
 mod test;
-

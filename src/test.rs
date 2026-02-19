@@ -21,7 +21,6 @@ fn it_emits_events_on_register_and_report() {
     assert!(env.events().all().len() >= 2);
 }
 
-
 #[test]
 fn pause_blocks_state_changing_calls() {
     let env = Env::default();
@@ -46,7 +45,6 @@ fn pause_blocks_state_changing_calls() {
     client.register_offering(&issuer, &token, &1_000);
 }
 
-
 #[test]
 #[should_panic]
 fn register_offering_panics_when_paused() {
@@ -62,7 +60,6 @@ fn register_offering_panics_when_paused() {
     client.register_offering(&issuer, &token, &1_000);
 }
 
-
 #[test]
 #[should_panic]
 fn report_revenue_panics_when_paused() {
@@ -77,7 +74,6 @@ fn report_revenue_panics_when_paused() {
     client.pause_admin(&admin);
     client.report_revenue(&issuer, &token, &1_000_000, &1);
 }
-
 
 #[test]
 fn pause_toggle_emits_events_and_is_idempotent() {
@@ -101,4 +97,3 @@ fn pause_toggle_emits_events_and_is_idempotent() {
     // expect pause/unpause events (>=2)
     assert!(env.events().all().len() >= 2);
 }
-

@@ -1,52 +1,12 @@
-   0.318987692s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "/media/samaro/backup/issue7/Revora-Contracts/src/test.rs"
-   0.319012613s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-3a01603916812ce0/dep-lib-revora_contracts"
-   0.319033002s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1771512876, nanos: 883677100 } < FileTime { seconds: 1771512882, nanos: 866458800 }
-   0.319900338s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
-   0.319934485s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-3a01603916812ce0/dep-lib-revora_contracts", reference_mtime: FileTime { seconds: 1771512876, nanos: 883677100 }, stale: "/media/samaro/backup/issue7/Revora-Contracts/src/test.rs", stale_mtime: FileTime { seconds: 1771512882, nanos: 866458800 } }))
-   0.482248428s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint error for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
-   0.482306293s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     err: failed to read `/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-32e0934cb21014d6/test-lib-revora_contracts`
-
-Caused by:
-    No such file or directory (os error 2)
-
-Stack backtrace:
-   0: cargo_util::paths::read_bytes
-   1: cargo_util::paths::read
-   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
-   3: cargo::core::compiler::fingerprint::prepare_target
-   4: cargo::core::compiler::compile
-   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
-   6: cargo::ops::cargo_compile::compile_ws
-   7: cargo::ops::cargo_compile::compile_with_exec
-   8: cargo::ops::cargo_compile::compile
-   9: cargo::commands::check::exec
-  10: <cargo::cli::Exec>::exec
-  11: cargo::main
-  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
-  13: std::rt::lang_start::<()>::{closure#0}
-  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/ops/function.rs:287:21
-  15: std::panicking::catch_unwind::do_call
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
-  16: std::panicking::catch_unwind
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
-  17: std::panic::catch_unwind
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
-  18: std::rt::lang_start_internal::{{closure}}
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:175:24
-  19: std::panicking::catch_unwind::do_call
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
-  20: std::panicking::catch_unwind
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
-  21: std::panic::catch_unwind
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
-  22: std::rt::lang_start_internal
-             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:171:5
-  23: main
-  24: __libc_start_call_main
-             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
-  25: __libc_start_main_impl
-             at ./csu/../csu/libc-start.c:360:3
-  26: <unknown>
+   0.615585189s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs"
+   0.615620676s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-3a01603916812ce0/dep-lib-revora_contracts"
+   0.615631095s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1771513455, nanos: 421989000 } < FileTime { seconds: 1771513628, nanos: 302751600 }
+   0.616540708s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
+   0.616576249s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-3a01603916812ce0/dep-lib-revora_contracts", reference_mtime: FileTime { seconds: 1771513455, nanos: 421989000 }, stale: "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", stale_mtime: FileTime { seconds: 1771513628, nanos: 302751600 } }))
+   0.811711721s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs"
+   0.811730438s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-32e0934cb21014d6/dep-test-lib-revora_contracts"
+   0.811740435s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1771513455, nanos: 421694600 } < FileTime { seconds: 1771513628, nanos: 302751600 }
+   0.812369901s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
+   0.812399112s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/media/samaro/backup/issue7/Revora-Contracts/target/debug/.fingerprint/revora-contracts-32e0934cb21014d6/dep-test-lib-revora_contracts", reference_mtime: FileTime { seconds: 1771513455, nanos: 421694600 }, stale: "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", stale_mtime: FileTime { seconds: 1771513628, nanos: 302751600 } }))
     Checking revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.73s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.12s
