@@ -1,0 +1,11 @@
+/media/samaro/backup/issue7/Revora-Contracts/target/debug/deps/ed25519_dalek-cdcec54cac5d4087.d: /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/lib.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/constants.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/errors.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signature.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signing.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/verifying.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/hazmat.rs
+
+/media/samaro/backup/issue7/Revora-Contracts/target/debug/deps/libed25519_dalek-cdcec54cac5d4087.rmeta: /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/lib.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/constants.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/errors.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signature.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signing.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/verifying.rs /home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/hazmat.rs
+
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/lib.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/constants.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/errors.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signature.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/signing.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/verifying.rs:
+/home/samaro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/hazmat.rs:
