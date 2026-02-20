@@ -9,16 +9,29 @@ const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
 const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfferingStatus {
+    Active,
+    Suspended,
+    Closed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Offering {
+    pub issuer: Address,
+    pub token: Address,
+    pub revenue_share_bps: u32,
+    pub status: OfferingStatus,
+}
+
 // ── Storage key ──────────────────────────────────────────────
-/// One blacklist map per offering, keyed by the offering's token address.
-///
-/// Blacklist precedence rule: a blacklisted address is **always** excluded
-/// from payouts, regardless of any whitelist or investor registration.
-/// If the same address appears in both a whitelist and this blacklist,
-/// the blacklist wins unconditionally.
 #[contracttype]
 pub enum DataKey {
     Blacklist(Address),
+    Offering(Address, Address), // (Issuer, Token)
+    IssuerOfferings(Address),   // Issuer -> Vec<Token>
 }
 
 // ── Contract ─────────────────────────────────────────────────
@@ -32,10 +45,54 @@ impl RevoraRevenueShare {
     /// Register a new revenue-share offering.
     pub fn register_offering(env: Env, issuer: Address, token: Address, revenue_share_bps: u32) {
         issuer.require_auth();
+
+        if revenue_share_bps > 10_000 {
+            panic!("Invalid BPS: exceeds 10000");
+        }
+
+        let offering_key = DataKey::Offering(issuer.clone(), token.clone());
+        if env.storage().persistent().has(&offering_key) {
+            panic!("Offering already exists");
+        }
+
+        let offering = Offering {
+            issuer: issuer.clone(),
+            token: token.clone(),
+            revenue_share_bps,
+            status: OfferingStatus::Active,
+        };
+
+        env.storage().persistent().set(&offering_key, &offering);
+
+        let issuer_offerings_key = DataKey::IssuerOfferings(issuer.clone());
+        let mut tokens: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&issuer_offerings_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        tokens.push_back(token.clone());
+        env.storage().persistent().set(&issuer_offerings_key, &tokens);
+
         env.events().publish(
-            (symbol_short!("offer_reg"), issuer.clone()),
+            (symbol_short!("offer_reg"), issuer),
             (token, revenue_share_bps),
         );
+    }
+
+    /// Fetch a single offering by issuer and token.
+    pub fn get_offering(env: Env, issuer: Address, token: Address) -> Option<Offering> {
+        let key = DataKey::Offering(issuer, token);
+        env.storage().persistent().get(&key)
+    }
+
+    /// List all offering tokens for an issuer.
+    pub fn list_offerings(env: Env, issuer: Address) -> Vec<Address> {
+        let key = DataKey::IssuerOfferings(issuer);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Record a revenue report for an offering.

@@ -1,11 +1,11 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
+use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env};
+use crate::{RevoraRevenueShare, RevoraRevenueShareClient, OfferingStatus};
 
 // ── helper ────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -24,6 +24,140 @@ fn it_emits_events_on_register_and_report() {
     client.report_revenue(&issuer, &token, &1_000_000, &1);
 
     assert!(env.events().all().len() >= 2);
+}
+
+// ── offering registry ─────────────────────────────────────────
+
+#[test]
+fn register_stores_offering_data() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+    let bps    = 500;
+
+    client.register_offering(&issuer, &token, &bps);
+
+    let maybe_offering = client.get_offering(&issuer, &token);
+    assert!(maybe_offering.is_some());
+    
+    let offering = maybe_offering.unwrap();
+    assert_eq!(offering.issuer, issuer);
+    assert_eq!(offering.token, token);
+    assert_eq!(offering.revenue_share_bps, bps);
+    assert_eq!(offering.status, OfferingStatus::Active);
+}
+
+#[test]
+fn list_offerings_returns_all_for_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_a, &100);
+    client.register_offering(&issuer, &token_b, &200);
+
+    let list = client.list_offerings(&issuer);
+    assert_eq!(list.len(), 2);
+    assert!(list.contains(&token_a));
+    assert!(list.contains(&token_b));
+}
+
+#[test]
+#[should_panic(expected = "Offering already exists")]
+fn cannot_register_duplicate_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &100);
+    client.register_offering(&issuer, &token, &100);
+}
+
+#[test]
+#[should_panic(expected = "Invalid BPS: exceeds 10000")]
+fn cannot_register_with_invalid_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &10_001);
+}
+
+#[test]
+#[should_panic]
+fn register_offering_requires_auth() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &100);
+}
+
+#[test]
+fn get_offering_none_for_nonexistent() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    assert!(client.get_offering(&issuer, &token).is_none());
+}
+
+#[test]
+fn list_offerings_empty_for_new_issuer() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+
+    assert_eq!(client.list_offerings(&issuer).len(), 0);
+}
+
+#[test]
+fn offering_isolation_between_issuers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    
+    let issuer_a = Address::generate(&env);
+    let issuer_b = Address::generate(&env);
+    let token    = Address::generate(&env);
+
+    client.register_offering(&issuer_a, &token, &100);
+    client.register_offering(&issuer_b, &token, &200);
+
+    let off_a = client.get_offering(&issuer_a, &token).unwrap();
+    let off_b = client.get_offering(&issuer_b, &token).unwrap();
+
+    assert_eq!(off_a.revenue_share_bps, 100);
+    assert_eq!(off_b.revenue_share_bps, 200);
+    
+    assert_eq!(client.list_offerings(&issuer_a).len(), 1);
+    assert_eq!(client.list_offerings(&issuer_b).len(), 1);
+}
+
+#[test]
+fn scale_test_many_offerings_one_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+
+    for i in 0..50 {
+        let token = Address::generate(&env);
+        client.register_offering(&issuer, &token, &(i * 10));
+    }
+
+    assert_eq!(client.list_offerings(&issuer).len(), 50);
 }
 
 // ── blacklist CRUD ────────────────────────────────────────────
