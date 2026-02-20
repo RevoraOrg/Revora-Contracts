@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Events}, Address, Env};
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 
 // ── helper ────────────────────────────────────────────────────
@@ -24,6 +24,299 @@ fn it_emits_events_on_register_and_report() {
     client.report_revenue(&issuer, &token, &1_000_000, &1);
 
     assert!(env.events().all().len() >= 2);
+}
+
+// ── platform initialization ──────────────────────────────────
+
+#[test]
+fn initialize_sets_platform_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    assert_eq!(client.get_platform_owner(), owner);
+}
+
+#[test]
+fn initialize_sets_default_fee_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+#[should_panic]
+fn initialize_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.initialize(&owner);
+}
+
+#[test]
+#[should_panic]
+fn initialize_requires_auth() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+}
+
+// ── platform fee configuration ───────────────────────────────
+
+#[test]
+fn set_and_get_platform_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&250);
+    assert_eq!(client.get_platform_fee(), 250);
+}
+
+#[test]
+fn default_platform_fee_is_zero() {
+    let env = Env::default();
+    let client = make_client(&env);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_platform_fee_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&500);
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_platform_fee_to_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&5_000);
+    assert_eq!(client.get_platform_fee(), 5_000);
+}
+
+#[test]
+#[should_panic]
+fn set_platform_fee_above_maximum_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&5_001);
+}
+
+#[test]
+fn update_platform_fee_multiple_times() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.set_platform_fee(&100);
+    assert_eq!(client.get_platform_fee(), 100);
+
+    client.set_platform_fee(&300);
+    assert_eq!(client.get_platform_fee(), 300);
+
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+#[should_panic]
+fn set_platform_fee_requires_auth() {
+    let env = Env::default();
+    let client = make_client(&env);
+    client.set_platform_fee(&200);
+}
+
+#[test]
+fn set_platform_fee_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    let before = env.events().all().len();
+    client.set_platform_fee(&250);
+    assert!(env.events().all().len() > before);
+}
+
+// ── fee calculation ──────────────────────────────────────────
+
+#[test]
+fn calculate_fee_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&250); // 2.5%
+    assert_eq!(client.calculate_platform_fee(&1_000_000), 25_000);
+}
+
+#[test]
+fn calculate_fee_with_zero_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&250);
+    assert_eq!(client.calculate_platform_fee(&0), 0);
+}
+
+#[test]
+fn calculate_fee_with_zero_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    assert_eq!(client.calculate_platform_fee(&1_000_000), 0);
+}
+
+#[test]
+fn calculate_fee_at_maximum_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&5_000); // 50%
+    assert_eq!(client.calculate_platform_fee(&1_000_000), 500_000);
+}
+
+#[test]
+fn calculate_fee_precision() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&1); // 0.01%
+    // 999 * 1 / 10000 = 0 (integer truncation)
+    assert_eq!(client.calculate_platform_fee(&999), 0);
+    // 10000 * 1 / 10000 = 1
+    assert_eq!(client.calculate_platform_fee(&10_000), 1);
+}
+
+// ── revenue report with fees ─────────────────────────────────
+
+#[test]
+fn report_revenue_with_platform_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let owner  = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.set_platform_fee(&500); // 5%
+
+    let before = env.events().all().len();
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn report_revenue_without_initialization_uses_zero_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    assert_eq!(client.get_platform_fee(), 0);
+    assert_eq!(client.calculate_platform_fee(&1_000_000), 0);
+}
+
+// ── ownership transfer ───────────────────────────────────────
+
+#[test]
+fn transfer_ownership_updates_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client    = make_client(&env);
+    let owner     = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.transfer_ownership(&new_owner);
+    assert_eq!(client.get_platform_owner(), new_owner);
+}
+
+#[test]
+fn new_owner_can_set_fee_after_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client    = make_client(&env);
+    let owner     = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+
+    client.initialize(&owner);
+    client.transfer_ownership(&new_owner);
+    client.set_platform_fee(&300);
+    assert_eq!(client.get_platform_fee(), 300);
+}
+
+#[test]
+fn transfer_ownership_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client    = make_client(&env);
+    let owner     = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+
+    client.initialize(&owner);
+    let before = env.events().all().len();
+    client.transfer_ownership(&new_owner);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+#[should_panic]
+fn transfer_ownership_requires_auth() {
+    let env = Env::default();
+    let client    = make_client(&env);
+    let new_owner = Address::generate(&env);
+    // Not initialized and no auth
+    client.transfer_ownership(&new_owner);
 }
 
 // ── blacklist CRUD ────────────────────────────────────────────
