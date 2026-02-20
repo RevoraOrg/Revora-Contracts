@@ -1,10 +1,10 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::testutils::Events;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 
-// ── helper ────────────────────────────────────────────────────
-
+// helper
 fn make_client(env: &Env) -> RevoraRevenueShareClient {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
@@ -16,9 +16,9 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient {
 fn it_emits_events_on_register_and_report() {
     let env = Env::default();
     env.mock_all_auths();
-    let client  = make_client(&env);
-    let issuer  = Address::generate(&env);
-    let token   = Address::generate(&env);
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
 
     client.register_offering(&issuer, &token, &1_000);
     client.report_revenue(&issuer, &token, &1_000_000, &1);
@@ -26,15 +26,14 @@ fn it_emits_events_on_register_and_report() {
     assert!(env.events().all().len() >= 2);
 }
 
-// ── blacklist CRUD ────────────────────────────────────────────
-
+// blacklist CRUD
 #[test]
 fn add_marks_investor_as_blacklisted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     assert!(!client.is_blacklisted(&token, &investor));
@@ -46,9 +45,9 @@ fn add_marks_investor_as_blacklisted() {
 fn remove_unmarks_investor() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -61,11 +60,11 @@ fn get_blacklist_returns_all_blocked_investors() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
-    let admin  = Address::generate(&env);
-    let token  = Address::generate(&env);
-    let inv_a  = Address::generate(&env);
-    let inv_b  = Address::generate(&env);
-    let inv_c  = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &inv_a);
     client.blacklist_add(&admin, &token, &inv_b);
@@ -83,7 +82,7 @@ fn get_blacklist_empty_before_any_add() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
-    let token  = Address::generate(&env);
+    let token = Address::generate(&env);
 
     assert_eq!(client.get_blacklist(&token).len(), 0);
 }
@@ -94,9 +93,9 @@ fn get_blacklist_empty_before_any_add() {
 fn double_add_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -109,30 +108,28 @@ fn double_add_is_idempotent() {
 fn remove_nonexistent_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
-    client.blacklist_remove(&admin, &token, &investor); // must not panic
+    client.blacklist_remove(&admin, &token, &investor);
     assert!(!client.is_blacklisted(&token, &investor));
 }
-
-// ── per-offering isolation ────────────────────────────────────
 
 #[test]
 fn blacklist_is_scoped_per_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token_a  = Address::generate(&env);
-    let token_b  = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token_a, &investor);
 
-    assert!( client.is_blacklisted(&token_a, &investor));
+    assert!(client.is_blacklisted(&token_a, &investor));
     assert!(!client.is_blacklisted(&token_b, &investor));
 }
 
@@ -140,10 +137,10 @@ fn blacklist_is_scoped_per_offering() {
 fn removing_from_one_offering_does_not_affect_another() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token_a  = Address::generate(&env);
-    let token_b  = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token_a, &investor);
@@ -151,18 +148,16 @@ fn removing_from_one_offering_does_not_affect_another() {
     client.blacklist_remove(&admin, &token_a, &investor);
 
     assert!(!client.is_blacklisted(&token_a, &investor));
-    assert!( client.is_blacklisted(&token_b, &investor));
+    assert!(client.is_blacklisted(&token_b, &investor));
 }
-
-// ── event emission ────────────────────────────────────────────
 
 #[test]
 fn blacklist_add_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     let before = env.events().all().len();
@@ -174,9 +169,9 @@ fn blacklist_add_emits_event() {
 fn blacklist_remove_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -191,9 +186,9 @@ fn blacklist_remove_emits_event() {
 fn blacklisted_investor_excluded_from_distribution_filter() {
     let env = Env::default();
     env.mock_all_auths();
-    let client  = make_client(&env);
-    let admin   = Address::generate(&env);
-    let token   = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let allowed = Address::generate(&env);
     let blocked = Address::generate(&env);
 
@@ -212,27 +207,24 @@ fn blacklisted_investor_excluded_from_distribution_filter() {
 fn blacklist_takes_precedence_over_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
 
-    // Even if investor were on a whitelist, blacklist must win
     assert!(client.is_blacklisted(&token, &investor));
 }
-
-// ── auth enforcement ──────────────────────────────────────────
 
 #[test]
 #[should_panic]
 fn blacklist_add_requires_auth() {
-    let env = Env::default(); // no mock_all_auths
-    let client    = make_client(&env);
+    let env = Env::default();
+    let client = make_client(&env);
     let bad_actor = Address::generate(&env);
-    let token     = Address::generate(&env);
-    let victim    = Address::generate(&env);
+    let token = Address::generate(&env);
+    let victim = Address::generate(&env);
 
     client.blacklist_add(&bad_actor, &token, &victim);
 }
@@ -240,11 +232,63 @@ fn blacklist_add_requires_auth() {
 #[test]
 #[should_panic]
 fn blacklist_remove_requires_auth() {
-    let env = Env::default(); // no mock_all_auths
-    let client    = make_client(&env);
+    let env = Env::default();
+    let client = make_client(&env);
     let bad_actor = Address::generate(&env);
-    let token     = Address::generate(&env);
-    let investor  = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
 
     client.blacklist_remove(&bad_actor, &token, &investor);
+}
+
+#[test]
+#[should_panic]
+fn register_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client  = make_client(&env);
+    let admin   = Address::generate(&env);
+    let issuer  = Address::generate(&env);
+    let token   = Address::generate(&env);
+
+    client.initialize(&admin, &Option::<Address>::None);
+    client.pause_admin(&admin);
+
+    // Should panic because contract is paused
+    client.register_offering(&issuer, &token, &1_000);
+}
+
+#[test]
+#[should_panic]
+fn report_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client  = make_client(&env);
+    let admin   = Address::generate(&env);
+    let issuer  = Address::generate(&env);
+    let token   = Address::generate(&env);
+
+    client.initialize(&admin, &Option::<Address>::None);
+    client.pause_admin(&admin);
+
+    // Should panic because contract is paused
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+}
+
+#[test]
+fn pause_unpause_idempotence_and_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin  = Address::generate(&env);
+
+    client.initialize(&admin, &Option::<Address>::None);
+
+    let before = env.events().all().len();
+    client.pause_admin(&admin);
+    client.pause_admin(&admin); // idempotent
+    client.unpause_admin(&admin);
+    client.unpause_admin(&admin); // idempotent
+
+    assert!(env.events().all().len() >= before + 2);
 }
