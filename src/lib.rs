@@ -129,12 +129,69 @@ impl RevoraRevenueShare {
         let key = DataKey::Blacklist(token);
         env.storage().persistent().get::<DataKey, Map<Address, bool>>(&key).map(|m| m.keys()).unwrap_or_else(|| Vec::new(&env))
     }
-}
 
 fn require_not_paused(env: &Env) {
     let paused: bool = env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false);
     if paused {
         panic!("contract is paused");
+    // ── Blacklist management ──────────────────────────────────
+
+    /// Add `investor` to the per-offering blacklist for `token`.
+    ///
+    /// Idempotent — calling with an already-blacklisted address is safe.
+    pub fn blacklist_add(env: Env, caller: Address, token: Address, investor: Address) {
+        caller.require_auth();
+
+        let key = DataKey::Blacklist(token.clone());
+        let mut map: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Map::new(&env));
+
+        map.set(investor.clone(), true);
+        env.storage().persistent().set(&key, &map);
+
+        env.events().publish((EVENT_BL_ADD, token, caller), investor);
+    }
+
+    /// Remove `investor` from the per-offering blacklist for `token`.
+    ///
+    /// Idempotent — calling when the address is not listed is safe.
+    pub fn blacklist_remove(env: Env, caller: Address, token: Address, investor: Address) {
+        caller.require_auth();
+
+        let key = DataKey::Blacklist(token.clone());
+        let mut map: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Map::new(&env));
+
+        map.remove(investor.clone());
+        env.storage().persistent().set(&key, &map);
+
+        env.events().publish((EVENT_BL_REM, token, caller), investor);
+    }
+
+    /// Returns `true` if `investor` is blacklisted for `token`'s offering.
+    pub fn is_blacklisted(env: Env, token: Address, investor: Address) -> bool {
+        let key = DataKey::Blacklist(token);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.get(investor).unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Return all blacklisted addresses for `token`'s offering.
+    pub fn get_blacklist(env: Env, token: Address) -> Vec<Address> {
+        let key = DataKey::Blacklist(token);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.keys())
+            .unwrap_or_else(|| Vec::new(&env))
     }
 }
 

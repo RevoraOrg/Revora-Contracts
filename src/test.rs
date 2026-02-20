@@ -10,6 +10,8 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient {
     RevoraRevenueShareClient::new(env, &id)
 }
 
+// ── original smoke test ───────────────────────────────────────
+
 #[test]
 fn it_emits_events_on_register_and_report() {
     let env = Env::default();
@@ -70,6 +72,9 @@ fn get_blacklist_returns_all_blocked_investors() {
 
     let list = client.get_blacklist(&token);
     assert_eq!(list.len(), 3);
+    assert!(list.contains(&inv_a));
+    assert!(list.contains(&inv_b));
+    assert!(list.contains(&inv_c));
 }
 
 #[test]
@@ -81,6 +86,8 @@ fn get_blacklist_empty_before_any_add() {
 
     assert_eq!(client.get_blacklist(&token).len(), 0);
 }
+
+// ── idempotency ───────────────────────────────────────────────
 
 #[test]
 fn double_add_is_idempotent() {
@@ -173,6 +180,8 @@ fn blacklist_remove_emits_event() {
     assert!(env.events().all().len() > before);
 }
 
+// ── distribution enforcement ──────────────────────────────────
+
 #[test]
 fn blacklisted_investor_excluded_from_distribution_filter() {
     let env = Env::default();
@@ -186,7 +195,10 @@ fn blacklisted_investor_excluded_from_distribution_filter() {
     client.blacklist_add(&admin, &token, &blocked);
 
     let investors = [allowed.clone(), blocked.clone()];
-    let eligible = investors.iter().filter(|inv| !client.is_blacklisted(&token, inv)).count();
+    let eligible = investors
+        .iter()
+        .filter(|inv| !client.is_blacklisted(&token, inv))
+        .count();
 
     assert_eq!(eligible, 1);
 }
