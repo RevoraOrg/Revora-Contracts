@@ -1,0 +1,22 @@
+# Rust build output
+/target
+
+# Cargo lock (keep for binaries, optional for libraries)
+# Cargo.lock  ← uncomment this line if this is a library crate
+
+# Soroban compiled WASM output
+*.wasm
+*.wasm.gz
+
+# macOS
+.DS_Store
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.local
