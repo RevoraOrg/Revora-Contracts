@@ -1,123 +1,73 @@
 #![no_std]
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    Address, Env, Map, Symbol, Vec,
-};
 
-// ── Event symbols ────────────────────────────────────────────
-const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
-const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
-const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 
-// ── Storage key ──────────────────────────────────────────────
-/// One blacklist map per offering, keyed by the offering's token address.
-///
-/// Blacklist precedence rule: a blacklisted address is **always** excluded
-/// from payouts, regardless of any whitelist or investor registration.
-/// If the same address appears in both a whitelist and this blacklist,
-/// the blacklist wins unconditionally.
-#[contracttype]
-pub enum DataKey {
-    Blacklist(Address),
-}
+mod blacklist;
+mod events;
+mod lifecycle;
+mod revenue;
+mod types;
 
-// ── Contract ─────────────────────────────────────────────────
+pub use types::{DataKey, OfferingStatus};
+
 #[contract]
 pub struct RevoraRevenueShare;
 
 #[contractimpl]
 impl RevoraRevenueShare {
-    // ── Existing entry-points ─────────────────────────────────
+    // ── Revenue ───────────────────────────────────────────────
 
-    /// Register a new revenue-share offering.
     pub fn register_offering(env: Env, issuer: Address, token: Address, revenue_share_bps: u32) {
         issuer.require_auth();
-        env.events().publish(
-            (symbol_short!("offer_reg"), issuer.clone()),
-            (token, revenue_share_bps),
-        );
+        revenue::register_offering(&env, &issuer, &token, revenue_share_bps);
     }
 
-    /// Record a revenue report for an offering.
-    ///
-    /// The event payload now includes the current blacklist so off-chain
-    /// distribution engines can filter recipients in the same atomic step.
-    pub fn report_revenue(
-        env: Env,
-        issuer: Address,
-        token: Address,
-        amount: i128,
-        period_id: u64,
-    ) {
+    pub fn report_revenue(env: Env, issuer: Address, token: Address, amount: i128, period_id: u64) {
         issuer.require_auth();
-
-        let blacklist = Self::get_blacklist(env.clone(), token.clone());
-
-        env.events().publish(
-            (EVENT_REVENUE_REPORTED, issuer.clone(), token.clone()),
-            (amount, period_id, blacklist),
-        );
+        revenue::report_revenue(&env, &issuer, &token, amount, period_id);
     }
 
-    // ── Blacklist management ──────────────────────────────────
+    // ── Lifecycle ─────────────────────────────────────────────
 
-    /// Add `investor` to the per-offering blacklist for `token`.
-    ///
-    /// Idempotent — calling with an already-blacklisted address is safe.
+    pub fn pause_offering(env: Env, issuer: Address, token: Address) {
+        issuer.require_auth();
+        lifecycle::pause_offering(&env, &issuer, &token);
+    }
+
+    pub fn resume_offering(env: Env, issuer: Address, token: Address) {
+        issuer.require_auth();
+        lifecycle::resume_offering(&env, &issuer, &token);
+    }
+
+    pub fn close_offering(env: Env, issuer: Address, token: Address) {
+        issuer.require_auth();
+        lifecycle::close_offering(&env, &issuer, &token);
+    }
+
+    pub fn get_offering_status(env: Env, token: Address) -> OfferingStatus {
+        lifecycle::get_status(&env, &token)
+    }
+
+    // ── Blacklist ─────────────────────────────────────────────
+
     pub fn blacklist_add(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
-
-        let key = DataKey::Blacklist(token.clone());
-        let mut map: Map<Address, bool> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Map::new(&env));
-
-        map.set(investor.clone(), true);
-        env.storage().persistent().set(&key, &map);
-
-        env.events().publish((EVENT_BL_ADD, token, caller), investor);
+        blacklist::blacklist_add(&env, &caller, &token, &investor);
     }
 
-    /// Remove `investor` from the per-offering blacklist for `token`.
-    ///
-    /// Idempotent — calling when the address is not listed is safe.
     pub fn blacklist_remove(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
-
-        let key = DataKey::Blacklist(token.clone());
-        let mut map: Map<Address, bool> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Map::new(&env));
-
-        map.remove(investor.clone());
-        env.storage().persistent().set(&key, &map);
-
-        env.events().publish((EVENT_BL_REM, token, caller), investor);
+        blacklist::blacklist_remove(&env, &caller, &token, &investor);
     }
 
-    /// Returns `true` if `investor` is blacklisted for `token`'s offering.
     pub fn is_blacklisted(env: Env, token: Address, investor: Address) -> bool {
-        let key = DataKey::Blacklist(token);
-        env.storage()
-            .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.get(investor).unwrap_or(false))
-            .unwrap_or(false)
+        blacklist::is_blacklisted(&env, &token, &investor)
     }
 
-    /// Return all blacklisted addresses for `token`'s offering.
     pub fn get_blacklist(env: Env, token: Address) -> Vec<Address> {
-        let key = DataKey::Blacklist(token);
-        env.storage()
-            .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.keys())
-            .unwrap_or_else(|| Vec::new(&env))
+        blacklist::get_blacklist(&env, &token)
     }
 }
 
+#[cfg(test)]
 mod test;
