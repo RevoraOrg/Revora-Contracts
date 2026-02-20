@@ -1,10 +1,8 @@
-   0.247933128s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: dependency on `soroban_sdk` is newer than we are 1771585101.083245400s > 1771584935.321918600s "/media/samaro/backup/issue7/Revora-Contracts"
-   0.248539383s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
-   0.248571719s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDependency { name: "soroban_sdk", dep_mtime: FileTime { seconds: 1771585101, nanos: 83245400 }, max_mtime: FileTime { seconds: 1771584935, nanos: 321918600 } })
-   0.346646122s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: dependency on `soroban_sdk` is newer than we are 1771585101.083245400s > 1771584935.319464000s "/media/samaro/backup/issue7/Revora-Contracts"
-   0.346977857s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "/media/samaro/backup/issue7/Revora-Contracts/src/lib.rs", Edition2021) }
-   0.347001442s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDependency { name: "soroban_sdk", dep_mtime: FileTime { seconds: 1771585101, nanos: 83245400 }, max_mtime: FileTime { seconds: 1771584935, nanos: 319464000 } })
-    Checking revora-contracts v0.1.0 (/media/samaro/backup/issue7/Revora-Contracts)
-error: could not compile `revora-contracts` (lib test) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `revora-contracts` (lib) due to 1 previous error
+error: failed to parse lock file at: /media/samaro/backup/issue7/Revora-Contracts/Cargo.lock
+
+Caused by:
+  TOML parse error at line 103, column 1
+      |
+  103 | version = "3.20.2"
+      | ^^^^^^^
+  duplicate key

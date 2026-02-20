@@ -139,5 +139,3 @@ fn require_not_paused(env: &Env) {
 }
 
 mod test;
-mod test;
->>>>>>> ef896b0 (feat(contracts): add per-offering investor blacklist (#13))

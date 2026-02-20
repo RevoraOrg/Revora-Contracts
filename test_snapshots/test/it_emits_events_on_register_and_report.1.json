@@ -350,6 +350,12 @@
                 },
                 {
                   "u64": 1
+<<<<<<< HEAD
+=======
+                },
+                {
+                  "vec": []
+>>>>>>> 8ea0020 (feat(contracts) emergency pause switch)
                 }
               ]
             }
