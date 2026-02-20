@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraRevenueShare, RevoraRevenueShareClient, DataKey};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -247,4 +247,42 @@ fn blacklist_remove_requires_auth() {
     let investor  = Address::generate(&env);
 
     client.blacklist_remove(&bad_actor, &token, &investor);
+}
+
+// ── reentrancy / reuse guard tests ─────────────────────────────────
+
+#[test]
+#[should_panic]
+fn blacklist_add_blocked_when_in_progress_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client   = make_client(&env);
+    let admin    = Address::generate(&env);
+    let token    = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    // Simulate an in-progress flag left set (e.g., mid-execution or concurrent state)
+    env.storage()
+        .persistent()
+        .set(&DataKey::InProgress(token.clone()), &true);
+
+    // Should panic due to guard
+    client.blacklist_add(&admin, &token, &investor);
+}
+
+#[test]
+#[should_panic]
+fn blacklist_remove_blocked_when_in_progress_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client   = make_client(&env);
+    let admin    = Address::generate(&env);
+    let token    = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::InProgress(token.clone()), &true);
+
+    client.blacklist_remove(&admin, &token, &investor);
 }
