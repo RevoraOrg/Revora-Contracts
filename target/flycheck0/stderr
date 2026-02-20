@@ -1,35 +1,12 @@
-   0.255600000s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs"
-   0.255636300s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-e29a20ce48acd81f\\dep-lib-revora_contracts"
-   0.255642700s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13415997055, nanos: 110005200 } < FileTime { seconds: 13415997104, nanos: 549049600 }
-   0.255863600s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\lib.rs", Edition2021) }
-   0.255890200s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-e29a20ce48acd81f\\dep-lib-revora_contracts", reference_mtime: FileTime { seconds: 13415997055, nanos: 110005200 }, stale: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs", stale_mtime: FileTime { seconds: 13415997104, nanos: 549049600 } }))
-   0.276799400s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint error for revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\lib.rs", Edition2021) }
-   0.276839200s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\g-ekoh\Desktop\Revora-Contracts\target\debug\.fingerprint\revora-contracts-d9623d363036346a\test-lib-revora_contracts`
-
-Caused by:
-    The system cannot find the file specified. (os error 2)
-
-Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: <unknown>
-  20: RtlUserThreadStart
+   0.263111600s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs"
+   0.263207700s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-e29a20ce48acd81f\\dep-lib-revora_contracts"
+   0.263224700s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13416081707, nanos: 474254400 } < FileTime { seconds: 13416081715, nanos: 247442300 }
+   0.263709400s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\lib.rs", Edition2021) }
+   0.263759400s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-e29a20ce48acd81f\\dep-lib-revora_contracts", reference_mtime: FileTime { seconds: 13416081707, nanos: 474254400 }, stale: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs", stale_mtime: FileTime { seconds: 13416081715, nanos: 247442300 } }))
+   0.300715600s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs"
+   0.300767900s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-d9623d363036346a\\dep-test-lib-revora_contracts"
+   0.300783300s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13415997105, nanos: 115300200 } < FileTime { seconds: 13416081715, nanos: 247442300 }
+   0.300969100s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint: fingerprint dirty for revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("revora_contracts", ["cdylib"], "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\lib.rs", Edition2021) }
+   0.300993400s  INFO prepare_target{force=false package_id=revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts) target="revora_contracts"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\target\\debug\\.fingerprint\\revora-contracts-d9623d363036346a\\dep-test-lib-revora_contracts", reference_mtime: FileTime { seconds: 13415997105, nanos: 115300200 }, stale: "C:\\Users\\g-ekoh\\Desktop\\Revora-Contracts\\src\\test.rs", stale_mtime: FileTime { seconds: 13416081715, nanos: 247442300 } }))
     Checking revora-contracts v0.1.0 (C:\Users\g-ekoh\Desktop\Revora-Contracts)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.69s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.15s
