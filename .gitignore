@@ -1,0 +1,20 @@
+# Rust/Cargo
+/target/
+/**/target/
+Cargo.lock
+
+# Test snapshots and generated test output
+/test_snapshots/
+**/__snapshots__/
+*.snap
+
+# IDEs and editors
+.vscode/
+.idea/
+.DS_Store
+
+# Misc
+/.cache/
+.pytest_cache/
+# Ignore build artifacts
+/target/
