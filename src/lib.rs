@@ -8,6 +8,11 @@ use soroban_sdk::{
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
 const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
+// ── Event schema versions ─────────────────────────────────────
+const EVENT_OFFER_REG_VERSION: Symbol = symbol_short!("offer_v1");
+const EVENT_REVENUE_REP_VERSION: Symbol = symbol_short!("rev_v1");
+const EVENT_OFFER_REG_VERSION_NUM: u32 = 1u32;
+const EVENT_REVENUE_REP_VERSION_NUM: u32 = 1u32;
 
 // ── Storage key ──────────────────────────────────────────────
 /// One blacklist map per offering, keyed by the offering's token address.
@@ -33,9 +38,19 @@ impl RevoraRevenueShare {
     pub fn register_offering(env: Env, issuer: Address, token: Address, revenue_share_bps: u32) {
         issuer.require_auth();
         env.events().publish(
-            (symbol_short!("offer_reg"), issuer.clone()),
-            (token, revenue_share_bps),
+            (symbol_short!("offer_reg"), issuer.clone(), EVENT_OFFER_REG_VERSION),
+            (token, revenue_share_bps, EVENT_OFFER_REG_VERSION_NUM),
         );
+    }
+
+    /// Return current offering event schema version (numeric).
+    pub fn offering_event_version(_env: Env) -> u32 {
+        EVENT_OFFER_REG_VERSION_NUM
+    }
+
+    /// Return current revenue report event schema version (numeric).
+    pub fn revenue_event_version(_env: Env) -> u32 {
+        EVENT_REVENUE_REP_VERSION_NUM
     }
 
     /// Record a revenue report for an offering.
@@ -54,8 +69,13 @@ impl RevoraRevenueShare {
         let blacklist = Self::get_blacklist(env.clone(), token.clone());
 
         env.events().publish(
-            (EVENT_REVENUE_REPORTED, issuer.clone(), token.clone()),
-            (amount, period_id, blacklist),
+            (
+                EVENT_REVENUE_REPORTED,
+                issuer.clone(),
+                token.clone(),
+                EVENT_REVENUE_REP_VERSION,
+            ),
+            (amount, period_id, blacklist, EVENT_REVENUE_REP_VERSION_NUM),
         );
     }
 

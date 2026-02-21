@@ -1,0 +1,19 @@
+# Build artifacts
+/target
+*.rlib
+*.rmeta
+*.so
+
+# Test snapshots (auto-generated)
+test_snapshots/
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
