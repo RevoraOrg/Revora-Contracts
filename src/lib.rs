@@ -19,6 +19,17 @@ const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
 #[contracttype]
 pub enum DataKey {
     Blacklist(Address),
+    /// Per-offering reentrancy/in-progress flag used to prevent
+    /// accidental double-execution or re-entrant calls that would
+    /// mutate the same offering state within a single logical flow.
+    ///
+    /// Security assumptions:
+    /// - The flag is set at the start of a mutating operation and
+    ///   cleared at the end. If the enclosing transaction panics,
+    ///   storage writes revert, so the flag will not be left set.
+    /// - This is a simple defensive measure; it does not replace
+    ///   careful protocol design or comprehensive audits.
+    InProgress(Address),
 }
 
 // ── Contract ─────────────────────────────────────────────────
@@ -67,6 +78,20 @@ impl RevoraRevenueShare {
     pub fn blacklist_add(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
 
+        // Reentrancy / reuse guard: prevent the same offering's
+        // mutable entrypoint being executed re-entrantly or while
+        // another execution is in-progress for the same `token`.
+        let guard_key = DataKey::InProgress(token.clone());
+        let already = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&guard_key)
+            .unwrap_or(false);
+        if already {
+            panic!("reentrancy detected for token");
+        }
+        env.storage().persistent().set(&guard_key, &true);
+
         let key = DataKey::Blacklist(token.clone());
         let mut map: Map<Address, bool> = env
             .storage()
@@ -77,6 +102,9 @@ impl RevoraRevenueShare {
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
 
+        // clear the guard after mutation completes
+        env.storage().persistent().set(&guard_key, &false);
+
         env.events().publish((EVENT_BL_ADD, token, caller), investor);
     }
 
@@ -85,6 +113,18 @@ impl RevoraRevenueShare {
     /// Idempotent — calling when the address is not listed is safe.
     pub fn blacklist_remove(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
+
+        // Reentrancy / reuse guard (symmetric to `blacklist_add`).
+        let guard_key = DataKey::InProgress(token.clone());
+        let already = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&guard_key)
+            .unwrap_or(false);
+        if already {
+            panic!("reentrancy detected for token");
+        }
+        env.storage().persistent().set(&guard_key, &true);
 
         let key = DataKey::Blacklist(token.clone());
         let mut map: Map<Address, bool> = env
@@ -95,6 +135,9 @@ impl RevoraRevenueShare {
 
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
+
+        // clear the guard after mutation completes
+        env.storage().persistent().set(&guard_key, &false);
 
         env.events().publish((EVENT_BL_REM, token, caller), investor);
     }
