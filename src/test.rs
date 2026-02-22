@@ -1,7 +1,7 @@
 #![cfg(test)]
 use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env};
 
-use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -552,4 +552,269 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     client.report_revenue(&issuer, &token, &1_000_000, &1);
     assert!(!env.events().all().is_empty());
     // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
+}
+
+// ---------------------------------------------------------------------------
+// Holder concentration guardrail (#26)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concentration_limit_not_set_allows_report_revenue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.report_revenue(&issuer, &token, &1_000, &1);
+}
+
+#[test]
+fn set_concentration_limit_requires_offering_to_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    // No offering registered
+    let r = client.try_set_concentration_limit(&issuer, &token, &5000, &false);
+    assert!(r.is_err());
+}
+
+#[test]
+fn set_concentration_limit_stores_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &false);
+    let config = client.get_concentration_limit(&issuer, &token).unwrap();
+    assert_eq!(config.max_bps, 5000);
+    assert!(!config.enforce);
+}
+
+#[test]
+fn report_concentration_emits_warning_when_over_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &false);
+    let before = env.events().all().len();
+    client.report_concentration(&issuer, &token, &6000);
+    assert!(env.events().all().len() > before);
+    assert_eq!(
+        client.get_current_concentration(&issuer, &token),
+        Some(6000)
+    );
+}
+
+#[test]
+fn report_concentration_no_warning_when_below_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &false);
+    client.report_concentration(&issuer, &token, &4000);
+    assert_eq!(
+        client.get_current_concentration(&issuer, &token),
+        Some(4000)
+    );
+}
+
+#[test]
+fn concentration_enforce_blocks_report_revenue_when_over_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &true);
+    client.report_concentration(&issuer, &token, &6000);
+    let r = client.try_report_revenue(&issuer, &token, &1_000, &1);
+    assert!(
+        r.is_err(),
+        "report_revenue must fail when concentration exceeds limit with enforce=true"
+    );
+}
+
+#[test]
+fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &true);
+    client.report_concentration(&issuer, &token, &5000);
+    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_concentration(&issuer, &token, &4999);
+    client.report_revenue(&issuer, &token, &1_000, &2);
+}
+
+#[test]
+fn concentration_near_threshold_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &true);
+    client.report_concentration(&issuer, &token, &5001);
+    assert!(client
+        .try_report_revenue(&issuer, &token, &1_000, &1)
+        .is_err());
+}
+
+// ---------------------------------------------------------------------------
+// On-chain audit log summary (#34)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn audit_summary_empty_before_any_report() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    let summary = client.get_audit_summary(&issuer, &token);
+    assert!(summary.is_none());
+}
+
+#[test]
+fn audit_summary_aggregates_revenue_and_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    client.report_revenue(&issuer, &token, &100, &1);
+    client.report_revenue(&issuer, &token, &200, &2);
+    client.report_revenue(&issuer, &token, &300, &3);
+    let summary = client.get_audit_summary(&issuer, &token).unwrap();
+    assert_eq!(summary.total_revenue, 600);
+    assert_eq!(summary.report_count, 3);
+}
+
+#[test]
+fn audit_summary_per_offering_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    client.register_offering(&issuer, &token_a, &1_000);
+    client.register_offering(&issuer, &token_b, &1_000);
+    client.report_revenue(&issuer, &token_a, &1000, &1);
+    client.report_revenue(&issuer, &token_b, &2000, &1);
+    let sum_a = client.get_audit_summary(&issuer, &token_a).unwrap();
+    let sum_b = client.get_audit_summary(&issuer, &token_b).unwrap();
+    assert_eq!(sum_a.total_revenue, 1000);
+    assert_eq!(sum_a.report_count, 1);
+    assert_eq!(sum_b.total_revenue, 2000);
+    assert_eq!(sum_b.report_count, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Configurable rounding modes (#44)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compute_share_truncation() {
+    let env = Env::default();
+    let client = make_client(&env);
+    // 1000 * 2500 / 10000 = 250
+    let share = client.compute_share(&1000, &2500, &RoundingMode::Truncation);
+    assert_eq!(share, 250);
+}
+
+#[test]
+fn compute_share_round_half_up() {
+    let env = Env::default();
+    let client = make_client(&env);
+    // 1000 * 2500 = 2_500_000; half-up: (2_500_000 + 5000) / 10000 = 250
+    let share = client.compute_share(&1000, &2500, &RoundingMode::RoundHalfUp);
+    assert_eq!(share, 250);
+}
+
+#[test]
+fn compute_share_round_half_up_rounds_up_at_half() {
+    let env = Env::default();
+    let client = make_client(&env);
+    // 1 * 2500 = 2500; 2500/10000 trunc = 0; half-up (2500+5000)/10000 = 0.75 -> 0? No: (2500+5000)/10000 = 7500/10000 = 0. So 1 bps would be 1*100/10000 = 0.01 -> 0 trunc, round half up (100+5000)/10000 = 0.51 -> 1. So 1 * 100 = 100, (100+5000)/10000 = 0.
+    // 3 * 3333 = 9999; 9999/10000 = 0 trunc. (9999+5000)/10000 = 14999/10000 = 1 round half up.
+    let share_trunc = client.compute_share(&3, &3333, &RoundingMode::Truncation);
+    let share_half = client.compute_share(&3, &3333, &RoundingMode::RoundHalfUp);
+    assert_eq!(share_trunc, 0);
+    assert_eq!(share_half, 1);
+}
+
+#[test]
+fn compute_share_bps_over_10000_returns_zero() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let share = client.compute_share(&1000, &10_001, &RoundingMode::Truncation);
+    assert_eq!(share, 0);
+}
+
+#[test]
+fn set_and_get_rounding_mode() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+    assert_eq!(
+        client.get_rounding_mode(&issuer, &token),
+        RoundingMode::Truncation
+    );
+    client.set_rounding_mode(&issuer, &token, &RoundingMode::RoundHalfUp);
+    assert_eq!(
+        client.get_rounding_mode(&issuer, &token),
+        RoundingMode::RoundHalfUp
+    );
+}
+
+#[test]
+fn set_rounding_mode_requires_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let r = client.try_set_rounding_mode(&issuer, &token, &RoundingMode::RoundHalfUp);
+    assert!(r.is_err());
+}
+
+#[test]
+fn compute_share_tiny_payout_truncation() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let share = client.compute_share(&1, &1, &RoundingMode::Truncation);
+    assert_eq!(share, 0);
+}
+
+#[test]
+fn compute_share_no_overflow_bounds() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let amount = 1_000_000_i128;
+    let share = client.compute_share(&amount, &10_000, &RoundingMode::Truncation);
+    assert_eq!(share, amount);
+    let share2 = client.compute_share(&amount, &10_000, &RoundingMode::RoundHalfUp);
+    assert_eq!(share2, amount);
 }
