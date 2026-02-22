@@ -1,43 +1,24 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    Address, Env, Map, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol,
+    Vec,
 };
+
+/// Centralized contract error codes. Auth failures are signaled by host panic (require_auth).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(u32)]
+pub enum RevoraError {
+    /// revenue_share_bps exceeded 10000 (100%).
+    InvalidRevenueShareBps = 1,
+    /// Reserved for future use (e.g. offering limit per issuer).
+    LimitReached = 2,
+}
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
-const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
-const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OfferingStatus {
-    Active,
-    Suspended,
-    Closed,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Offering {
-    pub issuer: Address,
-    pub token: Address,
-    pub revenue_share_bps: u32,
-    pub status: OfferingStatus,
-}
-
-// ── Storage key ──────────────────────────────────────────────
-#[contracttype]
-pub enum DataKey {
-    Blacklist(Address),
-    Offering(Address, Address), // (Issuer, Token)
-    IssuerOfferings(Address),   // Issuer -> Vec<Token>
-}
-
-// ── Contract ─────────────────────────────────────────────────
-#[contract]
-pub struct RevoraRevenueShare;
+const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
+const EVENT_BL_REM: Symbol = symbol_short!("bl_rem");
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -47,30 +28,37 @@ pub struct Offering {
     pub revenue_share_bps: u32,
 }
 
-/// Storage keys for offering persistence.
+/// Storage keys: offerings use OfferCount/OfferItem; blacklist uses Blacklist(token).
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// Total number of offerings registered by an issuer.
+    Blacklist(Address),
     OfferCount(Address),
-    /// Individual offering stored at (issuer, index).
     OfferItem(Address, u32),
 }
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
 
-const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
+#[contract]
+pub struct RevoraRevenueShare;
 
 #[contractimpl]
 impl RevoraRevenueShare {
-    // ── Existing entry-points ─────────────────────────────────
-
     /// Register a new revenue-share offering.
-    pub fn register_offering(env: Env, issuer: Address, token: Address, revenue_share_bps: u32) {
+    /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
+    pub fn register_offering(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        revenue_share_bps: u32,
+    ) -> Result<(), RevoraError> {
         issuer.require_auth();
 
-        // Persist the offering with an auto-incrementing index.
+        if revenue_share_bps > 10_000 {
+            return Err(RevoraError::InvalidRevenueShareBps);
+        }
+
         let count_key = DataKey::OfferCount(issuer.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
@@ -88,34 +76,34 @@ impl RevoraRevenueShare {
             (symbol_short!("offer_reg"), issuer),
             (token, revenue_share_bps),
         );
+        Ok(())
     }
 
-    /// Fetch a single offering by issuer and token.
+    /// Fetch a single offering by issuer and token (scans issuer's offerings).
     pub fn get_offering(env: Env, issuer: Address, token: Address) -> Option<Offering> {
-        let key = DataKey::Offering(issuer, token);
-        env.storage().persistent().get(&key)
+        let count = Self::get_offering_count(env.clone(), issuer.clone());
+        for i in 0..count {
+            let item_key = DataKey::OfferItem(issuer.clone(), i);
+            let offering: Offering = env.storage().persistent().get(&item_key).unwrap();
+            if offering.token == token {
+                return Some(offering);
+            }
+        }
+        None
     }
 
     /// List all offering tokens for an issuer.
     pub fn list_offerings(env: Env, issuer: Address) -> Vec<Address> {
-        let key = DataKey::IssuerOfferings(issuer);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(&env))
+        let (page, _) = Self::get_offerings_page(env.clone(), issuer.clone(), 0, MAX_PAGE_LIMIT);
+        let mut tokens = Vec::new(&env);
+        for i in 0..page.len() {
+            tokens.push_back(page.get(i).unwrap().token);
+        }
+        tokens
     }
 
     /// Record a revenue report for an offering.
-    ///
-    /// The event payload now includes the current blacklist so off-chain
-    /// distribution engines can filter recipients in the same atomic step.
-    pub fn report_revenue(
-        env: Env,
-        issuer: Address,
-        token: Address,
-        amount: i128,
-        period_id: u64,
-    ) {
+    pub fn report_revenue(env: Env, issuer: Address, token: Address, amount: i128, period_id: u64) {
         issuer.require_auth();
 
         let blacklist = Self::get_blacklist(env.clone(), token.clone());
@@ -125,37 +113,28 @@ impl RevoraRevenueShare {
             (amount, period_id, blacklist),
         );
     }
+
     /// Return the total number of offerings registered by `issuer`.
     pub fn get_offering_count(env: Env, issuer: Address) -> u32 {
         let count_key = DataKey::OfferCount(issuer);
         env.storage().persistent().get(&count_key).unwrap_or(0)
     }
 
-    /// Return a page of offerings for `issuer`.
-    ///
-    /// # Arguments
-    /// * `start` – Zero-based cursor indicating where to begin reading.
-    /// * `limit` – Maximum items to return. Capped at `MAX_PAGE_LIMIT` (20).
-    ///
-    /// # Returns
-    /// A tuple of `(offerings, next_cursor)` where `next_cursor` is `None`
-    /// when there are no more items after this page.
+    /// Return a page of offerings for `issuer`. Limit capped at MAX_PAGE_LIMIT (20).
     pub fn get_offerings_page(
         env: Env,
         issuer: Address,
         start: u32,
         limit: u32,
     ) -> (Vec<Offering>, Option<u32>) {
-        let count: u32 = Self::get_offering_count(env.clone(), issuer.clone());
+        let count = Self::get_offering_count(env.clone(), issuer.clone());
 
-        // Clamp limit to MAX_PAGE_LIMIT; treat 0 as "use default max".
         let effective_limit = if limit == 0 || limit > MAX_PAGE_LIMIT {
             MAX_PAGE_LIMIT
         } else {
             limit
         };
 
-        // If start is beyond the total count, return empty.
         if start >= count {
             return (Vec::new(&env), None);
         }
@@ -170,16 +149,10 @@ impl RevoraRevenueShare {
         }
 
         let next_cursor = if end < count { Some(end) } else { None };
-
         (results, next_cursor)
     }
-}
 
-    // ── Blacklist management ──────────────────────────────────
-
-    /// Add `investor` to the per-offering blacklist for `token`.
-    ///
-    /// Idempotent — calling with an already-blacklisted address is safe.
+    /// Add `investor` to the per-offering blacklist for `token`. Idempotent.
     pub fn blacklist_add(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
 
@@ -193,12 +166,11 @@ impl RevoraRevenueShare {
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
 
-        env.events().publish((EVENT_BL_ADD, token, caller), investor);
+        env.events()
+            .publish((EVENT_BL_ADD, token, caller), investor);
     }
 
-    /// Remove `investor` from the per-offering blacklist for `token`.
-    ///
-    /// Idempotent — calling when the address is not listed is safe.
+    /// Remove `investor` from the per-offering blacklist for `token`. Idempotent.
     pub fn blacklist_remove(env: Env, caller: Address, token: Address, investor: Address) {
         caller.require_auth();
 
@@ -212,7 +184,8 @@ impl RevoraRevenueShare {
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
 
-        env.events().publish((EVENT_BL_REM, token, caller), investor);
+        env.events()
+            .publish((EVENT_BL_REM, token, caller), investor);
     }
 
     /// Returns `true` if `investor` is blacklisted for `token`'s offering.

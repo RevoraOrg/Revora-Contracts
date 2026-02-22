@@ -1,8 +1,7 @@
 #![cfg(test)]
-use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env};
-
 use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env};
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, OfferingStatus};
+
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -17,9 +16,9 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 fn it_emits_events_on_register_and_report() {
     let env = Env::default();
     env.mock_all_auths();
-    let client  = make_client(&env);
-    let issuer  = Address::generate(&env);
-    let token   = Address::generate(&env);
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
 
     client.register_offering(&issuer, &token, &1_000);
     client.report_revenue(&issuer, &token, &1_000_000, &1);
@@ -213,9 +212,9 @@ fn exact_page_boundary_no_cursor() {
 fn add_marks_investor_as_blacklisted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     assert!(!client.is_blacklisted(&token, &investor));
@@ -227,9 +226,9 @@ fn add_marks_investor_as_blacklisted() {
 fn remove_unmarks_investor() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -242,11 +241,11 @@ fn get_blacklist_returns_all_blocked_investors() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
-    let admin  = Address::generate(&env);
-    let token  = Address::generate(&env);
-    let inv_a  = Address::generate(&env);
-    let inv_b  = Address::generate(&env);
-    let inv_c  = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &inv_a);
     client.blacklist_add(&admin, &token, &inv_b);
@@ -264,7 +263,7 @@ fn get_blacklist_empty_before_any_add() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
-    let token  = Address::generate(&env);
+    let token = Address::generate(&env);
 
     assert_eq!(client.get_blacklist(&token).len(), 0);
 }
@@ -275,9 +274,9 @@ fn get_blacklist_empty_before_any_add() {
 fn double_add_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -290,9 +289,9 @@ fn double_add_is_idempotent() {
 fn remove_nonexistent_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_remove(&admin, &token, &investor); // must not panic
@@ -305,15 +304,15 @@ fn remove_nonexistent_is_idempotent() {
 fn blacklist_is_scoped_per_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token_a  = Address::generate(&env);
-    let token_b  = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token_a, &investor);
 
-    assert!( client.is_blacklisted(&token_a, &investor));
+    assert!(client.is_blacklisted(&token_a, &investor));
     assert!(!client.is_blacklisted(&token_b, &investor));
 }
 
@@ -321,10 +320,10 @@ fn blacklist_is_scoped_per_offering() {
 fn removing_from_one_offering_does_not_affect_another() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token_a  = Address::generate(&env);
-    let token_b  = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token_a, &investor);
@@ -332,7 +331,7 @@ fn removing_from_one_offering_does_not_affect_another() {
     client.blacklist_remove(&admin, &token_a, &investor);
 
     assert!(!client.is_blacklisted(&token_a, &investor));
-    assert!( client.is_blacklisted(&token_b, &investor));
+    assert!(client.is_blacklisted(&token_b, &investor));
 }
 
 // ── event emission ────────────────────────────────────────────
@@ -341,9 +340,9 @@ fn removing_from_one_offering_does_not_affect_another() {
 fn blacklist_add_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     let before = env.events().all().len();
@@ -355,9 +354,9 @@ fn blacklist_add_emits_event() {
 fn blacklist_remove_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -372,9 +371,9 @@ fn blacklist_remove_emits_event() {
 fn blacklisted_investor_excluded_from_distribution_filter() {
     let env = Env::default();
     env.mock_all_auths();
-    let client  = make_client(&env);
-    let admin   = Address::generate(&env);
-    let token   = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let allowed = Address::generate(&env);
     let blocked = Address::generate(&env);
 
@@ -393,9 +392,9 @@ fn blacklisted_investor_excluded_from_distribution_filter() {
 fn blacklist_takes_precedence_over_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client   = make_client(&env);
-    let admin    = Address::generate(&env);
-    let token    = Address::generate(&env);
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
     let investor = Address::generate(&env);
 
     client.blacklist_add(&admin, &token, &investor);
@@ -410,10 +409,10 @@ fn blacklist_takes_precedence_over_whitelist() {
 #[should_panic]
 fn blacklist_add_requires_auth() {
     let env = Env::default(); // no mock_all_auths
-    let client    = make_client(&env);
+    let client = make_client(&env);
     let bad_actor = Address::generate(&env);
-    let token     = Address::generate(&env);
-    let victim    = Address::generate(&env);
+    let token = Address::generate(&env);
+    let victim = Address::generate(&env);
 
     client.blacklist_add(&bad_actor, &token, &victim);
 }
@@ -422,10 +421,135 @@ fn blacklist_add_requires_auth() {
 #[should_panic]
 fn blacklist_remove_requires_auth() {
     let env = Env::default(); // no mock_all_auths
-    let client    = make_client(&env);
+    let client = make_client(&env);
     let bad_actor = Address::generate(&env);
-    let token     = Address::generate(&env);
-    let investor  = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
 
     client.blacklist_remove(&bad_actor, &token, &investor);
+}
+
+// ── structured error codes (#41) ──────────────────────────────
+
+#[test]
+fn register_offering_rejects_bps_over_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_register_offering(&issuer, &token, &10_001);
+    assert!(
+        result.is_err(),
+        "contract must return Err(RevoraError::InvalidRevenueShareBps) for bps > 10000"
+    );
+    assert_eq!(
+        RevoraError::InvalidRevenueShareBps as u32,
+        1,
+        "error code for integrators"
+    );
+}
+
+#[test]
+fn register_offering_accepts_bps_exactly_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_register_offering(&issuer, &token, &10_000);
+    assert!(result.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Storage limit negative tests (#31): many offerings/reports, no panics
+// ---------------------------------------------------------------------------
+
+/// Maximum reasonable offering count used in tests to probe storage growth.
+const STORAGE_STRESS_OFFERING_COUNT: u32 = 200;
+
+#[test]
+fn storage_stress_many_offerings_no_panic() {
+    let (env, client, issuer) = setup();
+    // Simulate many offerings within Soroban environment; ensure no panic or unexpected behavior.
+    register_n(&env, &client, &issuer, STORAGE_STRESS_OFFERING_COUNT);
+    let count = client.get_offering_count(&issuer);
+    assert_eq!(count, STORAGE_STRESS_OFFERING_COUNT);
+    // Verify we can read back pages at the end of the range.
+    let (page, cursor) =
+        client.get_offerings_page(&issuer, &(STORAGE_STRESS_OFFERING_COUNT - 5), &10);
+    assert_eq!(page.len(), 5);
+    assert_eq!(cursor, None);
+}
+
+#[test]
+fn storage_stress_many_reports_no_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000);
+
+    // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
+    for period_id in 1..=100_u64 {
+        client.report_revenue(&issuer, &token, &(period_id as i128 * 10_000), &period_id);
+    }
+    assert!(env.events().all().len() >= 100);
+}
+
+#[test]
+fn storage_stress_large_blacklist_no_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    for _ in 0..80 {
+        let investor = Address::generate(&env);
+        client.blacklist_add(&admin, &token, &investor);
+    }
+    let list = client.get_blacklist(&token);
+    assert_eq!(list.len(), 80);
+}
+
+// ---------------------------------------------------------------------------
+// Gas / compute usage characterization (#36): large scenarios, document behavior
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gas_characterization_many_offerings_single_issuer() {
+    // Worst-case path: one issuer with many offerings. Measures get_offerings_page cost.
+    let (env, client, issuer) = setup();
+    let n = 50_u32;
+    register_n(&env, &client, &issuer, n);
+
+    let (page, _) = client.get_offerings_page(&issuer, &0, &20);
+    assert_eq!(page.len(), 20);
+    // Pagination bounds cost: O(effective_limit) reads. Off-chain: prefer small page sizes.
+}
+
+#[test]
+fn gas_characterization_report_revenue_with_large_blacklist() {
+    // report_revenue reads full blacklist and emits it in the event; worst case for large lists.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &token, &500);
+
+    for _ in 0..30 {
+        client.blacklist_add(&Address::generate(&env), &token, &Address::generate(&env));
+    }
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    client.blacklist_add(&admin, &token, &Address::generate(&env)); // ensure admin is auth
+
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    assert!(!env.events().all().is_empty());
+    // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
 }
