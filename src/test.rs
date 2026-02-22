@@ -1,12 +1,10 @@
 #![cfg(test)]
 use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env};
-
-use soroban_sdk::{testutils::Address as _, Address, Env};
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 
 // ── helper ────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -429,3 +427,90 @@ fn blacklist_remove_requires_auth() {
 
     client.blacklist_remove(&bad_actor, &token, &investor);
 }
+
+// ── revenue index ─────────────────────────────────────────────
+
+#[test]
+fn single_report_is_persisted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &5_000, &1);
+    assert_eq!(client.get_revenue_by_period(&token, &1), 5_000);
+}
+
+#[test]
+fn multiple_reports_same_period_accumulate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &3_000, &7);
+    client.report_revenue(&issuer, &token, &2_000, &7);
+    assert_eq!(client.get_revenue_by_period(&token, &7), 5_000);
+}
+
+#[test]
+fn empty_period_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let token  = Address::generate(&env);
+
+    assert_eq!(client.get_revenue_by_period(&token, &99), 0);
+}
+
+#[test]
+fn get_revenue_range_sums_periods() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_revenue(&issuer, &token, &2_000, &2);
+    client.report_revenue(&issuer, &token, &3_000, &3);
+
+    assert_eq!(client.get_revenue_range(&token, &1, &3), 6_000);
+    assert_eq!(client.get_revenue_range(&token, &2, &3), 5_000);
+    assert_eq!(client.get_revenue_range(&token, &1, &1), 1_000);
+}
+
+#[test]
+fn revenue_matches_event_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+    let amount: i128 = 42_000;
+
+    client.report_revenue(&issuer, &token, &amount, &5);
+
+    assert_eq!(client.get_revenue_by_period(&token, &5), amount);
+    assert!(!env.events().all().is_empty());
+}
+
+#[test]
+fn large_period_range_sums_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token  = Address::generate(&env);
+
+    for p in 1u64..=20u64 {
+        client.report_revenue(&issuer, &token, &100, &p);
+    }
+
+    assert_eq!(client.get_revenue_range(&token, &1, &20), 2_000);
+    assert_eq!(client.get_revenue_range(&token, &1, &10), 1_000);
+    assert_eq!(client.get_revenue_range(&token, &11, &20), 1_000);
+}
+

@@ -1,5 +1,4 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short,
     Address, Env, Map, Symbol, Vec,
@@ -7,24 +6,10 @@ use soroban_sdk::{
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
-const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
-const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
+const EVENT_BL_ADD: Symbol           = symbol_short!("bl_add");
+const EVENT_BL_REM: Symbol           = symbol_short!("bl_rem");
 
-// ── Storage key ──────────────────────────────────────────────
-/// One blacklist map per offering, keyed by the offering's token address.
-///
-/// Blacklist precedence rule: a blacklisted address is **always** excluded
-/// from payouts, regardless of any whitelist or investor registration.
-/// If the same address appears in both a whitelist and this blacklist,
-/// the blacklist wins unconditionally.
-#[contracttype]
-pub enum DataKey {
-    Blacklist(Address),
-}
-
-// ── Contract ─────────────────────────────────────────────────
-#[contract]
-pub struct RevoraRevenueShare;
+// ── Data structures ──────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -34,30 +19,29 @@ pub struct Offering {
     pub revenue_share_bps: u32,
 }
 
-/// Storage keys for offering persistence.
 #[contracttype]
-#[derive(Clone)]
 pub enum DataKey {
-    /// Total number of offerings registered by an issuer.
+    Blacklist(Address),
     OfferCount(Address),
-    /// Individual offering stored at (issuer, index).
     OfferItem(Address, u32),
+    RevenueIndex(Address, u64),
 }
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
 
-const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
+// ── Contract ─────────────────────────────────────────────────
+#[contract]
+pub struct RevoraRevenueShare;
 
 #[contractimpl]
 impl RevoraRevenueShare {
-    // ── Existing entry-points ─────────────────────────────────
+    // ── Offering management ───────────────────────────────────
 
     /// Register a new revenue-share offering.
     pub fn register_offering(env: Env, issuer: Address, token: Address, revenue_share_bps: u32) {
         issuer.require_auth();
 
-        // Persist the offering with an auto-incrementing index.
         let count_key = DataKey::OfferCount(issuer.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
@@ -79,7 +63,7 @@ impl RevoraRevenueShare {
 
     /// Record a revenue report for an offering.
     ///
-    /// The event payload now includes the current blacklist so off-chain
+    /// The event payload includes the current blacklist so off-chain
     /// distribution engines can filter recipients in the same atomic step.
     pub fn report_revenue(
         env: Env,
@@ -90,13 +74,30 @@ impl RevoraRevenueShare {
     ) {
         issuer.require_auth();
 
-        let blacklist = Self::get_blacklist(env.clone(), token.clone());
+        let rev_key = DataKey::RevenueIndex(token.clone(), period_id);
+        let current: i128 = env.storage().persistent().get(&rev_key).unwrap_or(0);
+        env.storage().persistent().set(&rev_key, &(current + amount));
 
+        let blacklist = Self::get_blacklist(env.clone(), token.clone());
         env.events().publish(
             (EVENT_REVENUE_REPORTED, issuer.clone(), token.clone()),
             (amount, period_id, blacklist),
         );
     }
+
+    pub fn get_revenue_by_period(env: Env, token: Address, period_id: u64) -> i128 {
+        let key = DataKey::RevenueIndex(token, period_id);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn get_revenue_range(env: Env, token: Address, from_period: u64, to_period: u64) -> i128 {
+        let mut total: i128 = 0;
+        for period in from_period..=to_period {
+            total += Self::get_revenue_by_period(env.clone(), token.clone(), period);
+        }
+        total
+    }
+
     /// Return the total number of offerings registered by `issuer`.
     pub fn get_offering_count(env: Env, issuer: Address) -> u32 {
         let count_key = DataKey::OfferCount(issuer);
@@ -120,14 +121,12 @@ impl RevoraRevenueShare {
     ) -> (Vec<Offering>, Option<u32>) {
         let count: u32 = Self::get_offering_count(env.clone(), issuer.clone());
 
-        // Clamp limit to MAX_PAGE_LIMIT; treat 0 as "use default max".
         let effective_limit = if limit == 0 || limit > MAX_PAGE_LIMIT {
             MAX_PAGE_LIMIT
         } else {
             limit
         };
 
-        // If start is beyond the total count, return empty.
         if start >= count {
             return (Vec::new(&env), None);
         }
@@ -145,7 +144,6 @@ impl RevoraRevenueShare {
 
         (results, next_cursor)
     }
-}
 
     // ── Blacklist management ──────────────────────────────────
 
