@@ -43,6 +43,29 @@ const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_SHARE_SET: Symbol = symbol_short!("share_set");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("delay_set");
+const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
+const EVENT_PROPOSAL_APPROVED: Symbol = symbol_short!("prop_app");
+const EVENT_PROPOSAL_EXECUTED: Symbol = symbol_short!("prop_exe");
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalAction {
+    SetAdmin(Address),
+    Freeze,
+    SetThreshold(u32),
+    AddOwner(Address),
+    RemoveOwner(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Proposal {
+    pub id: u32,
+    pub action: ProposalAction,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +151,14 @@ pub enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
+    /// Multisig admin threshold.
+    MultisigThreshold,
+    /// Multisig admin owners.
+    MultisigOwners,
+    /// Multisig proposal by ID.
+    MultisigProposal(u32),
+    /// Multisig proposal count.
+    MultisigProposalCount,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -824,7 +855,11 @@ impl RevoraRevenueShare {
     // ── Upgradeability guard and freeze (#32) ───────────────────
 
     /// Set the admin address. May only be called once; caller must authorize as the new admin.
+    /// If multisig is initialized, this function is disabled in favor of execute_action(SetAdmin).
     pub fn set_admin(env: Env, admin: Address) -> Result<(), RevoraError> {
+        if env.storage().persistent().has(&DataKey::MultisigThreshold) {
+            return Err(RevoraError::LimitReached);
+        }
         admin.require_auth();
         let key = DataKey::Admin;
         if env.storage().persistent().has(&key) {
@@ -842,7 +877,11 @@ impl RevoraRevenueShare {
 
     /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
     /// Emits event. Claim and read-only functions remain allowed.
+    /// If multisig is initialized, this function is disabled in favor of execute_action(Freeze).
     pub fn freeze(env: Env) -> Result<(), RevoraError> {
+        if env.storage().persistent().has(&DataKey::MultisigThreshold) {
+            return Err(RevoraError::LimitReached);
+        }
         let key = DataKey::Admin;
         let admin: Address = env
             .storage()
@@ -862,6 +901,164 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, bool>(&DataKey::Frozen)
             .unwrap_or(false)
+    }
+
+    // ── Multisig admin logic ───────────────────────────────────
+
+    /// Initialize the multisig admin system. May only be called once.
+    pub fn init_multisig(env: Env, owners: Vec<Address>, threshold: u32) -> Result<(), RevoraError> {
+        if env.storage().persistent().has(&DataKey::MultisigThreshold) {
+            return Err(RevoraError::LimitReached); // Already initialized
+        }
+        if threshold == 0 || threshold > owners.len() {
+            return Err(RevoraError::InvalidShareBps); // Improper threshold
+        }
+        for i in 0..owners.len() {
+            owners.get(i).unwrap().require_auth();
+        }
+        env.storage().persistent().set(&DataKey::MultisigThreshold, &threshold);
+        env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
+        env.storage().persistent().set(&DataKey::MultisigProposalCount, &0_u32);
+        Ok(())
+    }
+
+    /// Propose a sensitive administrative action.
+    pub fn propose_action(
+        env: Env,
+        proposer: Address,
+        action: ProposalAction,
+    ) -> Result<u32, RevoraError> {
+        proposer.require_auth();
+        Self::require_multisig_owner(&env, &proposer)?;
+
+        let count_key = DataKey::MultisigProposalCount;
+        let id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let proposal = Proposal {
+            id,
+            action,
+            proposer: proposer.clone(),
+            approvals: Vec::new(&env),
+            executed: false,
+        };
+
+        env.storage().persistent().set(&DataKey::MultisigProposal(id), &proposal);
+        env.storage().persistent().set(&count_key, &(id + 1));
+
+        env.events().publish((EVENT_PROPOSAL_CREATED, proposer), id);
+        Ok(id)
+    }
+
+    /// Approve an existing multisig proposal.
+    pub fn approve_action(env: Env, approver: Address, proposal_id: u32) -> Result<(), RevoraError> {
+        approver.require_auth();
+        Self::require_multisig_owner(&env, &approver)?;
+
+        let key = DataKey::MultisigProposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        if proposal.executed {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Check for duplicate approvals
+        for i in 0..proposal.approvals.len() {
+            if proposal.approvals.get(i).unwrap() == approver {
+                return Ok(()); // Already approved
+            }
+        }
+
+        proposal.approvals.push_back(approver.clone());
+        env.storage().persistent().set(&key, &proposal);
+
+        env.events().publish((EVENT_PROPOSAL_APPROVED, approver), proposal_id);
+        Ok(())
+    }
+
+    /// Execute a proposal if it has met the required threshold.
+    pub fn execute_action(env: Env, proposal_id: u32) -> Result<(), RevoraError> {
+        let key = DataKey::MultisigProposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        if proposal.executed {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let threshold: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MultisigThreshold)
+            .ok_or(RevoraError::LimitReached)?;
+
+        if proposal.approvals.len() < threshold {
+            return Err(RevoraError::LimitReached); // Threshold not met
+        }
+
+        // Execute the action
+        match proposal.action.clone() {
+            ProposalAction::SetAdmin(new_admin) => {
+                env.storage().persistent().set(&DataKey::Admin, &new_admin);
+            }
+            ProposalAction::Freeze => {
+                env.storage().persistent().set(&DataKey::Frozen, &true);
+                env.events().publish((EVENT_FREEZE, proposal.proposer.clone()), true);
+            }
+            ProposalAction::SetThreshold(new_threshold) => {
+                let owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                if new_threshold == 0 || new_threshold > owners.len() {
+                    return Err(RevoraError::InvalidShareBps);
+                }
+                env.storage().persistent().set(&DataKey::MultisigThreshold, &new_threshold);
+            }
+            ProposalAction::AddOwner(new_owner) => {
+                let mut owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                owners.push_back(new_owner);
+                env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
+            }
+            ProposalAction::RemoveOwner(old_owner) => {
+                let mut owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                let mut new_owners = Vec::new(&env);
+                for i in 0..owners.len() {
+                    let owner = owners.get(i).unwrap();
+                    if owner != old_owner {
+                        new_owners.push_back(owner);
+                    }
+                }
+                let threshold: u32 = env.storage().persistent().get(&DataKey::MultisigThreshold).unwrap();
+                if new_owners.len() < threshold || new_owners.len() == 0 {
+                    return Err(RevoraError::LimitReached); // Would break threshold
+                }
+                env.storage().persistent().set(&DataKey::MultisigOwners, &new_owners);
+            }
+        }
+
+        proposal.executed = true;
+        env.storage().persistent().set(&key, &proposal);
+
+        env.events().publish((EVENT_PROPOSAL_EXECUTED, proposal_id), true);
+        Ok(())
+    }
+
+    fn require_multisig_owner(env: &Env, caller: &Address) -> Result<(), RevoraError> {
+        let owners: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MultisigOwners)
+            .ok_or(RevoraError::LimitReached)?;
+        for i in 0..owners.len() {
+            if owners.get(i).unwrap() == *caller {
+                return Ok(());
+            }
+        }
+        Err(RevoraError::LimitReached)
     }
 }
 
