@@ -166,6 +166,62 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Internal helper for revenue deposits.
+    fn do_deposit_revenue(
+        env: &Env,
+        issuer: Address,
+        token: Address,
+        payment_token: Address,
+        amount: i128,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        // Verify offering exists
+        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Check period not already deposited
+        let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
+        if env.storage().persistent().has(&rev_key) {
+            return Err(RevoraError::PeriodAlreadyDeposited);
+        }
+
+        // Store or validate payment token for this offering
+        let pt_key = DataKey::PaymentToken(token.clone());
+        if let Some(existing_pt) = env.storage().persistent().get::<DataKey, Address>(&pt_key) {
+            if existing_pt != payment_token {
+                return Err(RevoraError::PaymentTokenMismatch);
+            }
+        } else {
+            env.storage().persistent().set(&pt_key, &payment_token);
+        }
+
+        // Transfer tokens from issuer to contract
+        let contract_addr = env.current_contract_address();
+        token::Client::new(env, &payment_token).transfer(&issuer, &contract_addr, &amount);
+
+        // Store period revenue
+        env.storage().persistent().set(&rev_key, &amount);
+
+        // Store deposit timestamp for time-delayed claims (#27)
+        let deposit_time = env.ledger().timestamp();
+        let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
+        env.storage().persistent().set(&time_key, &deposit_time);
+
+        // Append to indexed period list
+        let count_key = DataKey::PeriodCount(token.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let entry_key = DataKey::PeriodEntry(token.clone(), count);
+        env.storage().persistent().set(&entry_key, &period_id);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
+        env.events().publish(
+            (EVENT_REV_DEPOSIT, issuer, token),
+            (payment_token, amount, period_id),
+        );
+        Ok(())
+    }
+
     /// Register a new revenue-share offering.
     /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
     pub fn register_offering(
@@ -539,51 +595,14 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         issuer.require_auth();
 
-        // Verify offering exists
-        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
-            return Err(RevoraError::OfferingNotFound);
-        }
-
-        // Check period not already deposited
-        let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
-        if env.storage().persistent().has(&rev_key) {
-            return Err(RevoraError::PeriodAlreadyDeposited);
-        }
-
-        // Store or validate payment token for this offering
-        let pt_key = DataKey::PaymentToken(token.clone());
-        if let Some(existing_pt) = env.storage().persistent().get::<DataKey, Address>(&pt_key) {
-            if existing_pt != payment_token {
-                return Err(RevoraError::PaymentTokenMismatch);
-            }
-        } else {
-            env.storage().persistent().set(&pt_key, &payment_token);
-        }
-
-        // Transfer tokens from issuer to contract
-        let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &payment_token).transfer(&issuer, &contract_addr, &amount);
-
-        // Store period revenue
-        env.storage().persistent().set(&rev_key, &amount);
-
-        // Store deposit timestamp for time-delayed claims (#27)
-        let deposit_time = env.ledger().timestamp();
-        let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
-        env.storage().persistent().set(&time_key, &deposit_time);
-
-        // Append to indexed period list
-        let count_key = DataKey::PeriodCount(token.clone());
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-        let entry_key = DataKey::PeriodEntry(token.clone(), count);
-        env.storage().persistent().set(&entry_key, &period_id);
-        env.storage().persistent().set(&count_key, &(count + 1));
-
-        env.events().publish(
-            (EVENT_REV_DEPOSIT, issuer, token),
-            (payment_token, amount, period_id),
-        );
-        Ok(())
+        Self::do_deposit_revenue(
+            &env,
+            issuer,
+            token,
+            payment_token,
+            amount,
+            period_id,
+        )
     }
 
     /// Deposit revenue for an offering using a specific snapshot reference.
@@ -616,8 +635,8 @@ impl RevoraRevenueShare {
         }
 
         // 3. Delegate to core deposit logic
-        Self::deposit_revenue(
-            env.clone(),
+        Self::do_deposit_revenue(
+            &env,
             issuer.clone(),
             token.clone(),
             payment_token.clone(),
