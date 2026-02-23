@@ -46,7 +46,7 @@ fn it_emits_events_on_register_and_report() {
     let token = Address::generate(&env);
 
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
 
     assert!(env.events().all().len() >= 2);
 }
@@ -583,7 +583,13 @@ fn storage_stress_many_reports_no_panic() {
 
     // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
     for period_id in 1..=100_u64 {
-        client.report_revenue(&issuer, &token, &(period_id as i128 * 10_000), &period_id);
+        client.report_revenue(
+            &issuer,
+            &token,
+            &(period_id as i128 * 10_000),
+            &period_id,
+            &false,
+        );
     }
     assert!(env.events().all().len() >= 100);
 }
@@ -637,7 +643,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     env.mock_all_auths();
     client.blacklist_add(&admin, &token, &Address::generate(&env)); // ensure admin is auth
 
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
     assert!(!env.events().all().is_empty());
     // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
 }
@@ -654,7 +660,7 @@ fn concentration_limit_not_set_allows_report_revenue() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_revenue(&issuer, &token, &1_000, &1, &false);
 }
 
 #[test]
@@ -727,7 +733,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     client.register_offering(&issuer, &token, &1_000);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &6000);
-    let r = client.try_report_revenue(&issuer, &token, &1_000, &1);
+    let r = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
     assert!(
         r.is_err(),
         "report_revenue must fail when concentration exceeds limit with enforce=true"
@@ -744,9 +750,9 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     client.register_offering(&issuer, &token, &1_000);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5000);
-    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_revenue(&issuer, &token, &1_000, &1, &false);
     client.report_concentration(&issuer, &token, &4999);
-    client.report_revenue(&issuer, &token, &1_000, &2);
+    client.report_revenue(&issuer, &token, &1_000, &2, &false);
 }
 
 #[test]
@@ -760,7 +766,7 @@ fn concentration_near_threshold_boundary() {
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5001);
     assert!(client
-        .try_report_revenue(&issuer, &token, &1_000, &1)
+        .try_report_revenue(&issuer, &token, &1_000, &1, &false)
         .is_err());
 }
 
@@ -788,9 +794,9 @@ fn audit_summary_aggregates_revenue_and_count() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &100, &1);
-    client.report_revenue(&issuer, &token, &200, &2);
-    client.report_revenue(&issuer, &token, &300, &3);
+    client.report_revenue(&issuer, &token, &100, &1, &false);
+    client.report_revenue(&issuer, &token, &200, &2, &false);
+    client.report_revenue(&issuer, &token, &300, &3, &false);
     let summary = client.get_audit_summary(&issuer, &token).unwrap();
     assert_eq!(summary.total_revenue, 600);
     assert_eq!(summary.report_count, 3);
@@ -806,8 +812,8 @@ fn audit_summary_per_offering_isolation() {
     let token_b = Address::generate(&env);
     client.register_offering(&issuer, &token_a, &1_000);
     client.register_offering(&issuer, &token_b, &1_000);
-    client.report_revenue(&issuer, &token_a, &1000, &1);
-    client.report_revenue(&issuer, &token_b, &2000, &1);
+    client.report_revenue(&issuer, &token_a, &1000, &1, &false);
+    client.report_revenue(&issuer, &token_b, &2000, &1, &false);
     let sum_a = client.get_audit_summary(&issuer, &token_a).unwrap();
     let sum_b = client.get_audit_summary(&issuer, &token_b).unwrap();
     assert_eq!(sum_a.total_revenue, 1000);

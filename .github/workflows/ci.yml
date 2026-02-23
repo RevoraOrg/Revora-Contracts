@@ -2,13 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, develop]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, develop]
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: 'Rust toolchain version'
+        required: true
+        default: 'stable'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  toolchain: stable
 
 jobs:
   test:
@@ -20,6 +29,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache cargo
