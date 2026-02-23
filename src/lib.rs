@@ -1054,7 +1054,7 @@ impl RevoraRevenueShare {
                     .set(&DataKey::MultisigOwners, &owners);
             }
             ProposalAction::RemoveOwner(old_owner) => {
-                let mut owners: Vec<Address> = env
+                let owners: Vec<Address> = env
                     .storage()
                     .persistent()
                     .get(&DataKey::MultisigOwners)
@@ -1071,7 +1071,7 @@ impl RevoraRevenueShare {
                     .persistent()
                     .get(&DataKey::MultisigThreshold)
                     .unwrap();
-                if new_owners.len() < threshold || new_owners.len() == 0 {
+                if new_owners.len() < threshold || new_owners.is_empty() {
                     return Err(RevoraError::LimitReached); // Would break threshold
                 }
                 env.storage()
