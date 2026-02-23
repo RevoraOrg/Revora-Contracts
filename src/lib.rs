@@ -626,7 +626,9 @@ impl RevoraRevenueShare {
         )?;
 
         // 4. Update last snapshot and emit specialized event
-        env.storage().persistent().set(&snap_key, &snapshot_reference);
+        env.storage()
+            .persistent()
+            .set(&snap_key, &snapshot_reference);
         env.events().publish(
             (EVENT_REV_DEP_SNAP, issuer, token),
             (payment_token, amount, period_id, snapshot_reference),

@@ -1928,7 +1928,7 @@ fn deposit_revenue_with_snapshot_fails_when_disabled() {
         &1,
         &123456,
     );
-    
+
     // Should fail with SnapshotNotEnabled (12)
     assert!(result.is_err());
     let err = result.err().unwrap();
@@ -1940,24 +1940,39 @@ fn deposit_with_snapshot_enforces_monotonicity() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
     client.set_snapshot_config(&issuer, &token, &true);
-    
+
     // First deposit at ref 100
     client.deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &1, &100);
-    
+
     // Second deposit at ref 100 should fail (duplicate)
-    let r2 = client.try_deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &2, &100);
+    let r2 = client.try_deposit_revenue_with_snapshot(
+        &issuer,
+        &token,
+        &payment_token,
+        &10_000,
+        &2,
+        &100,
+    );
     assert!(r2.is_err());
     let err2 = r2.err().unwrap();
     assert!(matches!(err2, Ok(RevoraError::OutdatedSnapshot)));
 
     // Third deposit at ref 99 should fail (outdated)
-    let r3 = client.try_deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &3, &99);
+    let r3 =
+        client.try_deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &3, &99);
     assert!(r3.is_err());
     let err3 = r3.err().unwrap();
     assert!(matches!(err3, Ok(RevoraError::OutdatedSnapshot)));
 
     // Fourth deposit at ref 101 should succeed
-    let r4 = client.try_deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &4, &101);
+    let r4 = client.try_deposit_revenue_with_snapshot(
+        &issuer,
+        &token,
+        &payment_token,
+        &10_000,
+        &4,
+        &101,
+    );
     assert!(r4.is_ok());
     assert_eq!(client.get_last_snapshot_ref(&issuer, &token), 101);
 }
@@ -1968,9 +1983,9 @@ fn deposit_with_snapshot_emits_specialized_event() {
 
     client.set_snapshot_config(&issuer, &token, &true);
     let before = env.events().all().len();
-    
+
     client.deposit_revenue_with_snapshot(&issuer, &token, &payment_token, &10_000, &1, &1000);
-    
+
     let all_events = env.events().all();
     assert!(all_events.len() > before);
     // The last event should be rev_snap
@@ -1993,7 +2008,7 @@ fn set_snapshot_config_requires_auth() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     // No mock_all_auths
     let result = client.try_set_snapshot_config(&issuer, &token, &true);
     assert!(result.is_err());
