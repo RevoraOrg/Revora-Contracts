@@ -534,6 +534,69 @@ fn it_emits_events_on_register_and_report() {
     assert!(env.events().all().len() >= 2);
 }
 
+// ── period/amount fuzz coverage ───────────────────────────────
+
+#[test]
+fn fuzz_period_and_amount_boundaries_do_not_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let mut calls = 0usize;
+    for amount in BOUNDARY_AMOUNTS {
+        for period in BOUNDARY_PERIODS {
+            client.report_revenue(&issuer, &token, &amount, &period);
+            calls += 1;
+        }
+    }
+
+    assert_eq!(env.events().all().len(), calls as u32);
+}
+
+#[test]
+fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Same seed must produce the exact same sequence.
+    let mut seed_a = 0x00A1_1CE5_ED19_u64;
+    let mut seed_b = 0x00A1_1CE5_ED19_u64;
+    for _ in 0..64 {
+        assert_eq!(next_amount(&mut seed_a), next_amount(&mut seed_b));
+        assert_eq!(next_period(&mut seed_a), next_period(&mut seed_b));
+    }
+
+    // Reset and run deterministic fuzz-style inputs through contract entrypoint.
+    let mut seed = 0x00A1_1CE5_ED19_u64;
+    for i in 0..FUZZ_ITERATIONS {
+        let mut amount = next_amount(&mut seed);
+        let mut period = next_period(&mut seed);
+
+        // Periodically force hard boundaries into the sweep.
+        if i % 64 == 0 {
+            amount = i128::MAX;
+        } else if i % 64 == 1 {
+            amount = i128::MIN;
+        }
+        if i % 97 == 0 {
+            period = u64::MAX;
+        } else if i % 97 == 1 {
+            period = 0;
+        }
+
+        client.report_revenue(&issuer, &token, &amount, &period);
+    }
+
+    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32);
+}
+
 // ---------------------------------------------------------------------------
 // Pagination tests
 // ---------------------------------------------------------------------------
@@ -2373,4 +2436,111 @@ fn freeze_succeeds_when_called_by_admin() {
     let r = client.try_freeze();
     assert!(r.is_ok());
     assert!(client.is_frozen());
+}
+// ── Emergency pause tests ───────────────────────────────────────
+
+#[test]
+fn pause_unpause_idempotence_and_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    assert!(!client.is_paused());
+
+    // Pause twice (idempotent)
+    client.pause_admin(&admin);
+    assert!(client.is_paused());
+    client.pause_admin(&admin);
+    assert!(client.is_paused());
+
+    // Unpause twice (idempotent)
+    client.unpause_admin(&admin);
+    assert!(!client.is_paused());
+    client.unpause_admin(&admin);
+    assert!(!client.is_paused());
+
+    // Verify events were emitted
+    assert!(env.events().all().len() >= 5); // init + pause + pause + unpause + unpause
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn register_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.register_offering(&issuer, &token, &1_000);
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn report_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+}
+
+#[test]
+fn pause_safety_role_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let safety = Address::generate(&env);
+
+    client.initialize(&admin, &Some(safety.clone()));
+    assert!(!client.is_paused());
+
+    // Safety can pause
+    client.pause_safety(&safety);
+    assert!(client.is_paused());
+
+    // Safety can unpause
+    client.unpause_safety(&safety);
+    assert!(!client.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn blacklist_add_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.blacklist_add(&admin, &token, &investor);
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn blacklist_remove_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.blacklist_remove(&admin, &token, &investor);
 }
