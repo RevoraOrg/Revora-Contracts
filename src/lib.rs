@@ -906,7 +906,11 @@ impl RevoraRevenueShare {
     // ── Multisig admin logic ───────────────────────────────────
 
     /// Initialize the multisig admin system. May only be called once.
-    pub fn init_multisig(env: Env, owners: Vec<Address>, threshold: u32) -> Result<(), RevoraError> {
+    pub fn init_multisig(
+        env: Env,
+        owners: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey::MultisigThreshold) {
             return Err(RevoraError::LimitReached); // Already initialized
         }
@@ -916,9 +920,15 @@ impl RevoraRevenueShare {
         for i in 0..owners.len() {
             owners.get(i).unwrap().require_auth();
         }
-        env.storage().persistent().set(&DataKey::MultisigThreshold, &threshold);
-        env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
-        env.storage().persistent().set(&DataKey::MultisigProposalCount, &0_u32);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MultisigThreshold, &threshold);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MultisigOwners, &owners);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MultisigProposalCount, &0_u32);
         Ok(())
     }
 
@@ -942,7 +952,9 @@ impl RevoraRevenueShare {
             executed: false,
         };
 
-        env.storage().persistent().set(&DataKey::MultisigProposal(id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MultisigProposal(id), &proposal);
         env.storage().persistent().set(&count_key, &(id + 1));
 
         env.events().publish((EVENT_PROPOSAL_CREATED, proposer), id);
@@ -950,7 +962,11 @@ impl RevoraRevenueShare {
     }
 
     /// Approve an existing multisig proposal.
-    pub fn approve_action(env: Env, approver: Address, proposal_id: u32) -> Result<(), RevoraError> {
+    pub fn approve_action(
+        env: Env,
+        approver: Address,
+        proposal_id: u32,
+    ) -> Result<(), RevoraError> {
         approver.require_auth();
         Self::require_multisig_owner(&env, &approver)?;
 
@@ -975,7 +991,8 @@ impl RevoraRevenueShare {
         proposal.approvals.push_back(approver.clone());
         env.storage().persistent().set(&key, &proposal);
 
-        env.events().publish((EVENT_PROPOSAL_APPROVED, approver), proposal_id);
+        env.events()
+            .publish((EVENT_PROPOSAL_APPROVED, approver), proposal_id);
         Ok(())
     }
 
@@ -1009,22 +1026,39 @@ impl RevoraRevenueShare {
             }
             ProposalAction::Freeze => {
                 env.storage().persistent().set(&DataKey::Frozen, &true);
-                env.events().publish((EVENT_FREEZE, proposal.proposer.clone()), true);
+                env.events()
+                    .publish((EVENT_FREEZE, proposal.proposer.clone()), true);
             }
             ProposalAction::SetThreshold(new_threshold) => {
-                let owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                let owners: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::MultisigOwners)
+                    .unwrap();
                 if new_threshold == 0 || new_threshold > owners.len() {
                     return Err(RevoraError::InvalidShareBps);
                 }
-                env.storage().persistent().set(&DataKey::MultisigThreshold, &new_threshold);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::MultisigThreshold, &new_threshold);
             }
             ProposalAction::AddOwner(new_owner) => {
-                let mut owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                let mut owners: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::MultisigOwners)
+                    .unwrap();
                 owners.push_back(new_owner);
-                env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::MultisigOwners, &owners);
             }
             ProposalAction::RemoveOwner(old_owner) => {
-                let mut owners: Vec<Address> = env.storage().persistent().get(&DataKey::MultisigOwners).unwrap();
+                let mut owners: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::MultisigOwners)
+                    .unwrap();
                 let mut new_owners = Vec::new(&env);
                 for i in 0..owners.len() {
                     let owner = owners.get(i).unwrap();
@@ -1032,18 +1066,25 @@ impl RevoraRevenueShare {
                         new_owners.push_back(owner);
                     }
                 }
-                let threshold: u32 = env.storage().persistent().get(&DataKey::MultisigThreshold).unwrap();
+                let threshold: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::MultisigThreshold)
+                    .unwrap();
                 if new_owners.len() < threshold || new_owners.len() == 0 {
                     return Err(RevoraError::LimitReached); // Would break threshold
                 }
-                env.storage().persistent().set(&DataKey::MultisigOwners, &new_owners);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::MultisigOwners, &new_owners);
             }
         }
 
         proposal.executed = true;
         env.storage().persistent().set(&key, &proposal);
 
-        env.events().publish((EVENT_PROPOSAL_EXECUTED, proposal_id), true);
+        env.events()
+            .publish((EVENT_PROPOSAL_EXECUTED, proposal_id), true);
         Ok(())
     }
 
