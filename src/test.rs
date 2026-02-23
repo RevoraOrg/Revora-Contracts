@@ -13,6 +13,28 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     RevoraRevenueShareClient::new(env, &id)
 }
 
+const BOUNDARY_AMOUNTS: [i128; 7] = [i128::MIN, i128::MIN + 1, -1, 0, 1, i128::MAX - 1, i128::MAX];
+const BOUNDARY_PERIODS: [u64; 6] = [0, 1, 2, 10_000, u64::MAX - 1, u64::MAX];
+const FUZZ_ITERATIONS: usize = 128;
+
+fn next_u64(seed: &mut u64) -> u64 {
+    // Deterministic LCG for repeatable pseudo-random test values.
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *seed
+}
+
+fn next_amount(seed: &mut u64) -> i128 {
+    let hi = next_u64(seed) as u128;
+    let lo = next_u64(seed) as u128;
+    ((hi << 64) | lo) as i128
+}
+
+fn next_period(seed: &mut u64) -> u64 {
+    next_u64(seed)
+}
+
 // ── original smoke test ───────────────────────────────────────
 
 #[test]
@@ -24,9 +46,72 @@ fn it_emits_events_on_register_and_report() {
     let token = Address::generate(&env);
 
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
 
     assert!(env.events().all().len() >= 2);
+}
+
+// ── period/amount fuzz coverage ───────────────────────────────
+
+#[test]
+fn fuzz_period_and_amount_boundaries_do_not_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let mut calls = 0usize;
+    for amount in BOUNDARY_AMOUNTS {
+        for period in BOUNDARY_PERIODS {
+            client.report_revenue(&issuer, &token, &amount, &period);
+            calls += 1;
+        }
+    }
+
+    assert_eq!(env.events().all().len(), calls as u32);
+}
+
+#[test]
+fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Same seed must produce the exact same sequence.
+    let mut seed_a = 0x00A1_1CE5_ED19_u64;
+    let mut seed_b = 0x00A1_1CE5_ED19_u64;
+    for _ in 0..64 {
+        assert_eq!(next_amount(&mut seed_a), next_amount(&mut seed_b));
+        assert_eq!(next_period(&mut seed_a), next_period(&mut seed_b));
+    }
+
+    // Reset and run deterministic fuzz-style inputs through contract entrypoint.
+    let mut seed = 0x00A1_1CE5_ED19_u64;
+    for i in 0..FUZZ_ITERATIONS {
+        let mut amount = next_amount(&mut seed);
+        let mut period = next_period(&mut seed);
+
+        // Periodically force hard boundaries into the sweep.
+        if i % 64 == 0 {
+            amount = i128::MAX;
+        } else if i % 64 == 1 {
+            amount = i128::MIN;
+        }
+        if i % 97 == 0 {
+            period = u64::MAX;
+        } else if i % 97 == 1 {
+            period = 0;
+        }
+
+        client.report_revenue(&issuer, &token, &amount, &period);
+    }
+
+    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +583,13 @@ fn storage_stress_many_reports_no_panic() {
 
     // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
     for period_id in 1..=100_u64 {
-        client.report_revenue(&issuer, &token, &(period_id as i128 * 10_000), &period_id);
+        client.report_revenue(
+            &issuer,
+            &token,
+            &(period_id as i128 * 10_000),
+            &period_id,
+            &false,
+        );
     }
     assert!(env.events().all().len() >= 100);
 }
@@ -552,7 +643,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     env.mock_all_auths();
     client.blacklist_add(&admin, &token, &Address::generate(&env)); // ensure admin is auth
 
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
     assert!(!env.events().all().is_empty());
     // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
 }
@@ -569,7 +660,7 @@ fn concentration_limit_not_set_allows_report_revenue() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_revenue(&issuer, &token, &1_000, &1, &false);
 }
 
 #[test]
@@ -642,7 +733,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     client.register_offering(&issuer, &token, &1_000);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &6000);
-    let r = client.try_report_revenue(&issuer, &token, &1_000, &1);
+    let r = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
     assert!(
         r.is_err(),
         "report_revenue must fail when concentration exceeds limit with enforce=true"
@@ -659,9 +750,9 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     client.register_offering(&issuer, &token, &1_000);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5000);
-    client.report_revenue(&issuer, &token, &1_000, &1);
+    client.report_revenue(&issuer, &token, &1_000, &1, &false);
     client.report_concentration(&issuer, &token, &4999);
-    client.report_revenue(&issuer, &token, &1_000, &2);
+    client.report_revenue(&issuer, &token, &1_000, &2, &false);
 }
 
 #[test]
@@ -675,7 +766,7 @@ fn concentration_near_threshold_boundary() {
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5001);
     assert!(client
-        .try_report_revenue(&issuer, &token, &1_000, &1)
+        .try_report_revenue(&issuer, &token, &1_000, &1, &false)
         .is_err());
 }
 
@@ -703,9 +794,9 @@ fn audit_summary_aggregates_revenue_and_count() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &100, &1);
-    client.report_revenue(&issuer, &token, &200, &2);
-    client.report_revenue(&issuer, &token, &300, &3);
+    client.report_revenue(&issuer, &token, &100, &1, &false);
+    client.report_revenue(&issuer, &token, &200, &2, &false);
+    client.report_revenue(&issuer, &token, &300, &3, &false);
     let summary = client.get_audit_summary(&issuer, &token).unwrap();
     assert_eq!(summary.total_revenue, 600);
     assert_eq!(summary.report_count, 3);
@@ -721,8 +812,8 @@ fn audit_summary_per_offering_isolation() {
     let token_b = Address::generate(&env);
     client.register_offering(&issuer, &token_a, &1_000);
     client.register_offering(&issuer, &token_b, &1_000);
-    client.report_revenue(&issuer, &token_a, &1000, &1);
-    client.report_revenue(&issuer, &token_b, &2000, &1);
+    client.report_revenue(&issuer, &token_a, &1000, &1, &false);
+    client.report_revenue(&issuer, &token_b, &2000, &1, &false);
     let sum_a = client.get_audit_summary(&issuer, &token_a).unwrap();
     let sum_b = client.get_audit_summary(&issuer, &token_b).unwrap();
     assert_eq!(sum_a.total_revenue, 1000);
@@ -1875,4 +1966,111 @@ fn freeze_succeeds_when_called_by_admin() {
     let r = client.try_freeze();
     assert!(r.is_ok());
     assert!(client.is_frozen());
+}
+// ── Emergency pause tests ───────────────────────────────────────
+
+#[test]
+fn pause_unpause_idempotence_and_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    assert!(!client.is_paused());
+
+    // Pause twice (idempotent)
+    client.pause_admin(&admin);
+    assert!(client.is_paused());
+    client.pause_admin(&admin);
+    assert!(client.is_paused());
+
+    // Unpause twice (idempotent)
+    client.unpause_admin(&admin);
+    assert!(!client.is_paused());
+    client.unpause_admin(&admin);
+    assert!(!client.is_paused());
+
+    // Verify events were emitted
+    assert!(env.events().all().len() >= 5); // init + pause + pause + unpause + unpause
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn register_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.register_offering(&issuer, &token, &1_000);
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn report_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.report_revenue(&issuer, &token, &1_000_000, &1);
+}
+
+#[test]
+fn pause_safety_role_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let safety = Address::generate(&env);
+
+    client.initialize(&admin, &Some(safety.clone()));
+    assert!(!client.is_paused());
+
+    // Safety can pause
+    client.pause_safety(&safety);
+    assert!(client.is_paused());
+
+    // Safety can unpause
+    client.unpause_safety(&safety);
+    assert!(!client.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn blacklist_add_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.blacklist_add(&admin, &token, &investor);
+}
+
+#[test]
+#[should_panic(expected = "contract is paused")]
+fn blacklist_remove_blocked_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>);
+    client.pause_admin(&admin);
+    client.blacklist_remove(&admin, &token, &investor);
 }
