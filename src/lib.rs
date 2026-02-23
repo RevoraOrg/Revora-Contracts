@@ -43,6 +43,9 @@ const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_SHARE_SET: Symbol = symbol_short!("share_set");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("delay_set");
+const EVENT_INIT: Symbol = symbol_short!("init");
+const EVENT_PAUSED: Symbol = symbol_short!("paused");
+const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +131,10 @@ pub enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
+    /// Safety role address for emergency pause (#7).
+    Safety,
+    /// Global pause flag; when true, state-mutating ops are disabled (#7).
+    Paused,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -156,6 +163,102 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Initialize admin and optional safety role for emergency pause (#7).
+    /// Can only be called once; panics if already initialized.
+    pub fn initialize(env: Env, admin: Address, safety: Option<Address>) {
+        if env.storage().persistent().has(&DataKey::Admin) {
+            panic!("already initialized");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Admin, &admin.clone());
+        if let Some(s) = safety.clone() {
+            env.storage().persistent().set(&DataKey::Safety, &s);
+        }
+        env.storage().persistent().set(&DataKey::Paused, &false);
+        env.events().publish((EVENT_INIT, admin.clone()), (safety,));
+    }
+
+    /// Pause the contract (admin only). Idempotent.
+    pub fn pause_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        if caller != admin {
+            panic!("not admin");
+        }
+        env.storage().persistent().set(&DataKey::Paused, &true);
+        env.events().publish((EVENT_PAUSED, caller.clone()), ());
+    }
+
+    /// Unpause the contract (admin only). Idempotent.
+    pub fn unpause_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        if caller != admin {
+            panic!("not admin");
+        }
+        env.storage().persistent().set(&DataKey::Paused, &false);
+        env.events().publish((EVENT_UNPAUSED, caller.clone()), ());
+    }
+
+    /// Pause the contract (safety role only). Idempotent.
+    pub fn pause_safety(env: Env, caller: Address) {
+        caller.require_auth();
+        let safety: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Safety)
+            .expect("safety not set");
+        if caller != safety {
+            panic!("not safety");
+        }
+        env.storage().persistent().set(&DataKey::Paused, &true);
+        env.events().publish((EVENT_PAUSED, caller.clone()), ());
+    }
+
+    /// Unpause the contract (safety role only). Idempotent.
+    pub fn unpause_safety(env: Env, caller: Address) {
+        caller.require_auth();
+        let safety: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Safety)
+            .expect("safety not set");
+        if caller != safety {
+            panic!("not safety");
+        }
+        env.storage().persistent().set(&DataKey::Paused, &false);
+        env.events().publish((EVENT_UNPAUSED, caller.clone()), ());
+    }
+
+    /// Query the paused state of the contract.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Helper: panic if contract is paused. Used by state-mutating entrypoints.
+    fn require_not_paused(env: &Env) {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            panic!("contract is paused");
+        }
+    }
+
     /// Register a new revenue-share offering.
     /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
     pub fn register_offering(
@@ -165,6 +268,7 @@ impl RevoraRevenueShare {
         revenue_share_bps: u32,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
         issuer.require_auth();
 
         if revenue_share_bps > 10_000 {
@@ -224,6 +328,7 @@ impl RevoraRevenueShare {
         period_id: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
         issuer.require_auth();
 
         // Holder concentration guardrail (#26): reject if enforce and over limit
@@ -312,6 +417,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
         caller.require_auth();
 
         let key = DataKey::Blacklist(token.clone());
@@ -337,6 +443,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
         caller.require_auth();
 
         let key = DataKey::Blacklist(token.clone());
