@@ -1885,16 +1885,16 @@ fn freeze_succeeds_when_called_by_admin() {
 fn set_snapshot_config_stores_and_returns_config() {
     let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
 
-    assert_eq!(client.get_snapshot_config(&issuer, &token), false);
+    assert!(!client.get_snapshot_config(&issuer, &token));
     client.set_snapshot_config(&issuer, &token, &true);
-    assert_eq!(client.get_snapshot_config(&issuer, &token), true);
+    assert!(client.get_snapshot_config(&issuer, &token));
     client.set_snapshot_config(&issuer, &token, &false);
-    assert_eq!(client.get_snapshot_config(&issuer, &token), false);
+    assert!(!client.get_snapshot_config(&issuer, &token));
 }
 
 #[test]
 fn deposit_revenue_with_snapshot_succeeds_when_enabled() {
-    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
     client.set_snapshot_config(&issuer, &token, &true);
     let snapshot_ref: u64 = 123456;
@@ -1937,7 +1937,7 @@ fn deposit_revenue_with_snapshot_fails_when_disabled() {
 
 #[test]
 fn deposit_with_snapshot_enforces_monotonicity() {
-    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
     client.set_snapshot_config(&issuer, &token, &true);
 
