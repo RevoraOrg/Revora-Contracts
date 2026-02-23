@@ -1,5 +1,8 @@
 #![cfg(test)]
-use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env};
+use soroban_sdk::{
+    testutils::Address as _, testutils::Events as _, testutils::Ledger as _, token, Address, Env,
+    Vec,
+};
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
@@ -823,4 +826,1059 @@ fn compute_share_no_overflow_bounds() {
     assert_eq!(share, amount);
     let share2 = client.compute_share(&amount, &10_000, &RoundingMode::RoundHalfUp);
     assert_eq!(share2, amount);
+}
+
+// ===========================================================================
+// Multi-period aggregated claim tests
+// ===========================================================================
+
+/// Helper: create a Stellar Asset Contract for testing token transfers.
+/// Returns (token_contract_address, admin_address).
+fn create_payment_token(env: &Env) -> (Address, Address) {
+    let admin = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    (token_id.address().clone(), admin)
+}
+
+/// Mint `amount` of payment token to `recipient`.
+fn mint_tokens(
+    env: &Env,
+    payment_token: &Address,
+    admin: &Address,
+    recipient: &Address,
+    amount: &i128,
+) {
+    let _ = admin;
+    token::StellarAssetClient::new(env, payment_token).mint(recipient, amount);
+}
+
+/// Check balance of `who` for `payment_token`.
+fn balance(env: &Env, payment_token: &Address, who: &Address) -> i128 {
+    token::Client::new(env, payment_token).balance(who)
+}
+
+/// Full setup for claim tests: env, client, issuer, offering token, payment token, contract addr.
+fn claim_setup() -> (
+    Env,
+    RevoraRevenueShareClient<'static>,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    // Register offering
+    client.register_offering(&issuer, &token, &5_000); // 50% revenue share
+
+    // Mint payment tokens to the issuer so they can deposit
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+
+    (env, client, issuer, token, payment_token, contract_id)
+}
+
+// ── deposit_revenue tests ─────────────────────────────────────
+
+#[test]
+fn deposit_revenue_stores_period_data() {
+    let (env, client, issuer, token, payment_token, contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    assert_eq!(client.get_period_count(&token), 1);
+    // Contract should hold the deposited tokens
+    assert_eq!(balance(&env, &payment_token, &contract_id), 100_000);
+}
+
+#[test]
+fn deposit_revenue_multiple_periods() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+
+    assert_eq!(client.get_period_count(&token), 3);
+}
+
+#[test]
+fn deposit_revenue_fails_for_nonexistent_offering() {
+    let (env, client, issuer, _token, payment_token, _contract_id) = claim_setup();
+    let unknown_token = Address::generate(&env);
+
+    let result = client.try_deposit_revenue(&issuer, &unknown_token, &payment_token, &100_000, &1);
+    assert!(result.is_err());
+}
+
+#[test]
+fn deposit_revenue_fails_for_duplicate_period() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    let result = client.try_deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    assert!(result.is_err());
+}
+
+#[test]
+fn deposit_revenue_fails_for_payment_token_mismatch() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    // Try to deposit with a different payment token
+    let (other_pt, other_admin) = create_payment_token(&env);
+    mint_tokens(&env, &other_pt, &other_admin, &issuer, &1_000_000);
+    let result = client.try_deposit_revenue(&issuer, &token, &other_pt, &100_000, &2);
+    assert!(result.is_err());
+}
+
+#[test]
+fn deposit_revenue_emits_event() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    let before = env.events().all().len();
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn deposit_revenue_transfers_tokens() {
+    let (env, client, issuer, token, payment_token, contract_id) = claim_setup();
+
+    let issuer_balance_before = balance(&env, &payment_token, &issuer);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    assert_eq!(
+        balance(&env, &payment_token, &issuer),
+        issuer_balance_before - 100_000
+    );
+    assert_eq!(balance(&env, &payment_token, &contract_id), 100_000);
+}
+
+#[test]
+fn deposit_revenue_sparse_period_ids() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    // Deposit with non-sequential period IDs
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &10);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &50);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &100);
+
+    assert_eq!(client.get_period_count(&token), 3);
+}
+
+#[test]
+#[should_panic]
+fn deposit_revenue_requires_auth() {
+    let env = Env::default();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let tok = Address::generate(&env);
+    // No mock_all_auths — should panic on require_auth
+    client.deposit_revenue(&issuer, &tok, &Address::generate(&env), &100, &1);
+}
+
+// ── set_holder_share tests ────────────────────────────────────
+
+#[test]
+fn set_holder_share_stores_share() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &2_500); // 25%
+    assert_eq!(client.get_holder_share(&token, &holder), 2_500);
+}
+
+#[test]
+fn set_holder_share_updates_existing() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    assert_eq!(client.get_holder_share(&token, &holder), 5_000);
+}
+
+#[test]
+fn set_holder_share_fails_for_nonexistent_offering() {
+    let (env, client, issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let unknown_token = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let result = client.try_set_holder_share(&issuer, &unknown_token, &holder, &2_500);
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_holder_share_fails_for_bps_over_10000() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    let result = client.try_set_holder_share(&issuer, &token, &holder, &10_001);
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_holder_share_accepts_bps_exactly_10000() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    let result = client.try_set_holder_share(&issuer, &token, &holder, &10_000);
+    assert!(result.is_ok());
+    assert_eq!(client.get_holder_share(&token, &holder), 10_000);
+}
+
+#[test]
+fn set_holder_share_emits_event() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    let before = env.events().all().len();
+    client.set_holder_share(&issuer, &token, &holder, &2_500);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn get_holder_share_returns_zero_for_unknown() {
+    let (env, client, _issuer, token, _payment_token, _contract_id) = claim_setup();
+    let unknown = Address::generate(&env);
+    assert_eq!(client.get_holder_share(&token, &unknown), 0);
+}
+
+// ── claim tests (core multi-period aggregation) ───────────────
+
+#[test]
+fn claim_single_period() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    let payout = client.claim(&holder, &token, &1);
+    assert_eq!(payout, 50_000); // 50% of 100_000
+    assert_eq!(balance(&env, &payment_token, &holder), 50_000);
+}
+
+#[test]
+fn claim_multiple_periods_aggregated() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &2_000); // 20%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+
+    // Claim all 3 periods in one transaction
+    // 20% of (100k + 200k + 300k) = 20% of 600k = 120k
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 120_000);
+    assert_eq!(balance(&env, &payment_token, &holder), 120_000);
+}
+
+#[test]
+fn claim_max_periods_zero_claims_all() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+    for i in 1..=5_u64 {
+        client.deposit_revenue(&issuer, &token, &payment_token, &10_000, &i);
+    }
+
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 50_000); // 100% of 5 * 10k
+}
+
+#[test]
+fn claim_partial_then_rest() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+
+    // Claim first 2 periods
+    let payout1 = client.claim(&holder, &token, &2);
+    assert_eq!(payout1, 300_000); // 100k + 200k
+
+    // Claim remaining period
+    let payout2 = client.claim(&holder, &token, &0);
+    assert_eq!(payout2, 300_000); // 300k
+
+    assert_eq!(balance(&env, &payment_token, &holder), 600_000);
+}
+
+#[test]
+fn claim_no_double_counting() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    let payout1 = client.claim(&holder, &token, &0);
+    assert_eq!(payout1, 100_000);
+
+    // Second claim should fail - nothing pending
+    let result = client.try_claim(&holder, &token, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_advances_index_correctly() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    // Claim period 1 only
+    client.claim(&holder, &token, &1);
+
+    // Deposit another period
+    client.deposit_revenue(&issuer, &token, &payment_token, &400_000, &3);
+
+    // Claim remaining - should get periods 2 and 3 only
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 300_000); // 50% of (200k + 400k)
+}
+
+#[test]
+fn claim_emits_event() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    let before = env.events().all().len();
+    client.claim(&holder, &token, &0);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn claim_fails_for_blacklisted_holder() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    // Blacklist the holder
+    client.blacklist_add(&issuer, &token, &holder);
+
+    let result = client.try_claim(&holder, &token, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_fails_when_no_pending_periods() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    // No deposits made
+    let result = client.try_claim(&holder, &token, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_fails_for_zero_share_holder() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    // Don't set any share
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    let result = client.try_claim(&holder, &token, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_sparse_period_ids() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+
+    // Non-sequential period IDs
+    client.deposit_revenue(&issuer, &token, &payment_token, &50_000, &10);
+    client.deposit_revenue(&issuer, &token, &payment_token, &75_000, &50);
+    client.deposit_revenue(&issuer, &token, &payment_token, &125_000, &100);
+
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 250_000); // 50k + 75k + 125k
+}
+
+#[test]
+fn claim_multiple_holders_same_periods() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder_a, &3_000); // 30%
+    client.set_holder_share(&issuer, &token, &holder_b, &2_000); // 20%
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    let payout_a = client.claim(&holder_a, &token, &0);
+    let payout_b = client.claim(&holder_b, &token, &0);
+
+    // A: 30% of 300k = 90k; B: 20% of 300k = 60k
+    assert_eq!(payout_a, 90_000);
+    assert_eq!(payout_b, 60_000);
+    assert_eq!(balance(&env, &payment_token, &holder_a), 90_000);
+    assert_eq!(balance(&env, &payment_token, &holder_b), 60_000);
+}
+
+#[test]
+fn claim_with_max_periods_cap() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+
+    // Deposit 5 periods
+    for i in 1..=5_u64 {
+        client.deposit_revenue(&issuer, &token, &payment_token, &10_000, &i);
+    }
+
+    // Claim only 3 at a time
+    let payout1 = client.claim(&holder, &token, &3);
+    assert_eq!(payout1, 30_000);
+
+    let payout2 = client.claim(&holder, &token, &3);
+    assert_eq!(payout2, 20_000); // only 2 remaining
+
+    // No more pending
+    let result = client.try_claim(&holder, &token, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn claim_zero_revenue_periods_still_advance() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+
+    // Deposit zero-value periods followed by a real one
+    client.deposit_revenue(&issuer, &token, &payment_token, &0, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &0, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &3);
+
+    // Claim first 2 (zero-value) - payout is 0 but index advances
+    let payout1 = client.claim(&holder, &token, &2);
+    assert_eq!(payout1, 0);
+
+    // Now claim the real period
+    let payout2 = client.claim(&holder, &token, &0);
+    assert_eq!(payout2, 100_000);
+}
+
+#[test]
+#[should_panic]
+fn claim_requires_auth() {
+    let env = Env::default();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let holder = Address::generate(&env);
+    // No mock_all_auths — should panic on require_auth
+    client.claim(&holder, &Address::generate(&env), &0);
+}
+
+// ── view function tests ───────────────────────────────────────
+
+#[test]
+fn get_pending_periods_returns_unclaimed() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &10);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &20);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &30);
+
+    let pending = client.get_pending_periods(&token, &holder);
+    assert_eq!(pending.len(), 3);
+    assert_eq!(pending.get(0).unwrap(), 10);
+    assert_eq!(pending.get(1).unwrap(), 20);
+    assert_eq!(pending.get(2).unwrap(), 30);
+}
+
+#[test]
+fn get_pending_periods_after_partial_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+
+    // Claim first 2
+    client.claim(&holder, &token, &2);
+
+    let pending = client.get_pending_periods(&token, &holder);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.get(0).unwrap(), 3);
+}
+
+#[test]
+fn get_pending_periods_empty_after_full_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    client.claim(&holder, &token, &0);
+
+    let pending = client.get_pending_periods(&token, &holder);
+    assert_eq!(pending.len(), 0);
+}
+
+#[test]
+fn get_pending_periods_empty_for_new_holder() {
+    let (env, client, _issuer, token, _payment_token, _contract_id) = claim_setup();
+    let unknown = Address::generate(&env);
+
+    let pending = client.get_pending_periods(&token, &unknown);
+    assert_eq!(pending.len(), 0);
+}
+
+#[test]
+fn get_claimable_returns_correct_amount() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &2_500); // 25%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    let claimable = client.get_claimable(&token, &holder);
+    assert_eq!(claimable, 75_000); // 25% of 300k
+}
+
+#[test]
+fn get_claimable_after_partial_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    client.claim(&holder, &token, &1); // claim period 1
+
+    let claimable = client.get_claimable(&token, &holder);
+    assert_eq!(claimable, 200_000); // only period 2 remains
+}
+
+#[test]
+fn get_claimable_returns_zero_for_unknown_holder() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(client.get_claimable(&token, &unknown), 0);
+}
+
+#[test]
+fn get_claimable_returns_zero_after_full_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    client.claim(&holder, &token, &0);
+    assert_eq!(client.get_claimable(&token, &holder), 0);
+}
+
+#[test]
+fn get_period_count_default_zero() {
+    let (env, client, _issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let random_token = Address::generate(&env);
+    assert_eq!(client.get_period_count(&random_token), 0);
+}
+
+// ── multi-holder correctness ──────────────────────────────────
+
+#[test]
+fn multiple_holders_independent_claim_indices() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder_a, &5_000); // 50%
+    client.set_holder_share(&issuer, &token, &holder_b, &3_000); // 30%
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    // A claims period 1 only
+    client.claim(&holder_a, &token, &1);
+
+    // B still has both periods pending
+    let pending_b = client.get_pending_periods(&token, &holder_b);
+    assert_eq!(pending_b.len(), 2);
+
+    // B claims all
+    let payout_b = client.claim(&holder_b, &token, &0);
+    assert_eq!(payout_b, 90_000); // 30% of 300k
+
+    // A claims remaining period 2
+    let payout_a = client.claim(&holder_a, &token, &0);
+    assert_eq!(payout_a, 100_000); // 50% of 200k
+
+    assert_eq!(balance(&env, &payment_token, &holder_a), 150_000); // 50k + 100k
+    assert_eq!(balance(&env, &payment_token, &holder_b), 90_000);
+}
+
+#[test]
+fn claim_after_holder_share_change() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50%
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+
+    // Claim at 50%
+    let payout1 = client.claim(&holder, &token, &0);
+    assert_eq!(payout1, 50_000);
+
+    // Change share to 25% and deposit new period
+    client.set_holder_share(&issuer, &token, &holder, &2_500);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &2);
+
+    // Claim at new 25% rate
+    let payout2 = client.claim(&holder, &token, &0);
+    assert_eq!(payout2, 25_000);
+}
+
+// ── stress / gas characterization for claims ──────────────────
+
+#[test]
+fn claim_many_periods_stress() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &1_000); // 10%
+
+    // Deposit 50 periods (MAX_CLAIM_PERIODS)
+    for i in 1..=50_u64 {
+        client.deposit_revenue(&issuer, &token, &payment_token, &10_000, &i);
+    }
+
+    // Claim all 50 in one transaction
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 50_000); // 10% of 50 * 10k
+
+    let pending = client.get_pending_periods(&token, &holder);
+    assert_eq!(pending.len(), 0);
+    // Gas note: claim iterates over 50 periods, each requiring 2 storage reads
+    // (PeriodEntry + PeriodRevenue). Total: ~100 persistent reads + 1 write
+    // for LastClaimedIdx + 1 token transfer. Well within Soroban compute limits.
+}
+
+#[test]
+fn claim_exceeding_max_is_capped() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+
+    // Deposit 55 periods (more than MAX_CLAIM_PERIODS of 50)
+    for i in 1..=55_u64 {
+        client.deposit_revenue(&issuer, &token, &payment_token, &1_000, &i);
+    }
+
+    // Request 100 periods - should be capped at 50
+    let payout1 = client.claim(&holder, &token, &100);
+    assert_eq!(payout1, 50_000); // 50 * 1k
+
+    // 5 remaining
+    let pending = client.get_pending_periods(&token, &holder);
+    assert_eq!(pending.len(), 5);
+
+    let payout2 = client.claim(&holder, &token, &0);
+    assert_eq!(payout2, 5_000);
+}
+
+#[test]
+fn get_claimable_stress_many_periods() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50%
+
+    let period_count = 40_u64;
+    let amount_per_period: i128 = 10_000;
+    for i in 1..=period_count {
+        client.deposit_revenue(&issuer, &token, &payment_token, &amount_per_period, &i);
+    }
+
+    let claimable = client.get_claimable(&token, &holder);
+    assert_eq!(claimable, (period_count as i128) * amount_per_period / 2);
+    // Gas note: get_claimable is a read-only view that iterates all unclaimed periods.
+    // Cost: O(n) persistent reads. For 40 periods: ~80 reads. Acceptable for views.
+}
+
+// ── edge cases ────────────────────────────────────────────────
+
+#[test]
+fn claim_with_rounding() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &3_333); // 33.33%
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100, &1);
+
+    // 100 * 3333 / 10000 = 33 (integer division, rounds down)
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 33);
+}
+
+#[test]
+fn claim_single_unit_revenue() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+    client.deposit_revenue(&issuer, &token, &payment_token, &1, &1);
+
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 1);
+}
+
+#[test]
+fn deposit_then_claim_then_deposit_then_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
+
+    // Round 1
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    let p1 = client.claim(&holder, &token, &0);
+    assert_eq!(p1, 100_000);
+
+    // Round 2
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+    let p2 = client.claim(&holder, &token, &0);
+    assert_eq!(p2, 500_000);
+
+    assert_eq!(balance(&env, &payment_token, &holder), 600_000);
+}
+
+#[test]
+fn offering_isolation_claims_independent() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    // Register a second offering
+    let token_b = Address::generate(&env);
+    client.register_offering(&issuer, &token_b, &3_000);
+
+    // Create a second payment token for offering B
+    let (pt_b, pt_b_admin) = create_payment_token(&env);
+    mint_tokens(&env, &pt_b, &pt_b_admin, &issuer, &5_000_000);
+
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50% of offering A
+    client.set_holder_share(&issuer, &token_b, &holder, &10_000); // 100% of offering B
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token_b, &pt_b, &50_000, &1);
+
+    let payout_a = client.claim(&holder, &token, &0);
+    let payout_b = client.claim(&holder, &token_b, &0);
+
+    assert_eq!(payout_a, 50_000); // 50% of 100k
+    assert_eq!(payout_b, 50_000); // 100% of 50k
+
+    // Verify token A claim doesn't affect token B pending
+    assert_eq!(client.get_pending_periods(&token, &holder).len(), 0);
+    assert_eq!(client.get_pending_periods(&token_b, &holder).len(), 0);
+}
+
+// ===========================================================================
+// Time-delayed revenue claim (#27)
+// ===========================================================================
+
+#[test]
+fn set_claim_delay_stores_and_returns_delay() {
+    let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    assert_eq!(client.get_claim_delay(&token), 0);
+    client.set_claim_delay(&issuer, &token, &3600);
+    assert_eq!(client.get_claim_delay(&token), 3600);
+}
+
+#[test]
+fn set_claim_delay_requires_offering() {
+    let (env, client, issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let unknown_token = Address::generate(&env);
+
+    let r = client.try_set_claim_delay(&issuer, &unknown_token, &3600);
+    assert!(r.is_err());
+}
+
+#[test]
+fn claim_before_delay_returns_claim_delay_not_elapsed() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    env.ledger().set_timestamp(1000);
+    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.set_claim_delay(&issuer, &token, &100);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    // Still at 1000, delay 100 -> claimable at 1100
+    let r = client.try_claim(&holder, &token, &0);
+    assert!(r.is_err());
+}
+
+#[test]
+fn claim_after_delay_succeeds() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    env.ledger().set_timestamp(1000);
+    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.set_claim_delay(&issuer, &token, &100);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    env.ledger().set_timestamp(1100);
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 100_000);
+    assert_eq!(balance(&env, &payment_token, &holder), 100_000);
+}
+
+#[test]
+fn get_claimable_respects_delay() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    env.ledger().set_timestamp(2000);
+    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.set_claim_delay(&issuer, &token, &500);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    // At 2000, deposit at 2000, claimable at 2500
+    assert_eq!(client.get_claimable(&token, &holder), 0);
+    env.ledger().set_timestamp(2500);
+    assert_eq!(client.get_claimable(&token, &holder), 50_000);
+}
+
+#[test]
+fn claim_delay_partial_periods_only_claimable_after_delay() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    env.ledger().set_timestamp(1000);
+    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.set_claim_delay(&issuer, &token, &100);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    env.ledger().set_timestamp(1050);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+    // At 1100: period 1 claimable (1000+100<=1100), period 2 not (1050+100>1100)
+    env.ledger().set_timestamp(1100);
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 100_000);
+    // At 1160: period 2 claimable (1050+100<=1160)
+    env.ledger().set_timestamp(1160);
+    let payout2 = client.claim(&holder, &token, &0);
+    assert_eq!(payout2, 200_000);
+}
+
+#[test]
+fn set_claim_delay_emits_event() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    let before = env.events().all().len();
+    client.set_claim_delay(&issuer, &token, &3600);
+    assert!(env.events().all().len() > before);
+}
+
+// ===========================================================================
+// On-chain distribution simulation (#29)
+// ===========================================================================
+
+#[test]
+fn simulate_distribution_returns_correct_payouts() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    let mut shares = Vec::new(&env);
+    shares.push_back((holder_a.clone(), 3_000u32));
+    shares.push_back((holder_b.clone(), 2_000u32));
+
+    let result = client.simulate_distribution(&issuer, &token, &100_000, &shares);
+    assert_eq!(result.total_distributed, 50_000); // 30% + 20% of 100k
+    assert_eq!(result.payouts.len(), 2);
+    assert_eq!(result.payouts.get(0).unwrap(), (holder_a, 30_000));
+    assert_eq!(result.payouts.get(1).unwrap(), (holder_b, 20_000));
+}
+
+#[test]
+fn simulate_distribution_zero_holders() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    let shares = Vec::new(&env);
+    let result = client.simulate_distribution(&issuer, &token, &100_000, &shares);
+    assert_eq!(result.total_distributed, 0);
+    assert_eq!(result.payouts.len(), 0);
+}
+
+#[test]
+fn simulate_distribution_zero_revenue() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    let mut shares = Vec::new(&env);
+    shares.push_back((holder.clone(), 5_000u32));
+    let result = client.simulate_distribution(&issuer, &token, &0, &shares);
+    assert_eq!(result.total_distributed, 0);
+    assert_eq!(result.payouts.get(0).unwrap().1, 0);
+}
+
+#[test]
+fn simulate_distribution_read_only_no_state_change() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+
+    let mut shares = Vec::new(&env);
+    shares.push_back((holder.clone(), 10_000u32));
+    let _ = client.simulate_distribution(&issuer, &token, &1_000_000, &shares);
+    let count_before = client.get_period_count(&token);
+    let _ = client.simulate_distribution(&issuer, &token, &999_999, &shares);
+    assert_eq!(client.get_period_count(&token), count_before);
+}
+
+#[test]
+fn simulate_distribution_uses_rounding_mode() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    client.set_rounding_mode(&issuer, &token, &RoundingMode::RoundHalfUp);
+    let holder = Address::generate(&env);
+
+    let mut shares = Vec::new(&env);
+    shares.push_back((holder.clone(), 3_333u32));
+    let result = client.simulate_distribution(&issuer, &token, &100, &shares);
+    assert_eq!(result.total_distributed, 33);
+    assert_eq!(result.payouts.get(0).unwrap().1, 33);
+}
+
+// ===========================================================================
+// Upgradeability guard and freeze (#32)
+// ===========================================================================
+
+#[test]
+fn set_admin_once_succeeds() {
+    let (env, client, _issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    assert_eq!(client.get_admin(), Some(admin));
+}
+
+#[test]
+fn set_admin_twice_fails() {
+    let (env, client, _issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    let other = Address::generate(&env);
+    let r = client.try_set_admin(&other);
+    assert!(r.is_err());
+}
+
+#[test]
+fn freeze_sets_flag_and_emits_event() {
+    let (env, client, _issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    assert!(!client.is_frozen());
+    let before = env.events().all().len();
+    client.freeze();
+    assert!(client.is_frozen());
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn frozen_blocks_register_offering() {
+    let (env, client, issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+    let new_token = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.freeze();
+    let r = client.try_register_offering(&issuer, &new_token, &1_000);
+    assert!(r.is_err());
+}
+
+#[test]
+fn frozen_blocks_deposit_revenue() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.freeze();
+    let r = client.try_deposit_revenue(&issuer, &token, &payment_token, &100_000, &99);
+    assert!(r.is_err());
+}
+
+#[test]
+fn frozen_blocks_set_holder_share() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.freeze();
+    let r = client.try_set_holder_share(&issuer, &token, &holder, &2_500);
+    assert!(r.is_err());
+}
+
+#[test]
+fn frozen_allows_claim() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+    let admin = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.set_admin(&admin);
+    client.freeze();
+
+    let payout = client.claim(&holder, &token, &0);
+    assert_eq!(payout, 100_000);
+    assert_eq!(balance(&env, &payment_token, &holder), 100_000);
+}
+
+#[test]
+fn freeze_succeeds_when_called_by_admin() {
+    let (env, client, _issuer, _token, _payment_token, _contract_id) = claim_setup();
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    env.mock_all_auths();
+    let r = client.try_freeze();
+    assert!(r.is_ok());
+    assert!(client.is_frozen());
 }
