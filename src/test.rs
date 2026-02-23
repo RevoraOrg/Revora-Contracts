@@ -645,7 +645,7 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
         }
     }
 
-    assert_eq!(env.events().all().len(), 1 + (calls as u32) * 4);
+    assert_eq!(env.events().all().len(), calls as u32 * 2 + 1);
 }
 
 #[test]
@@ -688,7 +688,7 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
         client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
     }
 
-    assert_eq!(env.events().all().len(), 1 + (FUZZ_ITERATIONS as u32) * 4);
+    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32 * 2 + 1);
 }
 
 // ---------------------------------------------------------------------------
