@@ -27,6 +27,10 @@ pub enum RevoraError {
     InvalidShareBps = 8,
     /// Payment token does not match previously set token for this offering.
     PaymentTokenMismatch = 9,
+    /// Contract is frozen; state-changing operations are disabled.
+    ContractFrozen = 10,
+    /// Revenue for this period is not yet claimable (delay not elapsed).
+    ClaimDelayNotElapsed = 11,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -37,6 +41,8 @@ const EVENT_CONCENTRATION_WARNING: Symbol = symbol_short!("conc_warn");
 const EVENT_REV_DEPOSIT: Symbol = symbol_short!("rev_dep");
 const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_SHARE_SET: Symbol = symbol_short!("share_set");
+const EVENT_FREEZE: Symbol = symbol_short!("freeze");
+const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("delay_set");
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +68,16 @@ pub struct ConcentrationLimitConfig {
 pub struct AuditSummary {
     pub total_revenue: i128,
     pub report_count: u64,
+}
+
+/// Result of simulate_distribution (#29): per-holder payout and total.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulateDistributionResult {
+    /// Total amount that would be distributed.
+    pub total_distributed: i128,
+    /// Payout per holder (holder address, amount).
+    pub payouts: Vec<(Address, i128)>,
 }
 
 /// Rounding mode for distribution share calculations (#44).
@@ -104,6 +120,14 @@ pub enum DataKey {
     LastClaimedIdx(Address, Address),
     /// Payment token address for an offering token.
     PaymentToken(Address),
+    /// Per-offering claim delay in seconds (#27). 0 = immediate claim.
+    ClaimDelaySecs(Address),
+    /// Ledger timestamp when revenue was deposited for (offering_token, period_id).
+    PeriodDepositTime(Address, u64),
+    /// Global admin address; can set freeze (#32).
+    Admin,
+    /// Contract frozen flag; when true, state-changing ops are disabled (#32).
+    Frozen,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -118,6 +142,20 @@ pub struct RevoraRevenueShare;
 
 #[contractimpl]
 impl RevoraRevenueShare {
+    /// Returns error if contract is frozen (#32). Call at start of state-mutating entrypoints.
+    fn require_not_frozen(env: &Env) -> Result<(), RevoraError> {
+        let key = DataKey::Frozen;
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&key)
+            .unwrap_or(false)
+        {
+            return Err(RevoraError::ContractFrozen);
+        }
+        Ok(())
+    }
+
     /// Register a new revenue-share offering.
     /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
     pub fn register_offering(
@@ -126,6 +164,7 @@ impl RevoraRevenueShare {
         token: Address,
         revenue_share_bps: u32,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
 
         if revenue_share_bps > 10_000 {
@@ -184,6 +223,7 @@ impl RevoraRevenueShare {
         amount: i128,
         period_id: u64,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
 
         // Holder concentration guardrail (#26): reject if enforce and over limit
@@ -265,7 +305,13 @@ impl RevoraRevenueShare {
     }
 
     /// Add `investor` to the per-offering blacklist for `token`. Idempotent.
-    pub fn blacklist_add(env: Env, caller: Address, token: Address, investor: Address) {
+    pub fn blacklist_add(
+        env: Env,
+        caller: Address,
+        token: Address,
+        investor: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         caller.require_auth();
 
         let key = DataKey::Blacklist(token.clone());
@@ -280,10 +326,17 @@ impl RevoraRevenueShare {
 
         env.events()
             .publish((EVENT_BL_ADD, token, caller), investor);
+        Ok(())
     }
 
     /// Remove `investor` from the per-offering blacklist for `token`. Idempotent.
-    pub fn blacklist_remove(env: Env, caller: Address, token: Address, investor: Address) {
+    pub fn blacklist_remove(
+        env: Env,
+        caller: Address,
+        token: Address,
+        investor: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         caller.require_auth();
 
         let key = DataKey::Blacklist(token.clone());
@@ -298,6 +351,7 @@ impl RevoraRevenueShare {
 
         env.events()
             .publish((EVENT_BL_REM, token, caller), investor);
+        Ok(())
     }
 
     /// Returns `true` if `investor` is blacklisted for `token`'s offering.
@@ -332,6 +386,7 @@ impl RevoraRevenueShare {
         max_bps: u32,
         enforce: bool,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
         if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
             return Err(RevoraError::LimitReached); // reuse: "offering not found" semantics
@@ -350,6 +405,7 @@ impl RevoraRevenueShare {
         token: Address,
         concentration_bps: u32,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
         let curr_key = DataKey::CurrentConcentration(issuer.clone(), token.clone());
         env.storage()
@@ -405,6 +461,7 @@ impl RevoraRevenueShare {
         token: Address,
         mode: RoundingMode,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
         if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
             return Err(RevoraError::LimitReached);
@@ -469,6 +526,7 @@ impl RevoraRevenueShare {
         amount: i128,
         period_id: u64,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
 
         // Verify offering exists
@@ -499,6 +557,11 @@ impl RevoraRevenueShare {
         // Store period revenue
         env.storage().persistent().set(&rev_key, &amount);
 
+        // Store deposit timestamp for time-delayed claims (#27)
+        let deposit_time = env.ledger().timestamp();
+        let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
+        env.storage().persistent().set(&time_key, &deposit_time);
+
         // Append to indexed period list
         let count_key = DataKey::PeriodCount(token.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
@@ -523,6 +586,7 @@ impl RevoraRevenueShare {
         holder: Address,
         share_bps: u32,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
         issuer.require_auth();
 
         if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
@@ -591,18 +655,32 @@ impl RevoraRevenueShare {
         };
         let end_idx = core::cmp::min(start_idx + effective_max, period_count);
 
+        let delay_key = DataKey::ClaimDelaySecs(token.clone());
+        let delay_secs: u64 = env.storage().persistent().get(&delay_key).unwrap_or(0);
+        let now = env.ledger().timestamp();
+
         let mut total_payout: i128 = 0;
         let mut claimed_periods = Vec::new(&env);
+        let mut last_claimed_idx = start_idx;
 
         for i in start_idx..end_idx {
             let entry_key = DataKey::PeriodEntry(token.clone(), i);
             let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap();
+            let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
+            let deposit_time: u64 = env.storage().persistent().get(&time_key).unwrap_or(0);
+            if delay_secs > 0 && now < deposit_time.saturating_add(delay_secs) {
+                break;
+            }
             let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
             let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
-
             let payout = revenue * (share_bps as i128) / 10_000;
             total_payout += payout;
             claimed_periods.push_back(period_id);
+            last_claimed_idx = i + 1;
+        }
+
+        if last_claimed_idx == start_idx {
+            return Err(RevoraError::ClaimDelayNotElapsed);
         }
 
         // Transfer only if there is a positive payout
@@ -617,8 +695,8 @@ impl RevoraRevenueShare {
             );
         }
 
-        // Advance claim index regardless of payout amount
-        env.storage().persistent().set(&idx_key, &end_idx);
+        // Advance claim index only for periods actually claimed (respecting delay)
+        env.storage().persistent().set(&idx_key, &last_claimed_idx);
 
         env.events().publish(
             (EVENT_CLAIM, holder.clone(), token),
@@ -646,6 +724,7 @@ impl RevoraRevenueShare {
     }
 
     /// Preview the total claimable amount for a holder without claiming.
+    /// Respects per-offering claim delay (#27): only sums periods past the delay.
     pub fn get_claimable(env: Env, token: Address, holder: Address) -> i128 {
         let share_bps = Self::get_holder_share(env.clone(), token.clone(), holder.clone());
         if share_bps == 0 {
@@ -655,13 +734,22 @@ impl RevoraRevenueShare {
         let count_key = DataKey::PeriodCount(token.clone());
         let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
-        let idx_key = DataKey::LastClaimedIdx(token.clone(), holder);
+        let idx_key = DataKey::LastClaimedIdx(token.clone(), holder.clone());
         let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+
+        let delay_key = DataKey::ClaimDelaySecs(token.clone());
+        let delay_secs: u64 = env.storage().persistent().get(&delay_key).unwrap_or(0);
+        let now = env.ledger().timestamp();
 
         let mut total: i128 = 0;
         for i in start_idx..period_count {
             let entry_key = DataKey::PeriodEntry(token.clone(), i);
             let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap();
+            let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
+            let deposit_time: u64 = env.storage().persistent().get(&time_key).unwrap_or(0);
+            if delay_secs > 0 && now < deposit_time.saturating_add(delay_secs) {
+                break;
+            }
             let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
             let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
             total += revenue * (share_bps as i128) / 10_000;
@@ -669,10 +757,111 @@ impl RevoraRevenueShare {
         total
     }
 
+    // ── Time-delayed claim configuration (#27) ──────────────────
+
+    /// Set per-offering claim delay in seconds. Only issuer may set. 0 = immediate claim.
+    pub fn set_claim_delay(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        delay_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        let key = DataKey::ClaimDelaySecs(token.clone());
+        env.storage().persistent().set(&key, &delay_secs);
+        env.events()
+            .publish((EVENT_CLAIM_DELAY_SET, issuer, token), delay_secs);
+        Ok(())
+    }
+
+    /// Get per-offering claim delay in seconds. 0 = immediate claim.
+    pub fn get_claim_delay(env: Env, token: Address) -> u64 {
+        let key = DataKey::ClaimDelaySecs(token);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
     /// Return the total number of deposited periods for an offering token.
     pub fn get_period_count(env: Env, token: Address) -> u32 {
         let count_key = DataKey::PeriodCount(token);
         env.storage().persistent().get(&count_key).unwrap_or(0)
+    }
+
+    // ── On-chain distribution simulation (#29) ────────────────────
+
+    /// Read-only: simulate distribution for sample inputs without mutating state.
+    /// Returns expected payouts per holder and total. Uses offering's rounding mode.
+    /// For integrators to preview outcomes before executing deposit/claim flows.
+    pub fn simulate_distribution(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        amount: i128,
+        holder_shares: Vec<(Address, u32)>,
+    ) -> SimulateDistributionResult {
+        let mode = Self::get_rounding_mode(env.clone(), issuer, token.clone());
+        let mut total: i128 = 0;
+        let mut payouts = Vec::new(&env);
+        for i in 0..holder_shares.len() {
+            let (holder, share_bps) = holder_shares.get(i).unwrap();
+            let payout = if share_bps > 10_000 {
+                0_i128
+            } else {
+                Self::compute_share(env.clone(), amount, share_bps, mode)
+            };
+            total = total.saturating_add(payout);
+            payouts.push_back((holder.clone(), payout));
+        }
+        SimulateDistributionResult {
+            total_distributed: total,
+            payouts,
+        }
+    }
+
+    // ── Upgradeability guard and freeze (#32) ───────────────────
+
+    /// Set the admin address. May only be called once; caller must authorize as the new admin.
+    pub fn set_admin(env: Env, admin: Address) -> Result<(), RevoraError> {
+        admin.require_auth();
+        let key = DataKey::Admin;
+        if env.storage().persistent().has(&key) {
+            return Err(RevoraError::LimitReached);
+        }
+        env.storage().persistent().set(&key, &admin);
+        Ok(())
+    }
+
+    /// Get the admin address, if set.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        let key = DataKey::Admin;
+        env.storage().persistent().get(&key)
+    }
+
+    /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
+    /// Emits event. Claim and read-only functions remain allowed.
+    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+        let key = DataKey::Admin;
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RevoraError::LimitReached)?;
+        admin.require_auth();
+        let frozen_key = DataKey::Frozen;
+        env.storage().persistent().set(&frozen_key, &true);
+        env.events().publish((EVENT_FREEZE, admin), true);
+        Ok(())
+    }
+
+    /// Return true if the contract is frozen.
+    pub fn is_frozen(env: Env) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Frozen)
+            .unwrap_or(false)
     }
 }
 
