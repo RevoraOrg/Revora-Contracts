@@ -183,7 +183,6 @@ pub enum DataKey {
     Safety,
     /// Global pause flag; when true, state-mutating ops are disabled (#7).
     Paused,
-
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -213,9 +212,7 @@ impl RevoraRevenueShare {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("already initialized");
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin, &admin.clone());
+        env.storage().persistent().set(&DataKey::Admin, &admin.clone());
         if let Some(s) = safety.clone() {
             env.storage().persistent().set(&DataKey::Safety, &s);
         }
@@ -226,11 +223,8 @@ impl RevoraRevenueShare {
     /// Pause the contract (admin only). Idempotent.
     pub fn pause_admin(env: Env, caller: Address) {
         caller.require_auth();
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).expect("admin not set");
         if caller != admin {
             panic!("not admin");
         }
@@ -241,11 +235,8 @@ impl RevoraRevenueShare {
     /// Unpause the contract (admin only). Idempotent.
     pub fn unpause_admin(env: Env, caller: Address) {
         caller.require_auth();
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .expect("admin not set");
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).expect("admin not set");
         if caller != admin {
             panic!("not admin");
         }
@@ -256,11 +247,8 @@ impl RevoraRevenueShare {
     /// Pause the contract (safety role only). Idempotent.
     pub fn pause_safety(env: Env, caller: Address) {
         caller.require_auth();
-        let safety: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Safety)
-            .expect("safety not set");
+        let safety: Address =
+            env.storage().persistent().get(&DataKey::Safety).expect("safety not set");
         if caller != safety {
             panic!("not safety");
         }
@@ -271,11 +259,8 @@ impl RevoraRevenueShare {
     /// Unpause the contract (safety role only). Idempotent.
     pub fn unpause_safety(env: Env, caller: Address) {
         caller.require_auth();
-        let safety: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Safety)
-            .expect("safety not set");
+        let safety: Address =
+            env.storage().persistent().get(&DataKey::Safety).expect("safety not set");
         if caller != safety {
             panic!("not safety");
         }
@@ -285,20 +270,12 @@ impl RevoraRevenueShare {
 
     /// Query the paused state of the contract.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .persistent()
-            .get::<DataKey, bool>(&DataKey::Paused)
-            .unwrap_or(false)
+        env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false)
     }
 
     /// Helper: panic if contract is paused. Used by state-mutating entrypoints.
     fn require_not_paused(env: &Env) {
-        if env
-            .storage()
-            .persistent()
-            .get::<DataKey, bool>(&DataKey::Paused)
-            .unwrap_or(false)
-        {
+        if env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
             panic!("contract is paused");
         }
     }
@@ -410,11 +387,8 @@ impl RevoraRevenueShare {
         let blacklist = Self::get_blacklist(env.clone(), token.clone());
 
         let key = DataKey::RevenueReports(issuer.clone(), token.clone());
-        let mut reports: Map<u64, (i128, u64)> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Map::new(&env));
+        let mut reports: Map<u64, (i128, u64)> =
+            env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
         let current_timestamp = env.ledger().timestamp();
 
         match reports.get(period_id) {
@@ -1205,10 +1179,7 @@ impl RevoraRevenueShare {
 
     /// Get the current multisig owners list.
     pub fn get_multisig_owners(env: Env) -> Vec<Address> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MultisigOwners)
-            .unwrap_or_else(|| Vec::new(&env))
+        env.storage().persistent().get(&DataKey::MultisigOwners).unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Get the current multisig threshold.

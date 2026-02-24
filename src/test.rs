@@ -4,7 +4,9 @@ use soroban_sdk::{
     Vec,
 };
 
-use crate::{ProposalAction, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
+use crate::{
+    ProposalAction, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode,
+};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -19,9 +21,7 @@ const FUZZ_ITERATIONS: usize = 128;
 
 fn next_u64(seed: &mut u64) -> u64 {
     // Deterministic LCG for repeatable pseudo-random test values.
-    *seed = seed
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
     *seed
 }
 
@@ -587,13 +587,7 @@ fn storage_stress_many_reports_no_panic() {
 
     // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
     for period_id in 1..=100_u64 {
-        client.report_revenue(
-            &issuer,
-            &token,
-            &(period_id as i128 * 10_000),
-            &period_id,
-            &false,
-        );
+        client.report_revenue(&issuer, &token, &(period_id as i128 * 10_000), &period_id, &false);
     }
     assert!(env.events().all().len() >= 100);
 }
@@ -763,9 +757,7 @@ fn concentration_near_threshold_boundary() {
     client.register_offering(&issuer, &token, &1_000);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5001);
-    assert!(client
-        .try_report_revenue(&issuer, &token, &1_000, &1, &false)
-        .is_err());
+    assert!(client.try_report_revenue(&issuer, &token, &1_000, &1, &false).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -2614,8 +2606,7 @@ fn multisig_set_admin_action_updates_admin() {
     let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
     let new_admin = Address::generate(&env);
 
-    let proposal_id =
-        client.propose_action(&owner1, &ProposalAction::SetAdmin(new_admin.clone()));
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::SetAdmin(new_admin.clone()));
     client.approve_action(&owner2, &proposal_id);
     client.execute_action(&proposal_id);
 
@@ -2652,8 +2643,7 @@ fn multisig_add_owner_action_adds_owner() {
     let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
     let new_owner = Address::generate(&env);
 
-    let proposal_id =
-        client.propose_action(&owner1, &ProposalAction::AddOwner(new_owner.clone()));
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::AddOwner(new_owner.clone()));
     client.approve_action(&owner2, &proposal_id);
     client.execute_action(&proposal_id);
 
@@ -2667,8 +2657,7 @@ fn multisig_remove_owner_action_removes_owner() {
     let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
 
     // Remove owner3 (3 owners remain: owner1, owner2; threshold stays 2)
-    let proposal_id =
-        client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
     client.approve_action(&owner2, &proposal_id);
     client.execute_action(&proposal_id);
 
