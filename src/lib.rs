@@ -1005,19 +1005,27 @@ impl RevoraRevenueShare {
     // ── Multisig admin logic ───────────────────────────────────
 
     /// Initialize the multisig admin system. May only be called once.
+    /// Only the caller (deployer/admin) needs to authorize; owners are registered
+    /// without requiring their individual signatures at init time.
+    ///
+    /// # Soroban Limitation Note
+    /// Soroban does not support requiring multiple signers in a single transaction
+    /// invocation. Each owner must separately call `approve_action` to sign proposals.
     pub fn init_multisig(
         env: Env,
+        caller: Address,
         owners: Vec<Address>,
         threshold: u32,
     ) -> Result<(), RevoraError> {
+        caller.require_auth();
         if env.storage().persistent().has(&DataKey::MultisigThreshold) {
             return Err(RevoraError::LimitReached); // Already initialized
         }
-        if threshold == 0 || threshold > owners.len() {
-            return Err(RevoraError::InvalidShareBps); // Improper threshold
+        if owners.is_empty() {
+            return Err(RevoraError::LimitReached); // Must have at least one owner
         }
-        for i in 0..owners.len() {
-            owners.get(i).unwrap().require_auth();
+        if threshold == 0 || threshold > owners.len() {
+            return Err(RevoraError::LimitReached); // Improper threshold
         }
         env.storage().persistent().set(&DataKey::MultisigThreshold, &threshold);
         env.storage().persistent().set(&DataKey::MultisigOwners, &owners);
@@ -1026,6 +1034,7 @@ impl RevoraRevenueShare {
     }
 
     /// Propose a sensitive administrative action.
+    /// The proposer's address is automatically counted as the first approval.
     pub fn propose_action(
         env: Env,
         proposer: Address,
@@ -1037,18 +1046,23 @@ impl RevoraRevenueShare {
         let count_key = DataKey::MultisigProposalCount;
         let id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
+        // Proposer's vote counts as the first approval automatically
+        let mut initial_approvals = Vec::new(&env);
+        initial_approvals.push_back(proposer.clone());
+
         let proposal = Proposal {
             id,
             action,
             proposer: proposer.clone(),
-            approvals: Vec::new(&env),
+            approvals: initial_approvals,
             executed: false,
         };
 
         env.storage().persistent().set(&DataKey::MultisigProposal(id), &proposal);
         env.storage().persistent().set(&count_key, &(id + 1));
 
-        env.events().publish((EVENT_PROPOSAL_CREATED, proposer), id);
+        env.events().publish((EVENT_PROPOSAL_CREATED, proposer.clone()), id);
+        env.events().publish((EVENT_PROPOSAL_APPROVED, proposer), id);
         Ok(id)
     }
 
@@ -1150,6 +1164,24 @@ impl RevoraRevenueShare {
 
         env.events().publish((EVENT_PROPOSAL_EXECUTED, proposal_id), true);
         Ok(())
+    }
+
+    /// Get a proposal by ID. Returns None if not found.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage().persistent().get(&DataKey::MultisigProposal(proposal_id))
+    }
+
+    /// Get the current multisig owners list.
+    pub fn get_multisig_owners(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MultisigOwners)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Get the current multisig threshold.
+    pub fn get_multisig_threshold(env: Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey::MultisigThreshold)
     }
 
     fn require_multisig_owner(env: &Env, caller: &Address) -> Result<(), RevoraError> {

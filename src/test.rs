@@ -4,7 +4,7 @@ use soroban_sdk::{
     Vec,
 };
 
-use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
+use crate::{ProposalAction, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -65,12 +65,14 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
     let mut calls = 0usize;
     for amount in BOUNDARY_AMOUNTS {
         for period in BOUNDARY_PERIODS {
-            client.report_revenue(&issuer, &token, &amount, &period);
+            client.report_revenue(&issuer, &token, &amount, &period, &false);
             calls += 1;
         }
     }
 
-    assert_eq!(env.events().all().len(), calls as u32);
+    // Each report_revenue call emits 2 events: a specific event (rev_init/rev_ovrd/rev_rej)
+    // plus the backward-compatible rev_rep event.
+    assert_eq!(env.events().all().len(), (calls * 2) as u32);
 }
 
 #[test]
@@ -108,10 +110,11 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
             period = 0;
         }
 
-        client.report_revenue(&issuer, &token, &amount, &period);
+        client.report_revenue(&issuer, &token, &amount, &period, &false);
     }
 
-    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32);
+    // Each report_revenue call emits 2 events (specific + backward-compatible rev_rep).
+    assert_eq!(env.events().all().len(), (FUZZ_ITERATIONS * 2) as u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -1993,7 +1996,7 @@ fn report_blocked_while_paused() {
 
     client.initialize(&admin, &None::<Address>);
     client.pause_admin(&admin);
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
 }
 
 #[test]
@@ -2044,4 +2047,390 @@ fn blacklist_remove_blocked_while_paused() {
     client.initialize(&admin, &None::<Address>);
     client.pause_admin(&admin);
     client.blacklist_remove(&admin, &token, &investor);
+}
+
+// ===========================================================================
+// Multisig admin pattern tests
+// ===========================================================================
+//
+// Production recommendation note:
+// The multisig pattern implemented here is a minimal on-chain approval tracker.
+// It is suitable for low-frequency admin operations (fee changes, freeze, owner
+// rotation). For high-security production use, consider:
+//   - Time-locks on execution (delay between threshold met and execution)
+//   - Proposal expiry to prevent stale proposals from being executed
+//   - Off-chain coordination tools (e.g. Gnosis Safe-style UX)
+//   - Audit of the threshold/owner management flows
+//
+// Soroban compatibility notes:
+//   - Soroban does not support multi-party auth in a single transaction.
+//     Each owner must call approve_action in separate transactions.
+//   - The proposer's vote is automatically counted as the first approval.
+//   - init_multisig only requires the caller (deployer) to authorize.
+//   - All proposal state is stored in persistent storage (survives ledger close).
+
+/// Helper: set up a 2-of-3 multisig environment.
+fn multisig_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address)
+{
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let caller = Address::generate(&env);
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner1.clone());
+    owners.push_back(owner2.clone());
+    owners.push_back(owner3.clone());
+
+    // 2-of-3 threshold
+    client.init_multisig(&caller, &owners, &2);
+
+    (env, client, owner1, owner2, owner3, caller)
+}
+
+#[test]
+fn multisig_init_sets_owners_and_threshold() {
+    let (env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    assert_eq!(client.get_multisig_threshold(), Some(2));
+    let owners = client.get_multisig_owners();
+    assert_eq!(owners.len(), 3);
+    assert_eq!(owners.get(0).unwrap(), owner1);
+    assert_eq!(owners.get(1).unwrap(), owner2);
+    assert_eq!(owners.get(2).unwrap(), owner3);
+}
+
+#[test]
+fn multisig_init_twice_fails() {
+    let (env, client, owner1, _owner2, _owner3, caller) = multisig_setup();
+
+    let mut owners2 = Vec::new(&env);
+    owners2.push_back(owner1.clone());
+    let r = client.try_init_multisig(&caller, &owners2, &1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_init_zero_threshold_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let caller = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner.clone());
+    let r = client.try_init_multisig(&caller, &owners, &0);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_init_threshold_exceeds_owners_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let caller = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner.clone());
+    // threshold=2 but only 1 owner
+    let r = client.try_init_multisig(&caller, &owners, &2);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_init_empty_owners_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let caller = Address::generate(&env);
+    let owners = Vec::new(&env);
+    let r = client.try_init_multisig(&caller, &owners, &1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_propose_action_emits_events_and_auto_approves_proposer() {
+    let (env, client, owner1, _owner2, _owner3, _caller) = multisig_setup();
+
+    let before = env.events().all().len();
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    // Should emit prop_new + prop_app (auto-approval)
+    assert!(env.events().all().len() >= before + 2);
+
+    // Proposer's vote is counted automatically
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approvals.len(), 1);
+    assert_eq!(proposal.approvals.get(0).unwrap(), owner1);
+    assert!(!proposal.executed);
+}
+
+#[test]
+fn multisig_non_owner_cannot_propose() {
+    let (env, client, _owner1, _owner2, _owner3, _caller) = multisig_setup();
+    let outsider = Address::generate(&env);
+    let r = client.try_propose_action(&outsider, &ProposalAction::Freeze);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_approve_action_records_approval_and_emits_event() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    let before = env.events().all().len();
+    client.approve_action(&owner2, &proposal_id);
+    assert!(env.events().all().len() > before);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approvals.len(), 2);
+}
+
+#[test]
+fn multisig_duplicate_approval_is_idempotent() {
+    let (_env, client, owner1, _owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    // owner1 already approved (auto-approval from propose)
+    // Approving again should be a no-op (not an error, not a duplicate entry)
+    client.approve_action(&owner1, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    // Still only 1 approval (no duplicate)
+    assert_eq!(proposal.approvals.len(), 1);
+}
+
+#[test]
+fn multisig_non_owner_cannot_approve() {
+    let (env, client, owner1, _owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    let outsider = Address::generate(&env);
+    let r = client.try_approve_action(&outsider, &proposal_id);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_execute_fails_below_threshold() {
+    let (_env, client, owner1, _owner2, _owner3, _caller) = multisig_setup();
+
+    // Only 1 approval (proposer auto-approval), threshold is 2
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    let r = client.try_execute_action(&proposal_id);
+    assert!(r.is_err());
+    assert!(!client.is_frozen());
+}
+
+#[test]
+fn multisig_execute_freeze_succeeds_at_threshold() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+
+    // Now 2 approvals, threshold is 2 — should execute
+    let before_frozen = client.is_frozen();
+    assert!(!before_frozen);
+    client.execute_action(&proposal_id);
+    assert!(client.is_frozen());
+
+    // Proposal marked as executed
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
+
+#[test]
+fn multisig_execute_emits_event() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+    let before = env.events().all().len();
+    client.execute_action(&proposal_id);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn multisig_execute_twice_fails() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    // Second execution should fail
+    let r = client.try_execute_action(&proposal_id);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_approve_executed_proposal_fails() {
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    // Approving an already-executed proposal should fail
+    let r = client.try_approve_action(&owner3, &proposal_id);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_set_admin_action_updates_admin() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+    let new_admin = Address::generate(&env);
+
+    let proposal_id =
+        client.propose_action(&owner1, &ProposalAction::SetAdmin(new_admin.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    assert_eq!(client.get_admin(), Some(new_admin));
+}
+
+#[test]
+fn multisig_set_threshold_action_updates_threshold() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    // Change threshold from 2 to 3
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::SetThreshold(3));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    assert_eq!(client.get_multisig_threshold(), Some(3));
+}
+
+#[test]
+fn multisig_set_threshold_exceeding_owners_fails_on_execute() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    // Try to set threshold to 4 (only 3 owners)
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::SetThreshold(4));
+    client.approve_action(&owner2, &proposal_id);
+    let r = client.try_execute_action(&proposal_id);
+    assert!(r.is_err());
+    // Threshold unchanged
+    assert_eq!(client.get_multisig_threshold(), Some(2));
+}
+
+#[test]
+fn multisig_add_owner_action_adds_owner() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+    let new_owner = Address::generate(&env);
+
+    let proposal_id =
+        client.propose_action(&owner1, &ProposalAction::AddOwner(new_owner.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    let owners = client.get_multisig_owners();
+    assert_eq!(owners.len(), 4);
+    assert_eq!(owners.get(3).unwrap(), new_owner);
+}
+
+#[test]
+fn multisig_remove_owner_action_removes_owner() {
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    // Remove owner3 (3 owners remain: owner1, owner2; threshold stays 2)
+    let proposal_id =
+        client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    client.approve_action(&owner2, &proposal_id);
+    client.execute_action(&proposal_id);
+
+    let owners = client.get_multisig_owners();
+    assert_eq!(owners.len(), 2);
+    // owner3 should not be in the list
+    for i in 0..owners.len() {
+        assert_ne!(owners.get(i).unwrap(), owner3);
+    }
+}
+
+#[test]
+fn multisig_remove_owner_that_would_break_threshold_fails() {
+    let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+
+    // Remove owner2 would leave 2 owners with threshold=2 (still valid)
+    // But remove owner1 AND owner2 would break it. Let's test removing to exactly threshold.
+    // First remove owner3 (leaves 2 owners, threshold=2 — still valid)
+    let p1 = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner2.clone()));
+    client.approve_action(&owner2, &p1);
+    client.execute_action(&p1);
+
+    // Now 2 owners (owner1, owner3), threshold=2
+    // Try to remove owner3 — would leave 1 owner < threshold=2 → should fail
+    let p2 = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner1.clone()));
+    // Need owner3 to approve (owner2 was removed)
+    let owners = client.get_multisig_owners();
+    let remaining_owner2 = owners.get(1).unwrap();
+    client.approve_action(&remaining_owner2, &p2);
+    let r = client.try_execute_action(&p2);
+    assert!(r.is_err());
+}
+
+#[test]
+fn multisig_freeze_disables_direct_freeze_function() {
+    let (env, client, _owner1, _owner2, _owner3, _caller) = multisig_setup();
+    let admin = Address::generate(&env);
+
+    // set_admin and freeze are disabled when multisig is initialized
+    let r = client.try_set_admin(&admin);
+    assert!(r.is_err());
+
+    let r2 = client.try_freeze();
+    assert!(r2.is_err());
+}
+
+#[test]
+fn multisig_three_approvals_all_valid() {
+    let (_env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    // All 3 owners approve (threshold=2, so execution should succeed after 2)
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    client.approve_action(&owner2, &proposal_id);
+    client.approve_action(&owner3, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approvals.len(), 3);
+
+    // Execute succeeds
+    client.execute_action(&proposal_id);
+    assert!(client.is_frozen());
+}
+
+#[test]
+fn multisig_multiple_proposals_independent() {
+    let (env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
+    let new_admin = Address::generate(&env);
+
+    // Create two proposals
+    let p1 = client.propose_action(&owner1, &ProposalAction::Freeze);
+    let p2 = client.propose_action(&owner1, &ProposalAction::SetAdmin(new_admin.clone()));
+
+    // Approve and execute only p2
+    client.approve_action(&owner2, &p2);
+    client.execute_action(&p2);
+
+    // p1 should still be pending
+    let proposal1 = client.get_proposal(&p1).unwrap();
+    assert!(!proposal1.executed);
+    assert!(!client.is_frozen());
+
+    // p2 should be executed
+    let proposal2 = client.get_proposal(&p2).unwrap();
+    assert!(proposal2.executed);
+    assert_eq!(client.get_admin(), Some(new_admin));
+}
+
+#[test]
+fn multisig_get_proposal_nonexistent_returns_none() {
+    let (_env, client, _owner1, _owner2, _owner3, _caller) = multisig_setup();
+    assert!(client.get_proposal(&9999).is_none());
 }

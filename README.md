@@ -1157,6 +1157,76 @@ cargo build --release
 cargo test
 ```
 
+---
+
+## Multisig Admin Pattern
+
+### Overview
+
+The contract includes an optional multi-signature (multisig) pattern for critical administrative operations. When initialized, it replaces the single-admin model for sensitive actions such as freezing the contract and changing the admin address.
+
+### Multisig Methods
+
+| Method | Parameters | Returns | Auth | Description |
+|--------|------------|---------|------|-------------|
+| `init_multisig` | `caller: Address`, `owners: Vec<Address>`, `threshold: u32` | `Result<(), RevoraError>` | caller | Initialize multisig. Can only be called once. Disables `set_admin` and `freeze`. |
+| `propose_action` | `proposer: Address`, `action: ProposalAction` | `Result<u32, RevoraError>` | proposer (must be owner) | Create a new proposal. Proposer's vote is automatically counted. Returns proposal ID. |
+| `approve_action` | `approver: Address`, `proposal_id: u32` | `Result<(), RevoraError>` | approver (must be owner) | Approve an existing proposal. Duplicate approvals are silently ignored. |
+| `execute_action` | `proposal_id: u32` | `Result<(), RevoraError>` | — | Execute a proposal if threshold is met. Fails if already executed or threshold not met. |
+| `get_proposal` | `proposal_id: u32` | `Option<Proposal>` | — | Fetch a proposal by ID. |
+| `get_multisig_owners` | — | `Vec<Address>` | — | Get current owner list. |
+| `get_multisig_threshold` | — | `Option<u32>` | — | Get current approval threshold. |
+
+### Proposal Actions
+
+| Action | Effect |
+|--------|--------|
+| `SetAdmin(Address)` | Updates the contract admin address. |
+| `Freeze` | Freezes the contract (disables state-changing operations). |
+| `SetThreshold(u32)` | Updates the approval threshold. Must be ≤ current owner count. |
+| `AddOwner(Address)` | Adds a new owner to the multisig. |
+| `RemoveOwner(Address)` | Removes an owner. Fails if remaining owners < threshold. |
+
+### Events
+
+| Topic / name | Payload | When |
+|--------------|---------|------|
+| `prop_new` | `(proposer), proposal_id` | After `propose_action`. |
+| `prop_app` | `(approver), proposal_id` | After `approve_action` (and auto-approval on propose). |
+| `prop_exe` | `(proposal_id), true` | After `execute_action`. |
+
+### Soroban Compatibility and Limitations
+
+**Soroban does not support multi-party authorization in a single transaction.** Each owner must call `approve_action` in a separate transaction. This is a fundamental constraint of the Soroban execution model.
+
+Key design decisions and limitations:
+
+1. **Single-transaction init**: `init_multisig` only requires the caller (deployer) to authorize. Owners are registered without requiring their individual signatures at init time.
+
+2. **Auto-approval on propose**: The proposer's address is automatically counted as the first approval when `propose_action` is called. This reduces the number of separate transactions needed.
+
+3. **No time-lock**: Proposals can be executed immediately once the threshold is met. For production use, consider adding a time-lock delay between threshold-met and execution.
+
+4. **No proposal expiry**: Proposals do not expire. A stale proposal can be executed at any time once it reaches threshold. For production use, add an expiry timestamp to proposals.
+
+5. **No replay protection beyond executed flag**: Once executed, a proposal cannot be re-executed. However, a new identical proposal can be created.
+
+6. **Owner management via proposals**: Adding/removing owners and changing the threshold all require multisig approval, preventing unilateral changes.
+
+7. **Mutual exclusion with direct admin**: Once `init_multisig` is called, `set_admin` and `freeze` are disabled and return `LimitReached`. All admin operations must go through the proposal flow.
+
+### Production Recommendation
+
+This multisig pattern is **suitable for low-frequency admin operations** in a controlled environment. For high-security production deployments, consider:
+
+- Adding time-locks (e.g. 24–72 hour delay between threshold met and execution)
+- Adding proposal expiry (e.g. proposals expire after 7 days)
+- Off-chain coordination tooling (e.g. a multisig UI that tracks pending proposals)
+- A formal security audit of the threshold/owner management flows
+- Using a dedicated multisig contract (e.g. a Soroban port of Gnosis Safe) for maximum security
+
+---
+
 ### Contributor guidelines (reduce merge conflicts)
 
 - Use feature branches per change (e.g. `feature/structured-error-codes`, `feature/storage-limit-negative-tests`).
