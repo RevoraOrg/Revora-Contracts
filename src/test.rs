@@ -256,13 +256,13 @@ fn limit_exceeding_max_is_capped() {
 fn offerings_preserve_correct_data() {
     let (env, client, issuer) = setup();
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &500);
+    client.register_offering(&issuer, &token, &Bps(500));
 
     let (page, _) = client.get_offerings_page(&issuer, &0, &10);
     let offering = page.get(0).unwrap();
     assert_eq!(offering.issuer, issuer);
     assert_eq!(offering.token, token);
-    assert_eq!(offering.revenue_share_bps, 500);
+    assert_eq!(offering.revenue_share_bps, Bps(500));
 }
 
 #[test]
@@ -582,7 +582,7 @@ fn storage_stress_many_reports_no_panic() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &Bps(1_000));
 
     // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
     for period_id in 1..=100_u64 {
@@ -637,7 +637,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &500);
+    client.register_offering(&issuer, &token, &Bps(500));
 
     for _ in 0..30 {
         client.blacklist_add(&Address::generate(&env), &token, &Address::generate(&env));
@@ -646,7 +646,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     env.mock_all_auths();
     client.blacklist_add(&admin, &token, &Address::generate(&env)); // ensure admin is auth
 
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.report_revenue(&issuer, &token, &RevenueAmount(1_000_000), &PeriodId(1), &false);
     assert!(!env.events().all().is_empty());
     // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
 }
@@ -784,7 +784,7 @@ fn audit_summary_empty_before_any_report() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &Bps(1_000));
     let summary = client.get_audit_summary(&issuer, &token);
     assert!(summary.is_none());
 }
@@ -801,7 +801,7 @@ fn audit_summary_aggregates_revenue_and_count() {
     client.report_revenue(&issuer, &token, &RevenueAmount(200), &PeriodId(2), &false);
     client.report_revenue(&issuer, &token, &RevenueAmount(300), &PeriodId(3), &false);
     let summary = client.get_audit_summary(&issuer, &token).unwrap();
-    assert_eq!(summary.total_revenue, 600);
+    assert_eq!(summary.total_revenue, RevenueAmount(600));
     assert_eq!(summary.report_count, 3);
 }
 
@@ -874,7 +874,7 @@ fn set_and_get_rounding_mode() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &Bps(1_000));
     assert_eq!(
         client.get_rounding_mode(&issuer, &token),
         RoundingMode::Truncation
@@ -977,7 +977,7 @@ fn claim_setup() -> (
 fn deposit_revenue_stores_period_data() {
     let (env, client, issuer, token, payment_token, contract_id) = claim_setup();
 
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     assert_eq!(client.get_period_count(&token), 1);
     // Contract should hold the deposited tokens
@@ -988,9 +988,9 @@ fn deposit_revenue_stores_period_data() {
 fn deposit_revenue_multiple_periods() {
     let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
-    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
-    client.deposit_revenue(&issuer, &token, &payment_token, &300_000, &3);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(200_000), &PeriodId(2));
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(300_000), &PeriodId(3));
 
     assert_eq!(client.get_period_count(&token), 3);
 }
@@ -1031,7 +1031,7 @@ fn deposit_revenue_emits_event() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
     let before = env.events().all().len();
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
     assert!(env.events().all().len() > before);
 }
 
@@ -1040,7 +1040,7 @@ fn deposit_revenue_transfers_tokens() {
     let (env, client, issuer, token, payment_token, contract_id) = claim_setup();
 
     let issuer_balance_before = balance(&env, &payment_token, &issuer);
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     assert_eq!(
         balance(&env, &payment_token, &issuer),
@@ -1129,7 +1129,7 @@ fn set_holder_share_emits_event() {
     let holder = Address::generate(&env);
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(2_500));
     assert!(env.events().all().len() > before);
 }
 
@@ -1261,8 +1261,8 @@ fn claim_fails_for_blacklisted_holder() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(5_000));
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     // Blacklist the holder
     client.blacklist_add(&issuer, &token, &holder);
@@ -1276,7 +1276,7 @@ fn claim_fails_when_no_pending_periods() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(5_000));
     // No deposits made
     let result = client.try_claim(&holder, &token, &0);
     assert!(result.is_err());
@@ -1480,7 +1480,7 @@ fn get_claimable_after_partial_claim() {
 fn get_claimable_returns_zero_for_unknown_holder() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
 
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     let unknown = Address::generate(&env);
     assert_eq!(client.get_claimable(&token, &unknown), RevenueAmount(0));
@@ -1491,11 +1491,11 @@ fn get_claimable_returns_zero_after_full_claim() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &token, &holder, &10_000);
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(10_000));
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     client.claim(&holder, &token, &0);
-    assert_eq!(client.get_claimable(&token, &holder), 0);
+    assert_eq!(client.get_claimable(&token, &holder), RevenueAmount(0));
 }
 
 #[test]
@@ -1543,8 +1543,8 @@ fn claim_after_holder_share_change() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &token, &holder, &5_000); // 50%
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(5_000)); // 50%
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
 
     // Claim at 50%
     let payout1 = client.claim(&holder, &token, &0);
@@ -1733,9 +1733,9 @@ fn claim_before_delay_returns_claim_delay_not_elapsed() {
     let holder = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    client.set_holder_share(&issuer, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &token, &holder, &Bps(10_000));
     client.set_claim_delay(&issuer, &token, &100);
-    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &RevenueAmount(100_000), &PeriodId(1));
     // Still at 1000, delay 100 -> claimable at 1100
     let r = client.try_claim(&holder, &token, &0);
     assert!(r.is_err());
