@@ -28,6 +28,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `set_rounding_mode` | `issuer: Address`, `token: Address`, `mode: RoundingMode` | `Result<(), RevoraError>` | issuer | Set rounding mode for share calculations. Offering must exist. |
 | `get_rounding_mode` | `issuer: Address`, `token: Address` | `RoundingMode` | — | Get rounding mode (default Truncation if not set). |
 | `compute_share` | `amount: i128`, `revenue_share_bps: u32`, `mode: RoundingMode` | `i128` | — | Compute share of amount at given bps with given rounding. Bounds: 0 ≤ result ≤ amount. |
+| `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
+| `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
 
 ### Types
 
@@ -55,6 +57,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `bl_add` | `(token, caller), investor` | After `blacklist_add`. |
 | `bl_rem` | `(token, caller), investor` | After `blacklist_remove`. |
 | `conc_warn` | `(issuer, token), (concentration_bps, limit_bps)` | When `report_concentration` is called and reported concentration exceeds configured limit (warning only; enforce blocks at `report_revenue`). |
+| `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
 
 ### Call patterns and limits
 
@@ -62,6 +65,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 - **Off-chain:** Prefer small page sizes and bounded blacklist sizes for predictable gas. See storage/gas tests in `src/test.rs` for stress behavior.
 - **Holder concentration:** Concentration is not computed on-chain (no token balance reads). Issuer or indexer calls `report_concentration(issuer, token, bps)` with the current top-holder share in bps; the contract stores it and enforces or warns based on `set_concentration_limit`. Use `try_report_revenue` when enforcement may be enabled.
 - **Rounding:** Use `compute_share(amount, revenue_share_bps, mode)` for consistent distribution math. Per-offering default is `get_rounding_mode(issuer, token)` (Truncation if unset). Sum of shares must not exceed total; both modes keep result in [0, amount].
+- **Testnet mode:** Admin can enable testnet mode via `set_testnet_mode(true)` to relax certain validations for non-production deployments. When enabled: (1) `register_offering` allows `revenue_share_bps > 10000`, (2) `report_revenue` skips concentration enforcement. Use only for testnet/development environments. Check mode with `is_testnet_mode()`.
 
 ---
 
