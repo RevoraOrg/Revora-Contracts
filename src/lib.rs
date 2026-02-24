@@ -47,7 +47,6 @@ const EVENT_SHARE_SET: Symbol = symbol_short!("share_set");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("delay_set");
 
-
 const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
 const EVENT_PROPOSAL_APPROVED: Symbol = symbol_short!("prop_app");
 const EVENT_PROPOSAL_EXECUTED: Symbol = symbol_short!("prop_exe");
@@ -71,7 +70,6 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
 }
-
 
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 
@@ -165,7 +163,6 @@ pub enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
-
 
     /// Multisig admin threshold.
     MultisigThreshold,
@@ -351,27 +348,13 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env);
         issuer.require_auth();
 
-
-        // Holder concentration guardrail (#26): reject if enforce and over limit
-        let limit_key = DataKey::ConcentrationLimit(issuer.clone(), token.clone());
-        if let Some(config) =
-            env.storage().persistent().get::<DataKey, ConcentrationLimitConfig>(&limit_key)
-        {
-            if config.enforce && config.max_bps > 0 {
-                let curr_key = DataKey::CurrentConcentration(issuer.clone(), token.clone());
-                let current: u32 = env.storage().persistent().get(&curr_key).unwrap_or(0);
-                if current > config.max_bps {
-                    return Err(RevoraError::ConcentrationLimitExceeded);
-
         // Skip concentration enforcement in testnet mode
         let testnet_mode = Self::is_testnet_mode(env.clone());
         if !testnet_mode {
             // Holder concentration guardrail (#26): reject if enforce and over limit
             let limit_key = DataKey::ConcentrationLimit(issuer.clone(), token.clone());
-            if let Some(config) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, ConcentrationLimitConfig>(&limit_key)
+            if let Some(config) =
+                env.storage().persistent().get::<DataKey, ConcentrationLimitConfig>(&limit_key)
             {
                 if config.enforce && config.max_bps > 0 {
                     let curr_key = DataKey::CurrentConcentration(issuer.clone(), token.clone());
@@ -379,7 +362,6 @@ impl RevoraRevenueShare {
                     if current > config.max_bps {
                         return Err(RevoraError::ConcentrationLimitExceeded);
                     }
-
                 }
             }
         }
@@ -1208,11 +1190,8 @@ impl RevoraRevenueShare {
     /// Emits event with new mode state.
     pub fn set_testnet_mode(env: Env, enabled: bool) -> Result<(), RevoraError> {
         let key = DataKey::Admin;
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(RevoraError::LimitReached)?;
+        let admin: Address =
+            env.storage().persistent().get(&key).ok_or(RevoraError::LimitReached)?;
         admin.require_auth();
         let mode_key = DataKey::TestnetMode;
         env.storage().persistent().set(&mode_key, &enabled);
@@ -1222,10 +1201,7 @@ impl RevoraRevenueShare {
 
     /// Return true if testnet mode is enabled.
     pub fn is_testnet_mode(env: Env) -> bool {
-        env.storage()
-            .persistent()
-            .get::<DataKey, bool>(&DataKey::TestnetMode)
-            .unwrap_or(false)
+        env.storage().persistent().get::<DataKey, bool>(&DataKey::TestnetMode).unwrap_or(false)
     }
 }
 
