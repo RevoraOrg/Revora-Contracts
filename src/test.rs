@@ -65,12 +65,12 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
     let mut calls = 0usize;
     for amount in BOUNDARY_AMOUNTS {
         for period in BOUNDARY_PERIODS {
-            client.report_revenue(&issuer, &token, &amount, &period);
+            client.report_revenue(&issuer, &token, &amount, &period, &false);
             calls += 1;
         }
     }
 
-    assert_eq!(env.events().all().len(), calls as u32);
+    assert_eq!(env.events().all().len(), (calls as u32) * 2);
 }
 
 #[test]
@@ -108,10 +108,10 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
             period = 0;
         }
 
-        client.report_revenue(&issuer, &token, &amount, &period);
+        client.report_revenue(&issuer, &token, &amount, &period, &false);
     }
 
-    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32);
+    assert_eq!(env.events().all().len(), (FUZZ_ITERATIONS as u32) * 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -1967,6 +1967,323 @@ fn freeze_succeeds_when_called_by_admin() {
     assert!(r.is_ok());
     assert!(client.is_frozen());
 }
+
+// ===========================================================================
+// Testnet mode tests (#24)
+// ===========================================================================
+
+#[test]
+fn testnet_mode_disabled_by_default() {
+    let env = Env::default();
+    let client = make_client(&env);
+    assert!(!client.is_testnet_mode());
+}
+
+#[test]
+fn set_testnet_mode_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    // Set admin first
+    client.set_admin(&admin);
+
+    // Now admin can toggle testnet mode
+    client.set_testnet_mode(&true);
+    assert!(client.is_testnet_mode());
+}
+
+#[test]
+fn set_testnet_mode_fails_without_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+
+    // No admin set - should fail
+    let result = client.try_set_testnet_mode(&true);
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_testnet_mode_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    let before = env.events().all().len();
+    client.set_testnet_mode(&true);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn testnet_mode_can_be_toggled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+
+    // Enable
+    client.set_testnet_mode(&true);
+    assert!(client.is_testnet_mode());
+
+    // Disable
+    client.set_testnet_mode(&false);
+    assert!(!client.is_testnet_mode());
+
+    // Enable again
+    client.set_testnet_mode(&true);
+    assert!(client.is_testnet_mode());
+}
+
+#[test]
+fn testnet_mode_allows_bps_over_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Set admin and enable testnet mode
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Should allow bps > 10000 in testnet mode
+    let result = client.try_register_offering(&issuer, &token, &15_000);
+    assert!(result.is_ok());
+
+    // Verify offering was registered
+    let offering = client.get_offering(&issuer, &token).unwrap();
+    assert_eq!(offering.revenue_share_bps, 15_000);
+}
+
+#[test]
+fn testnet_mode_disabled_rejects_bps_over_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Testnet mode is disabled by default
+    let result = client.try_register_offering(&issuer, &token, &15_000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn testnet_mode_skips_concentration_enforcement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Set admin and enable testnet mode
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Register offering and set concentration limit with enforcement
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &true);
+    client.report_concentration(&issuer, &token, &8000); // Over limit
+
+    // In testnet mode, report_revenue should succeed despite concentration being over limit
+    let result = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn testnet_mode_disabled_enforces_concentration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Testnet mode disabled (default)
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &true);
+    client.report_concentration(&issuer, &token, &8000); // Over limit
+
+    // Should fail with concentration enforcement
+    let result = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
+    assert!(result.is_err());
+}
+
+#[test]
+fn testnet_mode_toggle_after_offerings_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token1 = Address::generate(&env);
+    let token2 = Address::generate(&env);
+
+    // Register offering in normal mode
+    client.register_offering(&issuer, &token1, &5_000);
+
+    // Set admin and enable testnet mode
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Register offering with high bps in testnet mode
+    let result = client.try_register_offering(&issuer, &token2, &20_000);
+    assert!(result.is_ok());
+
+    // Verify both offerings exist
+    assert_eq!(client.get_offering_count(&issuer), 2);
+}
+
+#[test]
+fn testnet_mode_affects_only_validation_not_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Enable testnet mode
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Register with high bps
+    client.register_offering(&issuer, &token, &25_000);
+
+    // Disable testnet mode
+    client.set_testnet_mode(&false);
+
+    // Offering should still exist with high bps value
+    let offering = client.get_offering(&issuer, &token).unwrap();
+    assert_eq!(offering.revenue_share_bps, 25_000);
+}
+
+#[test]
+fn testnet_mode_multiple_offerings_with_varied_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Register multiple offerings with various bps values
+    for i in 1..=5 {
+        let token = Address::generate(&env);
+        let bps = 10_000 + (i * 1_000);
+        client.register_offering(&issuer, &token, &bps);
+    }
+
+    assert_eq!(client.get_offering_count(&issuer), 5);
+}
+
+#[test]
+fn testnet_mode_concentration_warning_still_emitted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    client.register_offering(&issuer, &token, &1_000);
+    client.set_concentration_limit(&issuer, &token, &5000, &false);
+
+    // Warning should still be emitted in testnet mode
+    let before = env.events().all().len();
+    client.report_concentration(&issuer, &token, &7000);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn testnet_mode_normal_operations_unaffected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Normal operations should work as expected
+    client.register_offering(&issuer, &token, &5_000);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+
+    let summary = client.get_audit_summary(&issuer, &token).unwrap();
+    assert_eq!(summary.total_revenue, 1_000_000);
+    assert_eq!(summary.report_count, 1);
+}
+
+#[test]
+fn testnet_mode_blacklist_operations_unaffected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Blacklist operations should work normally
+    client.blacklist_add(&admin, &token, &investor);
+    assert!(client.is_blacklisted(&token, &investor));
+
+    client.blacklist_remove(&admin, &token, &investor);
+    assert!(!client.is_blacklisted(&token, &investor));
+}
+
+#[test]
+fn testnet_mode_pagination_unaffected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.set_admin(&admin);
+    client.set_testnet_mode(&true);
+
+    // Register multiple offerings
+    for i in 0..10 {
+        let token = Address::generate(&env);
+        client.register_offering(&issuer, &token, &(1_000 + i * 100));
+    }
+
+    // Pagination should work normally
+    let (page, cursor) = client.get_offerings_page(&issuer, &0, &5);
+    assert_eq!(page.len(), 5);
+    assert_eq!(cursor, Some(5));
+}
+
+#[test]
+#[should_panic]
+fn testnet_mode_requires_auth_to_set() {
+    let env = Env::default();
+    // No mock_all_auths - should panic
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    client.set_admin(&admin);
+    // This should panic because we didn't mock auth
+    client.set_testnet_mode(&true);
+}
+
 // ── Emergency pause tests ───────────────────────────────────────
 
 #[test]
@@ -2021,8 +2338,10 @@ fn report_blocked_while_paused() {
     let token = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>);
+    // Register before pausing
+    client.register_offering(&issuer, &token, &1_000);
     client.pause_admin(&admin);
-    client.report_revenue(&issuer, &token, &1_000_000, &1);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
 }
 
 #[test]
