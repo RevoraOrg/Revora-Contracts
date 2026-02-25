@@ -2229,6 +2229,8 @@ This section enumerates key security assumptions, trust boundaries, and mitigati
 ### Build and test
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test
 ```
@@ -2238,3 +2240,4 @@ cargo test
 - Use feature branches per change (e.g. `feature/structured-error-codes`, `feature/storage-limit-negative-tests`).
 - Tests in `src/test.rs` are grouped by area (pagination, blacklist, structured errors, storage stress, gas characterization). Add new tests in the relevant section so parallel PRs touch different regions.
 - Keep the contract interface summary above in sync when adding or changing entrypoints or events.
+- Follow the contract lint/style policy in [`docs/contracts-style.md`](./docs/contracts-style.md).

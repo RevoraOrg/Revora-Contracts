@@ -2,7 +2,7 @@
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
-    token, vec, Address, Env, IntoVal, Vec,
+    token, vec, Address, Env, IntoVal, String as SdkString, Symbol, Vec,
 };
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
@@ -4326,6 +4326,7 @@ fn calculate_distribution_single_holder_owns_all() {
     assert_eq!(payout, 50_000);
 }
 
+
 // ── Event-only mode tests ───────────────────────────────────────────────────
 
 #[test]
@@ -4413,4 +4414,653 @@ fn test_event_only_mode_testnet_config() {
     assert!(events.iter().any(|e| e.1.contains(symbol_short!("test_mode"))));
 
     assert!(!client.is_testnet_mode());
+
+// ── Per-offering metadata storage tests (#8) ──────────────────
+
+#[test]
+fn test_set_offering_metadata_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_get_offering_metadata_returns_none_initially() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(metadata, None);
+}
+
+#[test]
+fn test_update_offering_metadata_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
+    client.set_offering_metadata(&issuer, &token, &metadata1);
+
+    let metadata2 = SdkString::from_str(&env, "ipfs://QmSecond");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata2);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_get_offering_metadata_after_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "https://example.com/metadata.json");
+    client.set_offering_metadata(&issuer, &token, &metadata);
+
+    let retrieved = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(retrieved, Some(metadata));
+}
+
+#[test]
+#[should_panic]
+fn test_set_metadata_requires_auth() {
+    let env = Env::default(); // no mock_all_auths
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    client.set_offering_metadata(&issuer, &token, &metadata);
+}
+
+#[test]
+fn test_set_metadata_nonexistent_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_metadata_respects_freeze() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.freeze();
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_metadata_respects_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin, &None);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.pause_admin(&admin);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_metadata_empty_string() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "");
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_ok());
+
+    let retrieved = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(retrieved, Some(metadata));
+}
+
+#[test]
+fn test_set_metadata_max_length() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    // Create a 256-byte string (max allowed)
+    let max_str = "a".repeat(256);
+    let metadata = SdkString::from_str(&env, &max_str);
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_metadata_oversized_data() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    // Create a 257-byte string (exceeds max)
+    let oversized_str = "a".repeat(257);
+    let metadata = SdkString::from_str(&env, &oversized_str);
+    let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_metadata_repeated_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata_values = [
+        "ipfs://QmTest0",
+        "ipfs://QmTest1",
+        "ipfs://QmTest2",
+        "ipfs://QmTest3",
+        "ipfs://QmTest4",
+    ];
+
+    for metadata_str in metadata_values.iter() {
+        let metadata = SdkString::from_str(&env, metadata_str);
+        let result = client.try_set_offering_metadata(&issuer, &token, &metadata);
+        assert!(result.is_ok());
+
+        let retrieved = client.get_offering_metadata(&issuer, &token);
+        assert_eq!(retrieved, Some(metadata));
+    }
+}
+
+#[test]
+fn test_metadata_scoped_per_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_a, &1000, &token_a);
+    client.register_offering(&issuer, &token_b, &2000, &token_b);
+
+    let metadata_a = SdkString::from_str(&env, "ipfs://QmTokenA");
+    let metadata_b = SdkString::from_str(&env, "ipfs://QmTokenB");
+
+    client.set_offering_metadata(&issuer, &token_a, &metadata_a);
+    client.set_offering_metadata(&issuer, &token_b, &metadata_b);
+
+    let retrieved_a = client.get_offering_metadata(&issuer, &token_a);
+    let retrieved_b = client.get_offering_metadata(&issuer, &token_b);
+
+    assert_eq!(retrieved_a, Some(metadata_a));
+    assert_eq!(retrieved_b, Some(metadata_b));
+}
+
+#[test]
+fn test_metadata_set_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let before = env.events().all().len();
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    client.set_offering_metadata(&issuer, &token, &metadata);
+
+    let events = env.events().all();
+    assert!(events.len() > before);
+
+    // Verify the event contains the correct symbol
+    let last_event = events.last().unwrap();
+    let (_, topics, _) = last_event;
+    let topics_vec: Vec<soroban_sdk::Val> = topics;
+    let event_symbol: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+    assert_eq!(event_symbol, symbol_short!("meta_set"));
+}
+
+#[test]
+fn test_metadata_update_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
+    client.set_offering_metadata(&issuer, &token, &metadata1);
+
+    let before = env.events().all().len();
+    let metadata2 = SdkString::from_str(&env, "ipfs://QmSecond");
+    client.set_offering_metadata(&issuer, &token, &metadata2);
+
+    let events = env.events().all();
+    assert!(events.len() > before);
+
+    // Verify the event contains the correct symbol for update
+    let last_event = events.last().unwrap();
+    let (_, topics, _) = last_event;
+    let topics_vec: Vec<soroban_sdk::Val> = topics;
+    let event_symbol: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+    assert_eq!(event_symbol, symbol_short!("meta_upd"));
+}
+
+#[test]
+fn test_metadata_events_include_correct_data() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
+    client.set_offering_metadata(&issuer, &token, &metadata);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (event_contract, topics, data) = last_event;
+
+    assert_eq!(event_contract, contract_id);
+
+    let topics_vec: Vec<soroban_sdk::Val> = topics;
+    let event_symbol: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+    assert_eq!(event_symbol, symbol_short!("meta_set"));
+
+    let event_issuer: Address = topics_vec.get(1).unwrap().into_val(&env);
+    assert_eq!(event_issuer, issuer);
+
+    let event_token: Address = topics_vec.get(2).unwrap().into_val(&env);
+    assert_eq!(event_token, token);
+
+    let event_metadata: SdkString = data.into_val(&env);
+    assert_eq!(event_metadata, metadata);
+}
+
+#[test]
+fn test_metadata_multiple_offerings_same_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token1 = Address::generate(&env);
+    let token2 = Address::generate(&env);
+    let token3 = Address::generate(&env);
+
+    client.register_offering(&issuer, &token1, &1000, &token1);
+    client.register_offering(&issuer, &token2, &2000, &token2);
+    client.register_offering(&issuer, &token3, &3000, &token3);
+
+    let meta1 = SdkString::from_str(&env, "ipfs://Qm1");
+    let meta2 = SdkString::from_str(&env, "ipfs://Qm2");
+    let meta3 = SdkString::from_str(&env, "ipfs://Qm3");
+
+    client.set_offering_metadata(&issuer, &token1, &meta1);
+    client.set_offering_metadata(&issuer, &token2, &meta2);
+    client.set_offering_metadata(&issuer, &token3, &meta3);
+
+    assert_eq!(client.get_offering_metadata(&issuer, &token1), Some(meta1));
+    assert_eq!(client.get_offering_metadata(&issuer, &token2), Some(meta2));
+    assert_eq!(client.get_offering_metadata(&issuer, &token3), Some(meta3));
+}
+
+#[test]
+fn test_metadata_after_issuer_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let old_issuer = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&old_issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmOriginal");
+    client.set_offering_metadata(&old_issuer, &token, &metadata);
+
+    // Propose and accept transfer
+    client.propose_issuer_transfer(&token, &new_issuer);
+    client.accept_issuer_transfer(&token);
+
+    // Metadata should still be accessible under old issuer key
+    let retrieved = client.get_offering_metadata(&old_issuer, &token);
+    assert_eq!(retrieved, Some(metadata));
+
+    // New issuer can now set metadata (under new issuer key)
+    let new_metadata = SdkString::from_str(&env, "ipfs://QmNew");
+    let result = client.try_set_offering_metadata(&new_issuer, &token, &new_metadata);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_metadata_requires_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let non_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let metadata = SdkString::from_str(&env, "ipfs://QmTest");
+    let result = client.try_set_offering_metadata(&non_issuer, &token, &metadata);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_metadata_ipfs_cid_format() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    // Test typical IPFS CID (46 characters)
+    let ipfs_cid = SdkString::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let result = client.try_set_offering_metadata(&issuer, &token, &ipfs_cid);
+    assert!(result.is_ok());
+
+    let retrieved = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(retrieved, Some(ipfs_cid));
+}
+
+#[test]
+fn test_metadata_https_url_format() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    let https_url = SdkString::from_str(&env, "https://api.example.com/metadata/token123.json");
+    let result = client.try_set_offering_metadata(&issuer, &token, &https_url);
+    assert!(result.is_ok());
+
+    let retrieved = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(retrieved, Some(https_url));
+}
+
+#[test]
+fn test_metadata_content_hash_format() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1000, &token);
+
+    // SHA256 hash as hex string
+    let content_hash = SdkString::from_str(
+        &env,
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    );
+    let result = client.try_set_offering_metadata(&issuer, &token, &content_hash);
+    assert!(result.is_ok());
+
+    let retrieved = client.get_offering_metadata(&issuer, &token);
+    assert_eq!(retrieved, Some(content_hash));
+}
+
+// ── Platform fee tests (#6) ─────────────────────────────────
+
+#[test]
+fn default_platform_fee_is_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_and_get_platform_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&250);
+    assert_eq!(client.get_platform_fee(), 250);
+}
+
+#[test]
+fn set_platform_fee_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500);
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_platform_fee_to_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&5000);
+    assert_eq!(client.get_platform_fee(), 5000);
+}
+
+#[test]
+fn set_platform_fee_above_maximum_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    let result = client.try_set_platform_fee(&5001);
+    assert!(result.is_err());
+}
+
+#[test]
+fn update_platform_fee_multiple_times() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+    assert_eq!(client.get_platform_fee(), 100);
+    client.set_platform_fee(&200);
+    assert_eq!(client.get_platform_fee(), 200);
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+#[should_panic]
+fn set_platform_fee_requires_admin() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+}
+
+#[test]
+fn calculate_platform_fee_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&250); // 2.5%
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 250); // 10000 * 250 / 10000 = 250
+}
+
+#[test]
+fn calculate_platform_fee_with_zero_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500);
+    let fee = client.calculate_platform_fee(&0);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn calculate_platform_fee_with_zero_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn calculate_platform_fee_at_maximum_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&5000); // 50%
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 5_000);
+}
+
+#[test]
+fn calculate_platform_fee_precision() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&1); // 0.01%
+    let fee = client.calculate_platform_fee(&1_000_000);
+    assert_eq!(fee, 100); // 1000000 * 1 / 10000 = 100
+}
+
+#[test]
+#[should_panic]
+fn platform_fee_only_admin_can_set() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+}
+
+#[test]
+fn platform_fee_large_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100); // 1%
+    let large_amount: i128 = 1_000_000_000_000;
+    let fee = client.calculate_platform_fee(&large_amount);
+    assert_eq!(fee, 10_000_000_000); // 1% of 1 trillion
+}
+
+#[test]
+fn platform_fee_integration_with_revenue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500); // 5%
+    let revenue: i128 = 100_000;
+    let fee = client.calculate_platform_fee(&revenue);
+    assert_eq!(fee, 5_000); // 5% of 100,000
+    let remaining = revenue - fee;
+    assert_eq!(remaining, 95_000);
+
 }
