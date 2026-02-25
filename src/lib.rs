@@ -122,6 +122,16 @@ pub struct AuditSummary {
     pub report_count: u64,
 }
 
+/// Cross-offering aggregated metrics (#39).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AggregatedMetrics {
+    pub total_reported_revenue: i128,
+    pub total_deposited_revenue: i128,
+    pub total_report_count: u64,
+    pub offering_count: u32,
+}
+
 /// Result of simulate_distribution (#29): per-holder payout and total.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -202,6 +212,14 @@ pub enum DataKey {
     PlatformFeeBps,
     /// Per (issuer, token): minimum revenue per period below which no distribution is triggered (#25).
     MinRevenueThreshold(Address, Address),
+    /// Global count of unique issuers (#39).
+    IssuerCount,
+    /// Issuer address at global index (#39).
+    IssuerItem(u32),
+    /// Whether an issuer is already registered in the global registry (#39).
+    IssuerRegistered(Address),
+    /// Total deposited revenue for an offering token (#39).
+    DepositedRevenue(Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -404,6 +422,25 @@ impl RevoraRevenueShare {
         // Maintain reverse lookup: token -> issuer
         let issuer_lookup_key = DataKey::OfferingIssuer(token.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
+
+        // Track issuer in global registry for cross-offering aggregation (#39)
+        let registered_key = DataKey::IssuerRegistered(issuer.clone());
+        if !env.storage().persistent().has(&registered_key) {
+            let issuer_count_key = DataKey::IssuerCount;
+            let issuer_count: u32 = env
+                .storage()
+                .persistent()
+                .get(&issuer_count_key)
+                .unwrap_or(0);
+            let issuer_item_key = DataKey::IssuerItem(issuer_count);
+            env.storage()
+                .persistent()
+                .set(&issuer_item_key, &issuer.clone());
+            env.storage()
+                .persistent()
+                .set(&issuer_count_key, &(issuer_count + 1));
+            env.storage().persistent().set(&registered_key, &true);
+        }
 
         env.events().publish(
             (symbol_short!("offer_reg"), issuer.clone()),
@@ -1044,6 +1081,13 @@ impl RevoraRevenueShare {
 
         // Store period revenue
         env.storage().persistent().set(&rev_key, &amount);
+
+        // Track total deposited revenue per offering (#39)
+        let deposited_key = DataKey::DepositedRevenue(token.clone());
+        let total_deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&deposited_key, &total_deposited.saturating_add(amount));
 
         // Store deposit timestamp for time-delayed claims (#27)
         let deposit_time = env.ledger().timestamp();
@@ -1725,6 +1769,110 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, bool>(&DataKey::TestnetMode)
             .unwrap_or(false)
+    }
+
+    // ── Cross-offering aggregation queries (#39) ──────────────────
+
+    /// Maximum number of issuers to iterate for platform-wide aggregation.
+    const MAX_AGGREGATION_ISSUERS: u32 = 50;
+
+    /// Aggregate metrics across all offerings for a single issuer.
+    /// Iterates the issuer's offerings and sums audit summary and deposited revenue data.
+    pub fn get_issuer_aggregation(env: Env, issuer: Address) -> AggregatedMetrics {
+        let count = Self::get_offering_count(env.clone(), issuer.clone());
+        let mut total_reported: i128 = 0;
+        let mut total_deposited: i128 = 0;
+        let mut total_reports: u64 = 0;
+
+        for i in 0..count {
+            let item_key = DataKey::OfferItem(issuer.clone(), i);
+            let offering: Offering = env.storage().persistent().get(&item_key).unwrap();
+
+            // Sum audit summary (reported revenue)
+            let summary_key = DataKey::AuditSummary(issuer.clone(), offering.token.clone());
+            if let Some(summary) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AuditSummary>(&summary_key)
+            {
+                total_reported = total_reported.saturating_add(summary.total_revenue);
+                total_reports = total_reports.saturating_add(summary.report_count);
+            }
+
+            // Sum deposited revenue
+            let deposited_key = DataKey::DepositedRevenue(offering.token.clone());
+            let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
+            total_deposited = total_deposited.saturating_add(deposited);
+        }
+
+        AggregatedMetrics {
+            total_reported_revenue: total_reported,
+            total_deposited_revenue: total_deposited,
+            total_report_count: total_reports,
+            offering_count: count,
+        }
+    }
+
+    /// Aggregate metrics across all issuers (platform-wide).
+    /// Iterates the global issuer registry, capped at MAX_AGGREGATION_ISSUERS for gas safety.
+    pub fn get_platform_aggregation(env: Env) -> AggregatedMetrics {
+        let issuer_count_key = DataKey::IssuerCount;
+        let issuer_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&issuer_count_key)
+            .unwrap_or(0);
+
+        let cap = core::cmp::min(issuer_count, Self::MAX_AGGREGATION_ISSUERS);
+
+        let mut total_reported: i128 = 0;
+        let mut total_deposited: i128 = 0;
+        let mut total_reports: u64 = 0;
+        let mut total_offerings: u32 = 0;
+
+        for i in 0..cap {
+            let issuer_item_key = DataKey::IssuerItem(i);
+            let issuer: Address = env.storage().persistent().get(&issuer_item_key).unwrap();
+
+            let metrics = Self::get_issuer_aggregation(env.clone(), issuer);
+            total_reported = total_reported.saturating_add(metrics.total_reported_revenue);
+            total_deposited = total_deposited.saturating_add(metrics.total_deposited_revenue);
+            total_reports = total_reports.saturating_add(metrics.total_report_count);
+            total_offerings = total_offerings.saturating_add(metrics.offering_count);
+        }
+
+        AggregatedMetrics {
+            total_reported_revenue: total_reported,
+            total_deposited_revenue: total_deposited,
+            total_report_count: total_reports,
+            offering_count: total_offerings,
+        }
+    }
+
+    /// Return all registered issuer addresses (up to MAX_AGGREGATION_ISSUERS).
+    pub fn get_all_issuers(env: Env) -> Vec<Address> {
+        let issuer_count_key = DataKey::IssuerCount;
+        let issuer_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&issuer_count_key)
+            .unwrap_or(0);
+
+        let cap = core::cmp::min(issuer_count, Self::MAX_AGGREGATION_ISSUERS);
+        let mut issuers = Vec::new(&env);
+
+        for i in 0..cap {
+            let issuer_item_key = DataKey::IssuerItem(i);
+            let issuer: Address = env.storage().persistent().get(&issuer_item_key).unwrap();
+            issuers.push_back(issuer);
+        }
+        issuers
+    }
+
+    /// Return the total deposited revenue for a specific offering token.
+    pub fn get_total_deposited_revenue(env: Env, token: Address) -> i128 {
+        let key = DataKey::DepositedRevenue(token);
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 
     // ── Platform fee configuration (#6) ────────────────────────
