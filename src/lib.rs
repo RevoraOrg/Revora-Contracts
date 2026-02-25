@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Map,
-    Symbol, Vec,
+    String, Symbol, Vec,
 };
 
 /// Centralized contract error codes. Auth failures are signaled by host panic (require_auth).
@@ -39,6 +39,8 @@ pub enum RevoraError {
     UnauthorizedTransferAccept = 14,
     /// Payout asset does not match the configured payout asset for this offering.
     PayoutAssetMismatch = 15,
+    /// Metadata string exceeds maximum allowed length.
+    MetadataTooLarge = 16,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -75,6 +77,8 @@ const EVENT_INIT: Symbol = symbol_short!("init");
 const EVENT_PAUSED: Symbol = symbol_short!("paused");
 const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
+const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
+const EVENT_METADATA_UPDATED: Symbol = symbol_short!("meta_upd");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
@@ -177,6 +181,8 @@ pub enum DataKey {
     Paused,
     /// Feature flag: emit versioned events when present (v1 schema).
     EventVersioningEnabled,
+    /// Per (issuer, token): metadata reference (IPFS hash, HTTPS URI, etc.)
+    OfferingMetadata(Address, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1487,6 +1493,75 @@ impl RevoraRevenueShare {
         (total_revenue * offering.revenue_share_bps as i128)
             .checked_div(BPS_DENOMINATOR)
             .expect("division overflow")
+    }
+
+    // ── Per-offering metadata storage (#8) ─────────────────────
+
+    /// Maximum allowed length for metadata strings (256 bytes).
+    /// Supports IPFS CIDs (46 chars), URLs, and content hashes.
+    const MAX_METADATA_LENGTH: usize = 256;
+
+    /// Set or update metadata reference for an offering.
+    ///
+    /// Only callable by the current issuer of the offering.
+    /// Metadata can be an IPFS hash (e.g., "Qm..."), HTTPS URI, or any reference string.
+    /// Maximum length: 256 bytes.
+    ///
+    /// Emits `EVENT_METADATA_SET` on first set, `EVENT_METADATA_UPDATED` on subsequent updates.
+    ///
+    /// # Errors
+    /// - `OfferingNotFound`: offering doesn't exist or caller is not the current issuer
+    /// - `MetadataTooLarge`: metadata string exceeds MAX_METADATA_LENGTH
+    /// - `ContractFrozen`: contract is frozen
+    pub fn set_offering_metadata(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        metadata: String,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
+
+        // Verify offering exists and issuer is current
+        let current_issuer =
+            Self::get_current_issuer(&env, &token).ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        issuer.require_auth();
+
+        // Validate metadata length
+        let metadata_bytes = metadata.len();
+        if metadata_bytes > Self::MAX_METADATA_LENGTH as u32 {
+            return Err(RevoraError::MetadataTooLarge);
+        }
+
+        let key = DataKey::OfferingMetadata(issuer.clone(), token.clone());
+        let is_update = env.storage().persistent().has(&key);
+
+        // Store metadata
+        env.storage().persistent().set(&key, &metadata);
+
+        // Emit appropriate event
+        if is_update {
+            env.events()
+                .publish((EVENT_METADATA_UPDATED, issuer, token), metadata);
+        } else {
+            env.events()
+                .publish((EVENT_METADATA_SET, issuer, token), metadata);
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve metadata reference for an offering.
+    ///
+    /// Returns `None` if no metadata has been set for this offering.
+    pub fn get_offering_metadata(env: Env, issuer: Address, token: Address) -> Option<String> {
+        let key = DataKey::OfferingMetadata(issuer, token);
+        env.storage().persistent().get(&key)
     }
 
     // ── Testnet mode configuration (#24) ───────────────────────
