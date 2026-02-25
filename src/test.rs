@@ -1,3 +1,5 @@
+--- START OF FILE Paste February 25, 2026 - 1:18PM ---
+
 #![cfg(test)]
 use soroban_sdk::{
     symbol_short,
@@ -5,7 +7,7 @@ use soroban_sdk::{
     token, vec, Address, Env, IntoVal, Vec,
 };
 
-use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
+use crate::{DataKey, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
 // ── helper ────────────────────────────────────────────────────
 
@@ -1095,6 +1097,27 @@ fn blacklist_remove_requires_auth() {
     let investor = Address::generate(&env);
 
     client.blacklist_remove(&bad_actor, &token, &investor);
+}
+
+// ── reentrancy / reuse guard tests ─────────────────────────────────
+
+#[test]
+#[should_panic]
+fn blacklist_add_blocked_when_in_progress_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client   = make_client(&env);
+    let admin    = Address::generate(&env);
+    let token    = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    // Simulate an in-progress flag left set (e.g., mid-execution or concurrent state)
+    env.storage()
+        .persistent()
+        .set(&DataKey::InProgress(token.clone()), &true);
+
+    // Should panic due to guard
+    client.blacklist_add(&admin, &token, &investor);
 }
 
 // ── structured error codes (#41) ──────────────────────────────
@@ -2911,6 +2934,92 @@ fn testnet_mode_pagination_unaffected() {
     let (page, cursor) = client.get_offerings_page(&issuer, &0, &5);
     assert_eq!(page.len(), 5);
     assert_eq!(cursor, Some(5));
+}
+
+#[test]
+#[should_panic]
+fn blacklist_remove_blocked_when_in_progress_flag_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client   = make_client(&env);
+    let admin    = Address::generate(&env);
+    let token    = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::InProgress(token.clone()), &true);
+
+    client.blacklist_remove(&admin, &token, &investor);
+}
+
+// ── Property-based distribution math tests ─────────────────────────
+// Helper used only by tests: compute integer payouts from revenue and bps
+fn compute_payouts(revenue: i128, bps: &[u32]) -> Option<Vec<i128>> {
+    if revenue < 0 {
+        return None;
+    }
+
+    let mut payouts: Vec<i128> = Vec::with_capacity(bps.len());
+    for &b in bps {
+        // Use checked multiplication to avoid panics on overflow
+        let b_i128 = b as i128;
+        match revenue.checked_mul(b_i128) {
+            Some(prod) => payouts.push(prod / 10_000),
+            None => return None,
+        }
+    }
+    Some(payouts)
+}
+
+// Property tests using proptest: ensure invariants across many random inputs
+#[cfg(test)]
+mod prop_tests {
+    use super::compute_payouts;
+    use proptest::prelude::*;
+
+    // Generate vectors of bps and scale them so their sum <= 10_000
+    fn normalize_bps(mut v: Vec<u32>) -> Vec<u32> {
+        let sum: u128 = v.iter().map(|&x| x as u128).sum();
+        if sum == 0 || sum <= 10_000 {
+            return v;
+        }
+        v.iter().map(|&x| ((x as u128 * 10_000u128) / sum) as u32).collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, .. ProptestConfig::default() })]
+
+        #[test]
+        fn sum_payouts_le_revenue(
+            revenue in 0i128..=(i128::MAX / 10_000),
+            vec_b in proptest::collection::vec(0u32..=10_000u32, 0..20)
+        ) {
+            let shares = normalize_bps(vec_b);
+            // Sanity: shares sum must be <= 10_000
+            prop_assert!(shares.iter().map(|&x| x as u128).sum::<u128>() <= 10_000u128);
+
+            if let Some(payouts) = compute_payouts(revenue, &shares) {
+                let total: i128 = payouts.iter().sum();
+                // Invariant: payouts never exceed revenue
+                prop_assert!(total <= revenue);
+                // No negative payouts
+                for &p in &payouts { prop_assert!(p >= 0); }
+
+                // The rounding remainder (revenue - total) must be non-negative
+                // and strictly less than the number of recipients + 1
+                let remainder = revenue - total;
+                prop_assert!(remainder >= 0);
+                prop_assert!(remainder < (shares.len() as i128 + 1));
+            }
+        }
+
+        #[test]
+        fn extreme_values_dont_panic(revenue in 0i128..=i128::MAX, vec_b in proptest::collection::vec(0u32..=u32::MAX, 0..50)) {
+            // We only assert that the function does not panic; it may return None
+            let _ = compute_payouts(revenue, &vec_b);
+        }
+    }
 }
 
 #[test]
