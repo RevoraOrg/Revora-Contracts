@@ -31,13 +31,19 @@ pub enum RevoraError {
     ContractFrozen = 10,
     /// Revenue for this period is not yet claimable (delay not elapsed).
     ClaimDelayNotElapsed = 11,
+    /// Payout asset does not match the configured payout asset for this offering.
+    PayoutAssetMismatch = 12,
 }
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
+const EVENT_REVENUE_REPORTED_ASSET: Symbol = symbol_short!("rev_repa");
 const EVENT_REVENUE_REPORT_INITIAL: Symbol = symbol_short!("rev_init");
+const EVENT_REVENUE_REPORT_INITIAL_ASSET: Symbol = symbol_short!("rev_inia");
 const EVENT_REVENUE_REPORT_OVERRIDE: Symbol = symbol_short!("rev_ovrd");
+const EVENT_REVENUE_REPORT_OVERRIDE_ASSET: Symbol = symbol_short!("rev_ovra");
 const EVENT_REVENUE_REPORT_REJECTED: Symbol = symbol_short!("rev_rej");
+const EVENT_REVENUE_REPORT_REJECTED_ASSET: Symbol = symbol_short!("rev_reja");
 const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
 const EVENT_BL_REM: Symbol = symbol_short!("bl_rem");
 const EVENT_CONCENTRATION_WARNING: Symbol = symbol_short!("conc_warn");
@@ -76,6 +82,9 @@ const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 const EVENT_INIT: Symbol = symbol_short!("init");
 const EVENT_PAUSED: Symbol = symbol_short!("paused");
 const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
+const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
+
+const BPS_DENOMINATOR: i128 = 10_000;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +92,7 @@ pub struct Offering {
     pub issuer: Address,
     pub token: Address,
     pub revenue_share_bps: u32,
+    pub payout_asset: Address,
 }
 
 /// Per-offering concentration guardrail config (#26).
@@ -285,6 +295,7 @@ impl RevoraRevenueShare {
         issuer: Address,
         token: Address,
         revenue_share_bps: u32,
+        payout_asset: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env);
@@ -299,13 +310,29 @@ impl RevoraRevenueShare {
         let count_key = DataKey::OfferCount(issuer.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
+
         let offering = Offering { issuer: issuer.clone(), token: token.clone(), revenue_share_bps };
+
+        let offering = Offering {
+            issuer: issuer.clone(),
+            token: token.clone(),
+            revenue_share_bps,
+            payout_asset: payout_asset.clone(),
+        };
+
 
         let item_key = DataKey::OfferItem(issuer.clone(), count);
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+
         env.events().publish((symbol_short!("offer_reg"), issuer), (token, revenue_share_bps));
+
+        env.events().publish(
+            (symbol_short!("offer_reg"), issuer),
+            (token, revenue_share_bps, payout_asset),
+        );
+
         Ok(())
     }
 
@@ -340,6 +367,7 @@ impl RevoraRevenueShare {
         env: Env,
         issuer: Address,
         token: Address,
+        payout_asset: Address,
         amount: i128,
         period_id: u64,
         override_existing: bool,
@@ -347,6 +375,12 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env);
         issuer.require_auth();
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.payout_asset != payout_asset {
+            return Err(RevoraError::PayoutAssetMismatch);
+        }
 
         // Skip concentration enforcement in testnet mode
         let testnet_mode = Self::is_testnet_mode(env.clone());
@@ -383,9 +417,29 @@ impl RevoraRevenueShare {
                         (EVENT_REVENUE_REPORT_OVERRIDE, issuer.clone(), token.clone()),
                         (amount, period_id, existing_amount, blacklist.clone()),
                     );
+
+                    env.events().publish(
+                        (
+                            EVENT_REVENUE_REPORT_OVERRIDE_ASSET,
+                            issuer.clone(),
+                            token.clone(),
+                            payout_asset.clone(),
+                        ),
+                        (amount, period_id, existing_amount, blacklist.clone()),
+                    );
                 } else {
                     env.events().publish(
                         (EVENT_REVENUE_REPORT_REJECTED, issuer.clone(), token.clone()),
+                        (amount, period_id, existing_amount, blacklist.clone()),
+                    );
+
+                    env.events().publish(
+                        (
+                            EVENT_REVENUE_REPORT_REJECTED_ASSET,
+                            issuer.clone(),
+                            token.clone(),
+                            payout_asset.clone(),
+                        ),
                         (amount, period_id, existing_amount, blacklist.clone()),
                     );
                 }
@@ -398,6 +452,16 @@ impl RevoraRevenueShare {
                     (EVENT_REVENUE_REPORT_INITIAL, issuer.clone(), token.clone()),
                     (amount, period_id, blacklist.clone()),
                 );
+
+                env.events().publish(
+                    (
+                        EVENT_REVENUE_REPORT_INITIAL_ASSET,
+                        issuer.clone(),
+                        token.clone(),
+                        payout_asset.clone(),
+                    ),
+                    (amount, period_id, blacklist.clone()),
+                );
             }
         }
 
@@ -405,6 +469,16 @@ impl RevoraRevenueShare {
         env.events().publish(
             (EVENT_REVENUE_REPORTED, issuer.clone(), token.clone()),
             (amount, period_id, blacklist),
+        );
+
+        env.events().publish(
+            (
+                EVENT_REVENUE_REPORTED_ASSET,
+                issuer.clone(),
+                token.clone(),
+                payout_asset,
+            ),
+            (amount, period_id),
         );
 
         // Audit log summary (#34): maintain per-offering total revenue and report count
@@ -664,8 +738,10 @@ impl RevoraRevenueShare {
         issuer.require_auth();
 
         // Verify offering exists
-        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
-            return Err(RevoraError::OfferingNotFound);
+        let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.payout_asset != payment_token {
+            return Err(RevoraError::PayoutAssetMismatch);
         }
 
         // Check period not already deposited
@@ -1181,6 +1257,101 @@ impl RevoraRevenueShare {
             }
         }
         Err(RevoraError::LimitReached)
+    }
+
+    // ── Revenue distribution calculation ───────────────────────────
+
+    /// Calculate the distribution amount for a token holder.
+    ///
+    /// This function computes the payout amount for a single holder using
+    /// fixed-point arithmetic with basis points (BPS) precision.
+    ///
+    /// Formula:
+    ///   distributable_revenue = total_revenue * revenue_share_bps / BPS_DENOMINATOR
+    ///   holder_payout = holder_balance * distributable_revenue / total_supply
+    ///
+    /// Rounding: Uses integer division which rounds down (floor).
+    /// This is conservative and ensures the contract never over-distributes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn calculate_distribution(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        token: Address,
+        total_revenue: i128,
+        total_supply: i128,
+        holder_balance: i128,
+        holder: Address,
+    ) -> i128 {
+        caller.require_auth();
+
+        if total_supply == 0 {
+            panic!("total_supply cannot be zero");
+        }
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
+            .expect("offering not found");
+
+        if Self::is_blacklisted(env.clone(), token.clone(), holder.clone()) {
+            panic!("holder is blacklisted and cannot receive distribution");
+        }
+
+        if total_revenue == 0 || holder_balance == 0 {
+            let payout = 0i128;
+            env.events().publish(
+                (EVENT_DIST_CALC, token.clone(), holder.clone()),
+                (
+                    total_revenue,
+                    total_supply,
+                    holder_balance,
+                    offering.revenue_share_bps,
+                    payout,
+                ),
+            );
+            return payout;
+        }
+
+        let distributable_revenue = (total_revenue * offering.revenue_share_bps as i128)
+            .checked_div(BPS_DENOMINATOR)
+            .expect("division overflow");
+
+        let payout = (holder_balance * distributable_revenue)
+            .checked_div(total_supply)
+            .expect("division overflow");
+
+        env.events().publish(
+            (EVENT_DIST_CALC, token, holder),
+            (
+                total_revenue,
+                total_supply,
+                holder_balance,
+                offering.revenue_share_bps,
+                payout,
+            ),
+        );
+
+        payout
+    }
+
+    /// Calculate the total distributable revenue for an offering.
+    ///
+    /// This is a helper function for off-chain verification.
+    pub fn calculate_total_distributable(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        total_revenue: i128,
+    ) -> i128 {
+        let offering =
+            Self::get_offering(env, issuer, token).expect("offering not found for token");
+
+        if total_revenue == 0 {
+            return 0;
+        }
+
+        (total_revenue * offering.revenue_share_bps as i128)
+            .checked_div(BPS_DENOMINATOR)
+            .expect("division overflow")
     }
 
     // ── Testnet mode configuration (#24) ───────────────────────

@@ -1,7 +1,8 @@
 #![cfg(test)]
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events as _, testutils::Ledger as _, token, Address, Env,
-    Vec,
+    symbol_short,
+    testutils::{Address as _, Events as _, Ledger as _},
+    token, vec, Address, Env, IntoVal, Vec,
 };
 
 use crate::{
@@ -20,8 +21,14 @@ const BOUNDARY_PERIODS: [u64; 6] = [0, 1, 2, 10_000, u64::MAX - 1, u64::MAX];
 const FUZZ_ITERATIONS: usize = 128;
 
 fn next_u64(seed: &mut u64) -> u64 {
+
     // Deterministic LCG for repeatable pseudo-random test values.
     *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+
     *seed
 }
 
@@ -35,6 +42,578 @@ fn next_period(seed: &mut u64) -> u64 {
     next_u64(seed)
 }
 
+// ─── Event-to-flow mapping ───────────────────────────────────────────────────
+//
+//  Flow: Offering Registration  (register_offering)
+//    topic[0] = Symbol("offer_reg")
+//    topic[1] = Address  (issuer)
+//    data     = (Address (token), u32 (revenue_share_bps))
+//
+//  Flow: Revenue Report  (report_revenue)
+//    topic[0] = Symbol("rev_rep")
+//    topic[1] = Address  (issuer)
+//    topic[2] = Address  (token)
+//    data     = (i128 (amount), u64 (period_id), Vec<Address> (blacklist))
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Single-event structure tests ─────────────────────────────────────────────
+
+#[test]
+fn register_offering_emits_exact_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let bps: u32 = 1_500;
+
+    client.register_offering(&issuer, &token, &bps);
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), bps).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn report_revenue_emits_exact_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let amount: i128 = 5_000_000;
+    let period_id: u64 = 42;
+
+    client.report_revenue(&issuer, &token, &amount, &period_id, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (amount, period_id, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (amount, period_id, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+// ── Ordering tests ───────────────────────────────────────────────────────────
+
+#[test]
+fn combined_flow_preserves_event_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let bps: u32 = 1_000;
+    let amount: i128 = 1_000_000;
+    let period_id: u64 = 1;
+
+    client.register_offering(&issuer, &token, &bps);
+    client.report_revenue(&issuer, &token, &amount, &period_id, &false);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 3);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), bps).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (amount, period_id, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (amount, period_id, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn complex_mixed_flow_events_in_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer_a = Address::generate(&env);
+    let issuer_b = Address::generate(&env);
+    let token_x = Address::generate(&env);
+    let token_y = Address::generate(&env);
+
+    // Interleave: register A, register B, report A, report B
+    client.register_offering(&issuer_a, &token_x, &500);
+    client.register_offering(&issuer_b, &token_y, &750);
+    client.report_revenue(&issuer_a, &token_x, &100_000, &1, &false);
+    client.report_revenue(&issuer_b, &token_y, &200_000, &1, &false);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 6);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer_a.clone()).into_val(&env),
+                (token_x.clone(), 500u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer_b.clone()).into_val(&env),
+                (token_y.clone(), 750u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer_a.clone(), token_x.clone()).into_val(&env),
+                (100_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer_a.clone(), token_x.clone()).into_val(&env),
+                (100_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer_b.clone(), token_y.clone()).into_val(&env),
+                (200_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer_b.clone(), token_y.clone()).into_val(&env),
+                (200_000i128, 1u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+// ── Multi-entity tests ───────────────────────────────────────────────────────
+
+#[test]
+fn multiple_offerings_emit_distinct_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_a, &100);
+    client.register_offering(&issuer, &token_b, &200);
+    client.register_offering(&issuer, &token_c, &300);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 3);
+
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token_a.clone(), 100u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token_b.clone(), 200u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token_c.clone(), 300u32).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn multiple_revenue_reports_same_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &10_000, &1, &false);
+    client.report_revenue(&issuer, &token, &20_000, &2, &false);
+    client.report_revenue(&issuer, &token, &30_000, &3, &false);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 6);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (10_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (10_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (20_000i128, 2u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (20_000i128, 2u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (30_000i128, 3u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (30_000i128, 3u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn same_issuer_different_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token_x = Address::generate(&env);
+    let token_y = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_x, &1_000);
+    client.register_offering(&issuer, &token_y, &2_000);
+    client.report_revenue(&issuer, &token_x, &500_000, &1, &false);
+    client.report_revenue(&issuer, &token_y, &750_000, &1, &false);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 6);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        events,
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token_x.clone(), 1_000u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token_y.clone(), 2_000u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token_x.clone()).into_val(&env),
+                (500_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token_x.clone()).into_val(&env),
+                (500_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token_y.clone()).into_val(&env),
+                (750_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token_y.clone()).into_val(&env),
+                (750_000i128, 1u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+// ── Topic / symbol inspection tests ──────────────────────────────────────────
+
+#[test]
+fn topic_symbols_are_distinct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1_000);
+    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1_000u32).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (1_000_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (1_000_000i128, 1u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn rev_rep_topics_include_token_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &999, &7, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (999i128, 7u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (999i128, 7u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+// ── Boundary / edge-case tests ───────────────────────────────────────────────
+
+#[test]
+fn zero_bps_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &0);
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 0u32).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn max_bps_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // 10_000 bps == 100%
+    client.register_offering(&issuer, &token, &10_000);
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 10_000u32).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn zero_amount_revenue_report() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.report_revenue(&issuer, &token, &0, &1, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (0i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (0i128, 1u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn large_revenue_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let large_amount: i128 = i128::MAX;
+    client.report_revenue(&issuer, &token, &large_amount, &u64::MAX, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (large_amount, u64::MAX, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (large_amount, u64::MAX, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn negative_revenue_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Negative revenue (e.g. clawback / adjustment)
+    let negative: i128 = -500_000;
+    client.report_revenue(&issuer, &token, &negative, &99, &false);
+
+    let empty_bl = Vec::<Address>::new(&env);
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (negative, 99u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
+                (negative, 99u64, empty_bl).into_val(&env),
+            ),
+        ]
+    );
+}
+
 // ── original smoke test ───────────────────────────────────────
 
 #[test]
@@ -44,9 +623,10 @@ fn it_emits_events_on_register_and_report() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000_000, &1, &false);
 
     assert!(env.events().all().len() >= 2);
 }
@@ -61,20 +641,26 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
 
     let mut calls = 0usize;
     for amount in BOUNDARY_AMOUNTS {
         for period in BOUNDARY_PERIODS {
-            client.report_revenue(&issuer, &token, &amount, &period, &false);
+            client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
             calls += 1;
         }
     }
+
 
     // Each report_revenue call emits 2 events: a specific event (rev_init/rev_ovrd/rev_rej)
     // plus the backward-compatible rev_rep event.
     assert_eq!(env.events().all().len(), (calls * 2) as u32);
 
     assert_eq!(env.events().all().len(), (calls as u32) * 2);
+
+    assert_eq!(env.events().all().len(), 1 + (calls as u32) * 4);
+
 }
 
 #[test]
@@ -85,6 +671,8 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
 
     // Same seed must produce the exact same sequence.
     let mut seed_a = 0x00A1_1CE5_ED19_u64;
@@ -112,13 +700,17 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
             period = 0;
         }
 
-        client.report_revenue(&issuer, &token, &amount, &period, &false);
+        client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
     }
+
 
     // Each report_revenue call emits 2 events (specific + backward-compatible rev_rep).
     assert_eq!(env.events().all().len(), (FUZZ_ITERATIONS * 2) as u32);
 
     assert_eq!(env.events().all().len(), (FUZZ_ITERATIONS as u32) * 2);
+
+    assert_eq!(env.events().all().len(), 1 + (FUZZ_ITERATIONS as u32) * 4);
+
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +731,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address) {
 fn register_n(env: &Env, client: &RevoraRevenueShareClient, issuer: &Address, n: u32) {
     for i in 0..n {
         let token = Address::generate(env);
-        client.register_offering(issuer, &token, &(100 + i));
+        let payout_asset = Address::generate(env);
+        client.register_offering(issuer, &token, &(100 + i), &payout_asset);
     }
 }
 
@@ -260,13 +853,15 @@ fn limit_exceeding_max_is_capped() {
 fn offerings_preserve_correct_data() {
     let (env, client, issuer) = setup();
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &500);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &500, &payout_asset);
 
     let (page, _) = client.get_offerings_page(&issuer, &0, &10);
     let offering = page.get(0).unwrap();
     assert_eq!(offering.issuer, issuer);
     assert_eq!(offering.token, token);
     assert_eq!(offering.revenue_share_bps, 500);
+    assert_eq!(offering.payout_asset, payout_asset);
 }
 
 #[test]
@@ -530,8 +1125,9 @@ fn register_offering_rejects_bps_over_10000() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
-    let result = client.try_register_offering(&issuer, &token, &10_001);
+    let result = client.try_register_offering(&issuer, &token, &10_001, &payout_asset);
     assert!(
         result.is_err(),
         "contract must return Err(RevoraError::InvalidRevenueShareBps) for bps > 10000"
@@ -546,8 +1142,9 @@ fn register_offering_accepts_bps_exactly_10000() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
-    let result = client.try_register_offering(&issuer, &token, &10_000);
+    let result = client.try_register_offering(&issuer, &token, &10_000, &payout_asset);
     assert!(result.is_ok());
 }
 
@@ -561,11 +1158,9 @@ const STORAGE_STRESS_OFFERING_COUNT: u32 = 200;
 #[test]
 fn storage_stress_many_offerings_no_panic() {
     let (env, client, issuer) = setup();
-    // Simulate many offerings within Soroban environment; ensure no panic or unexpected behavior.
     register_n(&env, &client, &issuer, STORAGE_STRESS_OFFERING_COUNT);
     let count = client.get_offering_count(&issuer);
     assert_eq!(count, STORAGE_STRESS_OFFERING_COUNT);
-    // Verify we can read back pages at the end of the range.
     let (page, cursor) =
         client.get_offerings_page(&issuer, &(STORAGE_STRESS_OFFERING_COUNT - 5), &10);
     assert_eq!(page.len(), 5);
@@ -579,11 +1174,22 @@ fn storage_stress_many_reports_no_panic() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
 
-    // Many report_revenue calls; storage growth is minimal (events only), but we stress the path.
     for period_id in 1..=100_u64 {
+
         client.report_revenue(&issuer, &token, &(period_id as i128 * 10_000), &period_id, &false);
+
+        client.report_revenue(
+            &issuer,
+            &token,
+            &payout_asset,
+            &(period_id as i128 * 10_000),
+            &period_id,
+            &false,
+        );
+
     }
     assert!(env.events().all().len() >= 100);
 }
@@ -610,36 +1216,33 @@ fn storage_stress_large_blacklist_no_panic() {
 
 #[test]
 fn gas_characterization_many_offerings_single_issuer() {
-    // Worst-case path: one issuer with many offerings. Measures get_offerings_page cost.
     let (env, client, issuer) = setup();
     let n = 50_u32;
     register_n(&env, &client, &issuer, n);
 
     let (page, _) = client.get_offerings_page(&issuer, &0, &20);
     assert_eq!(page.len(), 20);
-    // Pagination bounds cost: O(effective_limit) reads. Off-chain: prefer small page sizes.
 }
 
 #[test]
 fn gas_characterization_report_revenue_with_large_blacklist() {
-    // report_revenue reads full blacklist and emits it in the event; worst case for large lists.
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &500);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &500, &payout_asset);
 
     for _ in 0..30 {
         client.blacklist_add(&Address::generate(&env), &token, &Address::generate(&env));
     }
     let admin = Address::generate(&env);
     env.mock_all_auths();
-    client.blacklist_add(&admin, &token, &Address::generate(&env)); // ensure admin is auth
+    client.blacklist_add(&admin, &token, &Address::generate(&env));
 
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000_000, &1, &false);
     assert!(!env.events().all().is_empty());
-    // Expected: cost grows with blacklist size (map read + event payload). Recommend off-chain limits on blacklist size.
 }
 
 // ---------------------------------------------------------------------------
@@ -653,8 +1256,9 @@ fn concentration_limit_not_set_allows_report_revenue() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000, &1, &false);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
 }
 
 #[test]
@@ -676,7 +1280,8 @@ fn set_concentration_limit_stores_config() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &false);
     let config = client.get_concentration_limit(&issuer, &token).unwrap();
     assert_eq!(config.max_bps, 5000);
@@ -690,7 +1295,8 @@ fn report_concentration_emits_warning_when_over_limit() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &false);
     let before = env.events().all().len();
     client.report_concentration(&issuer, &token, &6000);
@@ -705,7 +1311,8 @@ fn report_concentration_no_warning_when_below_limit() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &false);
     client.report_concentration(&issuer, &token, &4000);
     assert_eq!(client.get_current_concentration(&issuer, &token), Some(4000));
@@ -718,10 +1325,11 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &6000);
-    let r = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
+    let r = client.try_report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
     assert!(
         r.is_err(),
         "report_revenue must fail when concentration exceeds limit with enforce=true"
@@ -735,12 +1343,13 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5000);
-    client.report_revenue(&issuer, &token, &1_000, &1, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
     client.report_concentration(&issuer, &token, &4999);
-    client.report_revenue(&issuer, &token, &1_000, &2, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000, &2, &false);
 }
 
 #[test]
@@ -750,10 +1359,17 @@ fn concentration_near_threshold_boundary() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &5001);
+
     assert!(client.try_report_revenue(&issuer, &token, &1_000, &1, &false).is_err());
+
+    assert!(client
+        .try_report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false)
+        .is_err());
+
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +1383,8 @@ fn audit_summary_empty_before_any_report() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     let summary = client.get_audit_summary(&issuer, &token);
     assert!(summary.is_none());
 }
@@ -779,10 +1396,11 @@ fn audit_summary_aggregates_revenue_and_count() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &100, &1, &false);
-    client.report_revenue(&issuer, &token, &200, &2, &false);
-    client.report_revenue(&issuer, &token, &300, &3, &false);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    client.report_revenue(&issuer, &token, &payout_asset, &100, &1, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &200, &2, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &300, &3, &false);
     let summary = client.get_audit_summary(&issuer, &token).unwrap();
     assert_eq!(summary.total_revenue, 600);
     assert_eq!(summary.report_count, 3);
@@ -796,10 +1414,12 @@ fn audit_summary_per_offering_isolation() {
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
-    client.register_offering(&issuer, &token_a, &1_000);
-    client.register_offering(&issuer, &token_b, &1_000);
-    client.report_revenue(&issuer, &token_a, &1000, &1, &false);
-    client.report_revenue(&issuer, &token_b, &2000, &1, &false);
+    let payout_asset_a = Address::generate(&env);
+    let payout_asset_b = Address::generate(&env);
+    client.register_offering(&issuer, &token_a, &1_000, &payout_asset_a);
+    client.register_offering(&issuer, &token_b, &1_000, &payout_asset_b);
+    client.report_revenue(&issuer, &token_a, &payout_asset_a, &1000, &1, &false);
+    client.report_revenue(&issuer, &token_b, &payout_asset_b, &2000, &1, &false);
     let sum_a = client.get_audit_summary(&issuer, &token_a).unwrap();
     let sum_b = client.get_audit_summary(&issuer, &token_b).unwrap();
     assert_eq!(sum_a.total_revenue, 1000);
@@ -857,8 +1477,17 @@ fn set_and_get_rounding_mode() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+
     client.register_offering(&issuer, &token, &1_000);
     assert_eq!(client.get_rounding_mode(&issuer, &token), RoundingMode::Truncation);
+
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    assert_eq!(
+        client.get_rounding_mode(&issuer, &token),
+        RoundingMode::Truncation
+    );
+
     client.set_rounding_mode(&issuer, &token, &RoundingMode::RoundHalfUp);
     assert_eq!(client.get_rounding_mode(&issuer, &token), RoundingMode::RoundHalfUp);
 }
@@ -933,7 +1562,7 @@ fn claim_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, A
     let (payment_token, pt_admin) = create_payment_token(&env);
 
     // Register offering
-    client.register_offering(&issuer, &token, &5_000); // 50% revenue share
+    client.register_offering(&issuer, &token, &5_000, &payment_token); // 50% revenue share
 
     // Mint payment tokens to the issuer so they can deposit
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
@@ -994,6 +1623,46 @@ fn deposit_revenue_fails_for_payment_token_mismatch() {
     mint_tokens(&env, &other_pt, &other_admin, &issuer, &1_000_000);
     let result = client.try_deposit_revenue(&issuer, &token, &other_pt, &100_000, &2);
     assert!(result.is_err());
+}
+
+#[test]
+fn report_revenue_rejects_mismatched_payout_asset() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let wrong_asset = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    let r = client.try_report_revenue(&issuer, &token, &wrong_asset, &1_000, &1, &false);
+    assert!(r.is_err());
+}
+
+#[test]
+fn deposit_revenue_rejects_mismatched_payout_asset_on_first_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (configured_asset, configured_admin) = create_payment_token(&env);
+    let (wrong_asset, wrong_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &offering_token, &5_000, &configured_asset);
+    mint_tokens(&env, &wrong_asset, &wrong_admin, &issuer, &1_000_000);
+    mint_tokens(
+        &env,
+        &configured_asset,
+        &configured_admin,
+        &issuer,
+        &1_000_000,
+    );
+
+    let r = client.try_deposit_revenue(&issuer, &offering_token, &wrong_asset, &100_000, &1);
+    assert!(r.is_err());
 }
 
 #[test]
@@ -1648,10 +2317,10 @@ fn offering_isolation_claims_independent() {
 
     // Register a second offering
     let token_b = Address::generate(&env);
-    client.register_offering(&issuer, &token_b, &3_000);
+    let (pt_b, pt_b_admin) = create_payment_token(&env);
+    client.register_offering(&issuer, &token_b, &3_000, &pt_b);
 
     // Create a second payment token for offering B
-    let (pt_b, pt_b_admin) = create_payment_token(&env);
     mint_tokens(&env, &pt_b, &pt_b_admin, &issuer, &5_000_000);
 
     let holder = Address::generate(&env);
@@ -1880,10 +2549,11 @@ fn frozen_blocks_register_offering() {
     let (env, client, issuer, _token, _payment_token, _contract_id) = claim_setup();
     let admin = Address::generate(&env);
     let new_token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     client.set_admin(&admin);
     client.freeze();
-    let r = client.try_register_offering(&issuer, &new_token, &1_000);
+    let r = client.try_register_offering(&issuer, &new_token, &1_000, &payout_asset);
     assert!(r.is_err());
 }
 
@@ -2018,13 +2688,14 @@ fn testnet_mode_allows_bps_over_10000() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     // Set admin and enable testnet mode
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
     // Should allow bps > 10000 in testnet mode
-    let result = client.try_register_offering(&issuer, &token, &15_000);
+    let result = client.try_register_offering(&issuer, &token, &15_000, &payout_asset);
     assert!(result.is_ok());
 
     // Verify offering was registered
@@ -2039,9 +2710,10 @@ fn testnet_mode_disabled_rejects_bps_over_10000() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     // Testnet mode is disabled by default
-    let result = client.try_register_offering(&issuer, &token, &15_000);
+    let result = client.try_register_offering(&issuer, &token, &15_000, &payout_asset);
     assert!(result.is_err());
 }
 
@@ -2053,18 +2725,19 @@ fn testnet_mode_skips_concentration_enforcement() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     // Set admin and enable testnet mode
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
     // Register offering and set concentration limit with enforcement
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &8000); // Over limit
 
     // In testnet mode, report_revenue should succeed despite concentration being over limit
-    let result = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
+    let result = client.try_report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
     assert!(result.is_ok());
 }
 
@@ -2075,14 +2748,15 @@ fn testnet_mode_disabled_enforces_concentration() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     // Testnet mode disabled (default)
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &true);
     client.report_concentration(&issuer, &token, &8000); // Over limit
 
     // Should fail with concentration enforcement
-    let result = client.try_report_revenue(&issuer, &token, &1_000, &1, &false);
+    let result = client.try_report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
     assert!(result.is_err());
 }
 
@@ -2095,16 +2769,18 @@ fn testnet_mode_toggle_after_offerings_exist() {
     let issuer = Address::generate(&env);
     let token1 = Address::generate(&env);
     let token2 = Address::generate(&env);
+    let payout_asset1 = Address::generate(&env);
+    let payout_asset2 = Address::generate(&env);
 
     // Register offering in normal mode
-    client.register_offering(&issuer, &token1, &5_000);
+    client.register_offering(&issuer, &token1, &5_000, &payout_asset1);
 
     // Set admin and enable testnet mode
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
     // Register offering with high bps in testnet mode
-    let result = client.try_register_offering(&issuer, &token2, &20_000);
+    let result = client.try_register_offering(&issuer, &token2, &20_000, &payout_asset2);
     assert!(result.is_ok());
 
     // Verify both offerings exist
@@ -2119,13 +2795,14 @@ fn testnet_mode_affects_only_validation_not_storage() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     // Enable testnet mode
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
     // Register with high bps
-    client.register_offering(&issuer, &token, &25_000);
+    client.register_offering(&issuer, &token, &25_000, &payout_asset);
 
     // Disable testnet mode
     client.set_testnet_mode(&false);
@@ -2150,7 +2827,8 @@ fn testnet_mode_multiple_offerings_with_varied_bps() {
     for i in 1..=5 {
         let token = Address::generate(&env);
         let bps = 10_000 + (i * 1_000);
-        client.register_offering(&issuer, &token, &bps);
+        let payout_asset = Address::generate(&env);
+        client.register_offering(&issuer, &token, &bps, &payout_asset);
     }
 
     assert_eq!(client.get_offering_count(&issuer), 5);
@@ -2164,11 +2842,12 @@ fn testnet_mode_concentration_warning_still_emitted() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.set_concentration_limit(&issuer, &token, &5000, &false);
 
     // Warning should still be emitted in testnet mode
@@ -2185,13 +2864,14 @@ fn testnet_mode_normal_operations_unaffected() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
     // Normal operations should work as expected
-    client.register_offering(&issuer, &token, &5_000);
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.register_offering(&issuer, &token, &5_000, &payout_asset);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000_000, &1, &false);
 
     let summary = client.get_audit_summary(&issuer, &token).unwrap();
     assert_eq!(summary.total_revenue, 1_000_000);
@@ -2232,7 +2912,8 @@ fn testnet_mode_pagination_unaffected() {
     // Register multiple offerings
     for i in 0..10 {
         let token = Address::generate(&env);
-        client.register_offering(&issuer, &token, &(1_000 + i * 100));
+        let payout_asset = Address::generate(&env);
+        client.register_offering(&issuer, &token, &(1_000 + i * 100), &payout_asset);
     }
 
     // Pagination should work normally
@@ -2291,10 +2972,11 @@ fn register_blocked_while_paused() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>);
     client.pause_admin(&admin);
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
 }
 
 #[test]
@@ -2306,12 +2988,13 @@ fn report_blocked_while_paused() {
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>);
     // Register before pausing
-    client.register_offering(&issuer, &token, &1_000);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
     client.pause_admin(&admin);
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000_000, &1, &false);
 }
 
 #[test]
@@ -2745,4 +3428,429 @@ fn multisig_multiple_proposals_independent() {
 fn multisig_get_proposal_nonexistent_returns_none() {
     let (_env, client, _owner1, _owner2, _owner3, _caller) = multisig_setup();
     assert!(client.get_proposal(&9999).is_none());
+
+// On-chain revenue distribution calculation (#4)
+// ===========================================================================
+
+#[test]
+fn calculate_distribution_basic() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let total_revenue = 1_000_000_i128;
+    let total_supply = 10_000_i128;
+    let holder_balance = 1_000_i128;
+
+    let payout = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &total_revenue,
+        &total_supply,
+        &holder_balance,
+        &holder,
+    );
+
+    assert_eq!(payout, 50_000);
+}
+
+#[test]
+fn calculate_distribution_bps_100_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &10_000);
+
+    let payout =
+        client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+
+    assert_eq!(payout, 10_000);
+}
+
+#[test]
+fn calculate_distribution_bps_25_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &2_500);
+
+    let payout =
+        client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &200, &holder);
+
+    assert_eq!(payout, 5_000);
+}
+
+#[test]
+fn calculate_distribution_zero_revenue() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let payout = client.calculate_distribution(&caller, &issuer, &token, &0, &1_000, &100, &holder);
+
+    assert_eq!(payout, 0);
+}
+
+#[test]
+fn calculate_distribution_zero_balance() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let payout =
+        client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &0, &holder);
+
+    assert_eq!(payout, 0);
+}
+
+#[test]
+#[should_panic(expected = "total_supply cannot be zero")]
+fn calculate_distribution_zero_supply_panics() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.calculate_distribution(&caller, &issuer, &token, &100_000, &0, &100, &holder);
+}
+
+#[test]
+#[should_panic(expected = "offering not found")]
+fn calculate_distribution_nonexistent_offering_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+}
+
+#[test]
+#[should_panic(expected = "holder is blacklisted")]
+fn calculate_distribution_blacklisted_holder_panics() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.blacklist_add(&issuer, &token, &holder);
+
+    client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+}
+
+#[test]
+fn calculate_distribution_rounds_down() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &3_333);
+
+    let payout = client.calculate_distribution(&caller, &issuer, &token, &100, &100, &10, &holder);
+
+    assert_eq!(payout, 3);
+}
+
+#[test]
+fn calculate_distribution_rounds_down_exact() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &2_500);
+
+    let payout =
+        client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &400, &holder);
+
+    assert_eq!(payout, 10_000);
+}
+
+#[test]
+fn calculate_distribution_large_values() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let large_revenue = 1_000_000_000_000_i128;
+    let total_supply = 1_000_000_000_i128;
+    let holder_balance = 100_000_000_i128;
+
+    let payout = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &large_revenue,
+        &total_supply,
+        &holder_balance,
+        &holder,
+    );
+
+    assert_eq!(payout, 50_000_000_000);
+}
+
+#[test]
+fn calculate_distribution_emits_event() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let before = env.events().all().len();
+    client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn calculate_distribution_multiple_holders_sum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &5_000);
+
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+    let holder_c = Address::generate(&env);
+
+    let total_supply = 1_000_i128;
+    let total_revenue = 100_000_i128;
+
+    let payout_a = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &total_revenue,
+        &total_supply,
+        &500,
+        &holder_a,
+    );
+    let payout_b = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &total_revenue,
+        &total_supply,
+        &300,
+        &holder_b,
+    );
+    let payout_c = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &total_revenue,
+        &total_supply,
+        &200,
+        &holder_c,
+    );
+
+    assert_eq!(payout_a, 25_000);
+    assert_eq!(payout_b, 15_000);
+    assert_eq!(payout_c, 10_000);
+    assert_eq!(payout_a + payout_b + payout_c, 50_000);
+}
+
+#[test]
+#[should_panic]
+fn calculate_distribution_requires_auth() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &5_000);
+
+    client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+}
+
+#[test]
+fn calculate_total_distributable_basic() {
+    let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    let total = client.calculate_total_distributable(&issuer, &token, &100_000);
+
+    assert_eq!(total, 50_000);
+}
+
+#[test]
+fn calculate_total_distributable_bps_100_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &10_000);
+
+    let total = client.calculate_total_distributable(&issuer, &token, &100_000);
+
+    assert_eq!(total, 100_000);
+}
+
+#[test]
+fn calculate_total_distributable_bps_25_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &2_500);
+
+    let total = client.calculate_total_distributable(&issuer, &token, &100_000);
+
+    assert_eq!(total, 25_000);
+}
+
+#[test]
+fn calculate_total_distributable_zero_revenue() {
+    let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    let total = client.calculate_total_distributable(&issuer, &token, &0);
+
+    assert_eq!(total, 0);
+}
+
+#[test]
+fn calculate_total_distributable_rounds_down() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &3_333);
+
+    let total = client.calculate_total_distributable(&issuer, &token, &100);
+
+    assert_eq!(total, 33);
+}
+
+#[test]
+#[should_panic(expected = "offering not found")]
+fn calculate_total_distributable_nonexistent_offering_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.calculate_total_distributable(&issuer, &token, &100_000);
+}
+
+#[test]
+fn calculate_total_distributable_large_value() {
+    let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    let total = client.calculate_total_distributable(&issuer, &token, &1_000_000_000_000);
+
+    assert_eq!(total, 500_000_000_000);
+}
+
+#[test]
+fn calculate_distribution_offering_isolation() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let token_b = Address::generate(&env);
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_b, &8_000);
+
+    let payout_a =
+        client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
+    let payout_b =
+        client.calculate_distribution(&caller, &issuer, &token_b, &100_000, &1_000, &100, &holder);
+
+    assert_eq!(payout_a, 5_000);
+    assert_eq!(payout_b, 8_000);
+}
+
+#[test]
+fn calculate_total_distributable_offering_isolation() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let token_b = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_b, &8_000);
+
+    let total_a = client.calculate_total_distributable(&issuer, &token, &100_000);
+    let total_b = client.calculate_total_distributable(&issuer, &token_b, &100_000);
+
+    assert_eq!(total_a, 50_000);
+    assert_eq!(total_b, 80_000);
+}
+
+#[test]
+fn calculate_distribution_tiny_balance() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let payout = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &100_000,
+        &1_000_000_000,
+        &1,
+        &holder,
+    );
+
+    assert_eq!(payout, 0);
+}
+
+#[test]
+fn calculate_distribution_all_zeros_except_supply() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let payout = client.calculate_distribution(&caller, &issuer, &token, &0, &1_000, &0, &holder);
+
+    assert_eq!(payout, 0);
+}
+
+#[test]
+fn calculate_distribution_single_holder_owns_all() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let caller = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let total_revenue = 100_000_i128;
+    let total_supply = 1_000_i128;
+
+    let payout = client.calculate_distribution(
+        &caller,
+        &issuer,
+        &token,
+        &total_revenue,
+        &total_supply,
+        &total_supply,
+        &holder,
+    );
+
+    assert_eq!(payout, 50_000);
+
 }
