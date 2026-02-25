@@ -29,6 +29,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `get_audit_summary` | `issuer: Address`, `token: Address` | `Option<AuditSummary>` | — | Per-offering audit summary (total_revenue, report_count). |
 | `set_rounding_mode` | `issuer: Address`, `token: Address`, `mode: RoundingMode` | `Result<(), RevoraError>` | issuer | Set rounding mode for share calculations. Offering must exist. |
 | `get_rounding_mode` | `issuer: Address`, `token: Address` | `RoundingMode` | — | Get rounding mode (default Truncation if not set). |
+| `set_min_revenue_threshold` | `issuer: Address`, `token: Address`, `min_amount: i128` | `Result<(), RevoraError>` | issuer | Per-offering minimum revenue per period; below this, `report_revenue` emits `rev_below` and skips updating reports/audit. 0 = disabled. Emits `min_rev` when set or changed. |
+| `get_min_revenue_threshold` | `issuer: Address`, `token: Address` | `i128` | — | Minimum revenue threshold for offering (0 = none). |
 | `compute_share` | `amount: i128`, `revenue_share_bps: u32`, `mode: RoundingMode` | `i128` | — | Compute share of amount at given bps with given rounding. Bounds: 0 ≤ result ≤ amount. |
 | `propose_issuer_transfer` | `token: Address`, `new_issuer: Address` | `Result<(), RevoraError>` | current issuer | Propose transferring issuer control to a new address. First step of two-step transfer. |
 | `accept_issuer_transfer` | `token: Address` | `Result<(), RevoraError>` | proposed new issuer | Accept a pending issuer transfer. Completes the transfer and grants full control to new issuer. |
@@ -65,6 +67,8 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `rev_rep` | `(issuer, token), (amount, period_id, blacklist_vec)` | After `report_revenue`. |
 | `bl_add` | `(token, caller), investor` | After `blacklist_add`. |
 | `bl_rem` | `(token, caller), investor` | After `blacklist_remove`. |
+| `min_rev` | `(issuer, token), (previous_amount, new_amount)` | When `set_min_revenue_threshold` is set or changed. |
+| `rev_below` | `(issuer, token), (amount, period_id, threshold)` | When `report_revenue` is called with amount below the offering's minimum threshold; no report/audit update. |
 | `conc_warn` | `(issuer, token), (concentration_bps, limit_bps)` | When `report_concentration` is called and reported concentration exceeds configured limit (warning only; enforce blocks at `report_revenue`). |
 | `iss_prop` | `(token), (current_issuer, proposed_new_issuer)` | When `propose_issuer_transfer` is called. |
 | `iss_acc` | `(token), (old_issuer, new_issuer)` | When `accept_issuer_transfer` completes the transfer. |
@@ -73,7 +77,9 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 
 ### Call patterns and limits
 
-- **Pagination:** Use `get_offerings_page(issuer, start, limit)` with `start = 0` then `start = next_cursor` until `next_cursor` is `None`. Max page size 20.
+- **Pagination:** Use `get_offerings_page(issuer, start, limit)` with `start = 0` then `start = next_cursor` until `next_cursor` is `None`. Max page size 20. Ordering: by registration index (creation order), deterministic.
+- **Ordering:** `get_offerings_page` returns offerings by registration index. `get_blacklist` returns addresses in insertion order. `get_pending_periods` returns period IDs by deposit index. All query results are deterministic.
+- **Minimum revenue threshold:** Issuers can set `set_min_revenue_threshold(issuer, token, min_amount)`. When `report_revenue` is called with `amount < min_amount`, the contract emits `rev_below` and does not update revenue reports or audit summary (skipped distribution). Set to 0 to disable.
 - **Off-chain:** Prefer small page sizes and bounded blacklist sizes for predictable gas. See storage/gas tests in `src/test.rs` for stress behavior.
 - **Holder concentration:** Concentration is not computed on-chain (no token balance reads). Issuer or indexer calls `report_concentration(issuer, token, bps)` with the current top-holder share in bps; the contract stores it and enforces or warns based on `set_concentration_limit`. Use `try_report_revenue` when enforcement may be enabled.
 - **Rounding:** Use `compute_share(amount, revenue_share_bps, mode)` for consistent distribution math. Per-offering default is `get_rounding_mode(issuer, token)` (Truncation if unset). Sum of shares must not exceed total; both modes keep result in [0, amount].

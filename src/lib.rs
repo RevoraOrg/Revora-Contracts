@@ -81,6 +81,10 @@ const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
 const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
 const EVENT_METADATA_UPDATED: Symbol = symbol_short!("meta_upd");
+/// Emitted when per-offering minimum revenue threshold is set or changed (#25).
+const EVENT_MIN_REV_THRESHOLD_SET: Symbol = symbol_short!("min_rev");
+/// Emitted when reported revenue is below the offering's minimum threshold; no distribution triggered (#25).
+const EVENT_REV_BELOW_THRESHOLD: Symbol = symbol_short!("rev_below");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
@@ -139,6 +143,8 @@ pub enum RoundingMode {
 #[derive(Clone)]
 pub enum DataKey {
     Blacklist(Address),
+    /// Per-token: blacklist addresses in insertion order for deterministic get_blacklist (#38).
+    BlacklistOrder(Address),
     OfferCount(Address),
     OfferItem(Address, u32),
     /// Per (issuer, token): concentration limit config.
@@ -187,6 +193,8 @@ pub enum DataKey {
     OfferingMetadata(Address, Address),
     /// Platform fee in basis points (max 5000 = 50%) taken from reported revenue (#6).
     PlatformFeeBps,
+    /// Per (issuer, token): minimum revenue per period below which no distribution is triggered (#25).
+    MinRevenueThreshold(Address, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -440,6 +448,17 @@ impl RevoraRevenueShare {
             return Err(RevoraError::PayoutAssetMismatch);
         }
 
+        // Per-offering minimum revenue threshold (#25): skip distribution when below threshold
+        let min_threshold =
+            Self::get_min_revenue_threshold(env.clone(), issuer.clone(), token.clone());
+        if min_threshold > 0 && amount < min_threshold {
+            env.events().publish(
+                (EVENT_REV_BELOW_THRESHOLD, issuer, token),
+                (amount, period_id, min_threshold),
+            );
+            return Ok(());
+        }
+
         // Skip concentration enforcement in testnet mode
         let testnet_mode = Self::is_testnet_mode(env.clone());
         if !testnet_mode {
@@ -601,6 +620,7 @@ impl RevoraRevenueShare {
     }
 
     /// Return a page of offerings for `issuer`. Limit capped at MAX_PAGE_LIMIT (20).
+    /// Ordering: by registration index (creation order), deterministic (#38).
     pub fn get_offerings_page(
         env: Env,
         issuer: Address,
@@ -650,8 +670,21 @@ impl RevoraRevenueShare {
             .get(&key)
             .unwrap_or_else(|| Map::new(&env));
 
+        let was_present = map.get(investor.clone()).unwrap_or(false);
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
+
+        // Maintain insertion order for deterministic get_blacklist (#38)
+        if !was_present {
+            let order_key = DataKey::BlacklistOrder(token.clone());
+            let mut order: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&order_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            order.push_back(investor.clone());
+            env.storage().persistent().set(&order_key, &order);
+        }
 
         env.events()
             .publish((EVENT_BL_ADD, token, caller), investor);
@@ -679,6 +712,22 @@ impl RevoraRevenueShare {
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
 
+        // Rebuild order vec so get_blacklist stays deterministic (#38)
+        let order_key = DataKey::BlacklistOrder(token.clone());
+        let old_order: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&order_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut new_order = Vec::new(&env);
+        for i in 0..old_order.len() {
+            let addr = old_order.get(i).unwrap();
+            if map.get(addr.clone()).unwrap_or(false) {
+                new_order.push_back(addr);
+            }
+        }
+        env.storage().persistent().set(&order_key, &new_order);
+
         env.events()
             .publish((EVENT_BL_REM, token, caller), investor);
         Ok(())
@@ -695,12 +744,12 @@ impl RevoraRevenueShare {
     }
 
     /// Return all blacklisted addresses for `token`'s offering.
+    /// Ordering: by insertion order, deterministic and stable across calls (#38).
     pub fn get_blacklist(env: Env, token: Address) -> Vec<Address> {
-        let key = DataKey::Blacklist(token);
+        let order_key = DataKey::BlacklistOrder(token);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.keys())
+            .get::<DataKey, Vec<Address>>(&order_key)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -829,6 +878,45 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&key)
             .unwrap_or(RoundingMode::Truncation)
+    }
+
+    // ── Per-offering minimum revenue threshold (#25) ─────────────────────
+
+    /// Set minimum revenue per period below which no distribution is triggered.
+    /// Only the offering issuer may set this. Emits event when configured or changed.
+    /// Pass 0 to disable the threshold.
+    pub fn set_min_revenue_threshold(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        min_amount: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        let current_issuer =
+            Self::get_current_issuer(&env, &token).ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        issuer.require_auth();
+
+        let key = DataKey::MinRevenueThreshold(issuer.clone(), token.clone());
+        let previous: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &min_amount);
+
+        env.events().publish(
+            (EVENT_MIN_REV_THRESHOLD_SET, issuer, token),
+            (previous, min_amount),
+        );
+        Ok(())
+    }
+
+    /// Get minimum revenue threshold for an offering. 0 means no threshold.
+    pub fn get_min_revenue_threshold(env: Env, issuer: Address, token: Address) -> i128 {
+        let key = DataKey::MinRevenueThreshold(issuer, token);
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 
     /// Compute share of `amount` at `revenue_share_bps` using the given rounding mode.
@@ -1074,6 +1162,7 @@ impl RevoraRevenueShare {
     }
 
     /// Return unclaimed period IDs for a holder on an offering.
+    /// Ordering: by deposit index (creation order), deterministic (#38).
     pub fn get_pending_periods(env: Env, token: Address, holder: Address) -> Vec<u64> {
         let count_key = DataKey::PeriodCount(token.clone());
         let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);

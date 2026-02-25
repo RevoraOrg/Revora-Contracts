@@ -955,16 +955,8 @@ fn negative_revenue_amount() {
 
 #[test]
 fn it_emits_events_on_register_and_report() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = make_client(&env);
-    let issuer = Address::generate(&env);
-    let token = Address::generate(&env);
-    let payout_asset = Address::generate(&env);
-
-    client.register_offering(&issuer, &token, &1_000, &payout_asset);
-    client.report_revenue(&issuer, &token, &payout_asset, &1_000_000, &1, &false);
-
+    let (env, _client, _issuer, _token, _payout_asset, _amount, _period_id) =
+        setup_with_revenue_report(1_000_000, 1);
     assert!(env.events().all().len() >= 2);
 }
 
@@ -1034,14 +1026,7 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
 
 #[test]
 fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = make_client(&env);
-
-    let issuer = Address::generate(&env);
-    let token = Address::generate(&env);
-    let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    let (env, client, issuer, token, payout_asset) = setup_with_offering();
 
     // Same seed must produce the exact same sequence.
     let mut seed_a = 0x00A1_1CE5_ED19_u64;
@@ -1096,6 +1081,39 @@ fn register_n(env: &Env, client: &RevoraRevenueShareClient, issuer: &Address, n:
         let payout_asset = Address::generate(env);
         client.register_offering(issuer, &token, &(100 + i), &payout_asset);
     }
+}
+
+/// Helper (#30): create env, client, and one registered offering. Returns (env, client, issuer, token, payout_asset).
+fn setup_with_offering() -> (
+    Env,
+    RevoraRevenueShareClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
+    let (env, client, issuer) = setup();
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    (env, client, issuer, token, payout_asset)
+}
+
+/// Helper (#30): create env, client, one offering, and one revenue report. Returns (env, client, issuer, token, payout_asset, amount, period_id).
+fn setup_with_revenue_report(
+    amount: i128,
+    period_id: u64,
+) -> (
+    Env,
+    RevoraRevenueShareClient<'static>,
+    Address,
+    Address,
+    Address,
+    i128,
+    u64,
+) {
+    let (env, client, issuer, token, payout_asset) = setup_with_offering();
+    client.report_revenue(&issuer, &token, &payout_asset, &amount, &period_id, &false);
+    (env, client, issuer, token, payout_asset, amount, period_id)
 }
 
 #[test]
@@ -4973,4 +4991,154 @@ fn platform_fee_integration_with_revenue() {
     assert_eq!(fee, 5_000); // 5% of 100,000
     let remaining = revenue - fee;
     assert_eq!(remaining, 95_000);
+}
+
+// ---------------------------------------------------------------------------
+// Per-offering minimum revenue thresholds (#25)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn min_revenue_threshold_default_is_zero() {
+    let (_env, client, issuer, token, _payout) = setup_with_offering();
+    let threshold = client.get_min_revenue_threshold(&issuer, &token);
+    assert_eq!(threshold, 0);
+}
+
+#[test]
+fn set_min_revenue_threshold_emits_event() {
+    let (env, client, issuer, token, _payout) = setup_with_offering();
+    let before = env.events().all().len();
+    client.set_min_revenue_threshold(&issuer, &token, &5_000);
+    assert!(env.events().all().len() > before);
+}
+
+#[test]
+fn report_below_threshold_emits_event_and_skips_distribution() {
+    let (env, client, issuer, token, payout_asset) = setup_with_offering();
+    client.set_min_revenue_threshold(&issuer, &token, &10_000);
+    let events_before = env.events().all().len();
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
+    let events_after = env.events().all().len();
+    assert!(events_after > events_before, "should emit rev_below event");
+    let summary = client.get_audit_summary(&issuer, &token);
+    assert!(
+        summary.is_none() || summary.as_ref().unwrap().report_count == 0,
+        "below-threshold report must not count toward audit"
+    );
+}
+
+#[test]
+fn report_at_or_above_threshold_updates_state() {
+    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+    client.set_min_revenue_threshold(&issuer, &token, &1_000);
+    client.report_revenue(&issuer, &token, &payout_asset, &1_000, &1, &false);
+    let summary = client.get_audit_summary(&issuer, &token).unwrap();
+    assert_eq!(summary.report_count, 1);
+    assert_eq!(summary.total_revenue, 1_000);
+    client.report_revenue(&issuer, &token, &payout_asset, &2_000, &2, &false);
+    let summary2 = client.get_audit_summary(&issuer, &token).unwrap();
+    assert_eq!(summary2.report_count, 2);
+    assert_eq!(summary2.total_revenue, 3_000);
+}
+
+#[test]
+fn zero_threshold_disables_check() {
+    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+    client.set_min_revenue_threshold(&issuer, &token, &100);
+    client.set_min_revenue_threshold(&issuer, &token, &0);
+    client.report_revenue(&issuer, &token, &payout_asset, &50, &1, &false);
+    let summary = client.get_audit_summary(&issuer, &token).unwrap();
+    assert_eq!(summary.report_count, 1);
+}
+
+#[test]
+fn min_revenue_threshold_change_emits_event() {
+    let (env, client, issuer, token, _payout) = setup_with_offering();
+    client.set_min_revenue_threshold(&issuer, &token, &1_000);
+    let before = env.events().all().len();
+    client.set_min_revenue_threshold(&issuer, &token, &2_000);
+    assert!(env.events().all().len() > before);
+    assert_eq!(client.get_min_revenue_threshold(&issuer, &token), 2_000);
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic ordering for query results (#38)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_offerings_page_order_is_by_registration_index() {
+    let (env, client, issuer) = setup();
+    let t0 = Address::generate(&env);
+    let t1 = Address::generate(&env);
+    let t2 = Address::generate(&env);
+    let t3 = Address::generate(&env);
+    let p0 = Address::generate(&env);
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    let p3 = Address::generate(&env);
+    client.register_offering(&issuer, &t0, &100, &p0);
+    client.register_offering(&issuer, &t1, &200, &p1);
+    client.register_offering(&issuer, &t2, &300, &p2);
+    client.register_offering(&issuer, &t3, &400, &p3);
+    let (page, _) = client.get_offerings_page(&issuer, &0, &10);
+    assert_eq!(page.len(), 4);
+    assert_eq!(page.get(0).unwrap().token, t0);
+    assert_eq!(page.get(1).unwrap().token, t1);
+    assert_eq!(page.get(2).unwrap().token, t2);
+    assert_eq!(page.get(3).unwrap().token, t3);
+}
+
+#[test]
+fn get_blacklist_order_is_by_insertion() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    client.blacklist_add(&admin, &token, &a);
+    client.blacklist_add(&admin, &token, &b);
+    client.blacklist_add(&admin, &token, &c);
+    let list = client.get_blacklist(&token);
+    assert_eq!(list.len(), 3);
+    assert_eq!(list.get(0).unwrap(), a);
+    assert_eq!(list.get(1).unwrap(), b);
+    assert_eq!(list.get(2).unwrap(), c);
+}
+
+#[test]
+fn get_blacklist_order_unchanged_after_remove() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    client.blacklist_add(&admin, &token, &a);
+    client.blacklist_add(&admin, &token, &b);
+    client.blacklist_add(&admin, &token, &c);
+    client.blacklist_remove(&admin, &token, &b);
+    let list = client.get_blacklist(&token);
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.get(0).unwrap(), a);
+    assert_eq!(list.get(1).unwrap(), c);
+}
+
+#[test]
+fn get_pending_periods_order_is_by_deposit_index() {
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    client.deposit_revenue(&issuer, &token, &payment_token, &100, &10);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200, &20);
+    client.deposit_revenue(&issuer, &token, &payment_token, &300, &30);
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &token, &holder, &1_000);
+    let periods = client.get_pending_periods(&token, &holder);
+    assert_eq!(periods.len(), 3);
+    assert_eq!(periods.get(0).unwrap(), 10);
+    assert_eq!(periods.get(1).unwrap(), 20);
+    assert_eq!(periods.get(2).unwrap(), 30);
 }
