@@ -198,6 +198,8 @@ impl RevoraRevenueShare {
     fn get_current_issuer(env: &Env, token: &Address) -> Option<Address> {
         let key = DataKey::OfferingIssuer(token.clone());
         env.storage().persistent().get(&key)
+    }
+
     /// Initialize admin and optional safety role for emergency pause (#7).
     /// Can only be called once; panics if already initialized.
     pub fn initialize(env: Env, admin: Address, safety: Option<Address>) {
@@ -806,6 +808,8 @@ impl RevoraRevenueShare {
 
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
+        }
+
         // Verify offering exists
         let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
             .ok_or(RevoraError::OfferingNotFound)?;
@@ -1235,11 +1239,43 @@ impl RevoraRevenueShare {
             issuer: new_issuer.clone(),
             token: token.clone(),
             revenue_share_bps: offering.revenue_share_bps,
+            payout_asset: offering.payout_asset,
         };
 
-        // Write back to same storage location
-        let item_key = DataKey::OfferItem(old_issuer.clone(), index);
-        env.storage().persistent().set(&item_key, &updated_offering);
+        // Remove from old issuer's storage
+        let old_item_key = DataKey::OfferItem(old_issuer.clone(), index);
+        env.storage().persistent().remove(&old_item_key);
+
+        // If this wasn't the last offering, move the last offering to fill the gap
+        let old_count = Self::get_offering_count(env.clone(), old_issuer.clone());
+        if index < old_count - 1 {
+            // Move the last offering to the removed index
+            let last_key = DataKey::OfferItem(old_issuer.clone(), old_count - 1);
+            let last_offering: Offering = env.storage().persistent().get(&last_key).unwrap();
+            env.storage()
+                .persistent()
+                .set(&old_item_key, &last_offering);
+            env.storage().persistent().remove(&last_key);
+        }
+
+        // Decrement old issuer's count
+        let old_count_key = DataKey::OfferCount(old_issuer.clone());
+        env.storage()
+            .persistent()
+            .set(&old_count_key, &(old_count - 1));
+
+        // Add to new issuer's storage
+        let new_count = Self::get_offering_count(env.clone(), new_issuer.clone());
+        let new_item_key = DataKey::OfferItem(new_issuer.clone(), new_count);
+        env.storage()
+            .persistent()
+            .set(&new_item_key, &updated_offering);
+
+        // Increment new issuer's count
+        let new_count_key = DataKey::OfferCount(new_issuer.clone());
+        env.storage()
+            .persistent()
+            .set(&new_count_key, &(new_count + 1));
 
         // Update reverse lookup
         let issuer_lookup_key = DataKey::OfferingIssuer(token.clone());
@@ -1292,6 +1328,8 @@ impl RevoraRevenueShare {
     pub fn get_pending_issuer_transfer(env: Env, token: Address) -> Option<Address> {
         let pending_key = DataKey::PendingIssuerTransfer(token);
         env.storage().persistent().get(&pending_key)
+    }
+
     // ── Revenue distribution calculation ───────────────────────────
 
     /// Calculate the distribution amount for a token holder.

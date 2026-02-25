@@ -64,7 +64,7 @@ fn register_offering_emits_exact_event() {
     let token = Address::generate(&env);
     let bps: u32 = 1_500;
 
-    client.register_offering(&issuer, &token, &bps);
+    client.register_offering(&issuer, &token, &bps, &token);
 
     assert_eq!(
         env.events().all(),
@@ -73,7 +73,7 @@ fn register_offering_emits_exact_event() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), bps).into_val(&env),
+                (token.clone(), bps, token.clone()).into_val(&env),
             ),
         ]
     );
@@ -92,7 +92,8 @@ fn report_revenue_emits_exact_event() {
     let amount: i128 = 5_000_000;
     let period_id: u64 = 42;
 
-    client.report_revenue(&issuer, &token, &amount, &period_id, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &amount, &period_id, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -101,13 +102,40 @@ fn report_revenue_emits_exact_event() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (amount, period_id, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
                 (amount, period_id, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
                 (amount, period_id, empty_bl).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (amount, period_id).into_val(&env),
             ),
         ]
     );
@@ -129,11 +157,11 @@ fn combined_flow_preserves_event_order() {
     let amount: i128 = 1_000_000;
     let period_id: u64 = 1;
 
-    client.register_offering(&issuer, &token, &bps);
-    client.report_revenue(&issuer, &token, &amount, &period_id, &false);
+    client.register_offering(&issuer, &token, &bps, &token);
+    client.report_revenue(&issuer, &token, &token, &amount, &period_id, &false);
 
     let events = env.events().all();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 5);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -143,7 +171,7 @@ fn combined_flow_preserves_event_order() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), bps).into_val(&env),
+                (token.clone(), bps, token.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
@@ -152,8 +180,30 @@ fn combined_flow_preserves_event_order() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (amount, period_id, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
                 (amount, period_id, empty_bl).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (amount, period_id).into_val(&env),
             ),
         ]
     );
@@ -173,13 +223,13 @@ fn complex_mixed_flow_events_in_order() {
     let token_y = Address::generate(&env);
 
     // Interleave: register A, register B, report A, report B
-    client.register_offering(&issuer_a, &token_x, &500);
-    client.register_offering(&issuer_b, &token_y, &750);
-    client.report_revenue(&issuer_a, &token_x, &100_000, &1, &false);
-    client.report_revenue(&issuer_b, &token_y, &200_000, &1, &false);
+    client.register_offering(&issuer_a, &token_x, &500, &token_x);
+    client.register_offering(&issuer_b, &token_y, &750, &token_y);
+    client.report_revenue(&issuer_a, &token_x, &token_x, &100_000, &1, &false);
+    client.report_revenue(&issuer_b, &token_y, &token_y, &200_000, &1, &false);
 
     let events = env.events().all();
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 10);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -189,16 +239,27 @@ fn complex_mixed_flow_events_in_order() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer_a.clone()).into_val(&env),
-                (token_x.clone(), 500u32).into_val(&env),
+                (token_x.clone(), 500u32, token_x.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer_b.clone()).into_val(&env),
-                (token_y.clone(), 750u32).into_val(&env),
+                (token_y.clone(), 750u32, token_y.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("rev_init"), issuer_a.clone(), token_x.clone()).into_val(&env),
+                (100_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer_a.clone(),
+                    token_x.clone(),
+                    token_x.clone()
+                )
+                    .into_val(&env),
                 (100_000i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
@@ -208,13 +269,46 @@ fn complex_mixed_flow_events_in_order() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer_a.clone(),
+                    token_x.clone(),
+                    token_x.clone()
+                )
+                    .into_val(&env),
+                (100_000i128, 1u64).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer_b.clone(), token_y.clone()).into_val(&env),
                 (200_000i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer_b.clone(),
+                    token_y.clone(),
+                    token_y.clone()
+                )
+                    .into_val(&env),
+                (200_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer_b.clone(), token_y.clone()).into_val(&env),
-                (200_000i128, 1u64, empty_bl).into_val(&env),
+                (200_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer_b.clone(),
+                    token_y.clone(),
+                    token_y.clone()
+                )
+                    .into_val(&env),
+                (200_000i128, 1u64).into_val(&env),
             ),
         ]
     );
@@ -235,9 +329,9 @@ fn multiple_offerings_emit_distinct_events() {
     let token_b = Address::generate(&env);
     let token_c = Address::generate(&env);
 
-    client.register_offering(&issuer, &token_a, &100);
-    client.register_offering(&issuer, &token_b, &200);
-    client.register_offering(&issuer, &token_c, &300);
+    client.register_offering(&issuer, &token_a, &100, &token_a);
+    client.register_offering(&issuer, &token_b, &200, &token_b);
+    client.register_offering(&issuer, &token_c, &300, &token_c);
 
     let events = env.events().all();
     assert_eq!(events.len(), 3);
@@ -249,17 +343,17 @@ fn multiple_offerings_emit_distinct_events() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token_a.clone(), 100u32).into_val(&env),
+                (token_a.clone(), 100u32, token_a.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token_b.clone(), 200u32).into_val(&env),
+                (token_b.clone(), 200u32, token_b.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token_c.clone(), 300u32).into_val(&env),
+                (token_c.clone(), 300u32, token_c.clone()).into_val(&env),
             ),
         ]
     );
@@ -276,12 +370,13 @@ fn multiple_revenue_reports_same_offering() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.report_revenue(&issuer, &token, &10_000, &1, &false);
-    client.report_revenue(&issuer, &token, &20_000, &2, &false);
-    client.report_revenue(&issuer, &token, &30_000, &3, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &10_000, &1, &false);
+    client.report_revenue(&issuer, &token, &token, &20_000, &2, &false);
+    client.report_revenue(&issuer, &token, &token, &30_000, &3, &false);
 
     let events = env.events().all();
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 13);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -290,7 +385,23 @@ fn multiple_revenue_reports_same_offering() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (10_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
                 (10_000i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
@@ -300,13 +411,46 @@ fn multiple_revenue_reports_same_offering() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (10_000i128, 1u64).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
+                (20_000i128, 2u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
                 (20_000i128, 2u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
                 (20_000i128, 2u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (20_000i128, 2u64).into_val(&env),
             ),
             (
                 contract_id.clone(),
@@ -315,8 +459,30 @@ fn multiple_revenue_reports_same_offering() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (30_000i128, 3u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (30_000i128, 3u64, empty_bl).into_val(&env),
+                (30_000i128, 3u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (30_000i128, 3u64).into_val(&env),
             ),
         ]
     );
@@ -334,13 +500,13 @@ fn same_issuer_different_tokens() {
     let token_x = Address::generate(&env);
     let token_y = Address::generate(&env);
 
-    client.register_offering(&issuer, &token_x, &1_000);
-    client.register_offering(&issuer, &token_y, &2_000);
-    client.report_revenue(&issuer, &token_x, &500_000, &1, &false);
-    client.report_revenue(&issuer, &token_y, &750_000, &1, &false);
+    client.register_offering(&issuer, &token_x, &1_000, &token_x);
+    client.register_offering(&issuer, &token_y, &2_000, &token_y);
+    client.report_revenue(&issuer, &token_x, &token_x, &500_000, &1, &false);
+    client.report_revenue(&issuer, &token_y, &token_y, &750_000, &1, &false);
 
     let events = env.events().all();
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 10);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -350,16 +516,27 @@ fn same_issuer_different_tokens() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token_x.clone(), 1_000u32).into_val(&env),
+                (token_x.clone(), 1_000u32, token_x.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token_y.clone(), 2_000u32).into_val(&env),
+                (token_y.clone(), 2_000u32, token_y.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token_x.clone()).into_val(&env),
+                (500_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token_x.clone(),
+                    token_x.clone()
+                )
+                    .into_val(&env),
                 (500_000i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
@@ -369,13 +546,46 @@ fn same_issuer_different_tokens() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token_x.clone(),
+                    token_x.clone()
+                )
+                    .into_val(&env),
+                (500_000i128, 1u64).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token_y.clone()).into_val(&env),
                 (750_000i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token_y.clone(),
+                    token_y.clone()
+                )
+                    .into_val(&env),
+                (750_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token_y.clone()).into_val(&env),
-                (750_000i128, 1u64, empty_bl).into_val(&env),
+                (750_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token_y.clone(),
+                    token_y.clone()
+                )
+                    .into_val(&env),
+                (750_000i128, 1u64).into_val(&env),
             ),
         ]
     );
@@ -394,8 +604,8 @@ fn topic_symbols_are_distinct() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &1_000);
-    client.report_revenue(&issuer, &token, &1_000_000, &1, &false);
+    client.register_offering(&issuer, &token, &1_000, &token);
+    client.report_revenue(&issuer, &token, &token, &1_000_000, &1, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -405,7 +615,7 @@ fn topic_symbols_are_distinct() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), 1_000u32).into_val(&env),
+                (token.clone(), 1_000u32, token.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
@@ -414,8 +624,30 @@ fn topic_symbols_are_distinct() {
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (1_000_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (1_000_000i128, 1u64, empty_bl).into_val(&env),
+                (1_000_000i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (1_000_000i128, 1u64).into_val(&env),
             ),
         ]
     );
@@ -432,7 +664,8 @@ fn rev_rep_topics_include_token_address() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.report_revenue(&issuer, &token, &999, &7, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &999, &7, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -441,13 +674,40 @@ fn rev_rep_topics_include_token_address() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
                 (999i128, 7u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (999i128, 7u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (999i128, 7u64, empty_bl).into_val(&env),
+                (999i128, 7u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (999i128, 7u64).into_val(&env),
             ),
         ]
     );
@@ -466,7 +726,7 @@ fn zero_bps_offering() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &0);
+    client.register_offering(&issuer, &token, &0, &token);
 
     assert_eq!(
         env.events().all(),
@@ -475,7 +735,7 @@ fn zero_bps_offering() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), 0u32).into_val(&env),
+                (token.clone(), 0u32, token.clone()).into_val(&env),
             ),
         ]
     );
@@ -493,7 +753,7 @@ fn max_bps_offering() {
     let token = Address::generate(&env);
 
     // 10_000 bps == 100%
-    client.register_offering(&issuer, &token, &10_000);
+    client.register_offering(&issuer, &token, &10_000, &token);
 
     assert_eq!(
         env.events().all(),
@@ -502,7 +762,7 @@ fn max_bps_offering() {
             (
                 contract_id.clone(),
                 (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), 10_000u32).into_val(&env),
+                (token.clone(), 10_000u32, token.clone()).into_val(&env),
             ),
         ]
     );
@@ -519,7 +779,8 @@ fn zero_amount_revenue_report() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.report_revenue(&issuer, &token, &0, &1, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &0, &1, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -528,13 +789,40 @@ fn zero_amount_revenue_report() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
                 (0i128, 1u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (0i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (0i128, 1u64, empty_bl).into_val(&env),
+                (0i128, 1u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (0i128, 1u64).into_val(&env),
             ),
         ]
     );
@@ -552,7 +840,8 @@ fn large_revenue_amount() {
     let token = Address::generate(&env);
 
     let large_amount: i128 = i128::MAX;
-    client.report_revenue(&issuer, &token, &large_amount, &u64::MAX, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &large_amount, &u64::MAX, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -561,13 +850,40 @@ fn large_revenue_amount() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
                 (large_amount, u64::MAX, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (large_amount, u64::MAX, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (large_amount, u64::MAX, empty_bl).into_val(&env),
+                (large_amount, u64::MAX, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (large_amount, u64::MAX).into_val(&env),
             ),
         ]
     );
@@ -586,7 +902,8 @@ fn negative_revenue_amount() {
 
     // Negative revenue (e.g. clawback / adjustment)
     let negative: i128 = -500_000;
-    client.report_revenue(&issuer, &token, &negative, &99, &false);
+    client.register_offering(&issuer, &token, &1000, &token);
+    client.report_revenue(&issuer, &token, &token, &negative, &99, &false);
 
     let empty_bl = Vec::<Address>::new(&env);
     assert_eq!(
@@ -595,13 +912,40 @@ fn negative_revenue_amount() {
             &env,
             (
                 contract_id.clone(),
+                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
+                (token.clone(), 1000_u32, token.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
                 (negative, 99u64, empty_bl.clone()).into_val(&env),
             ),
             (
                 contract_id.clone(),
+                (
+                    symbol_short!("rev_inia"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (negative, 99u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (negative, 99u64, empty_bl).into_val(&env),
+                (negative, 99u64, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (negative, 99u64).into_val(&env),
             ),
         ]
     );
@@ -2661,8 +3005,8 @@ fn issuer_transfer_accept_completes_transfer() {
     // Verify no pending transfer after acceptance
     assert_eq!(client.get_pending_issuer_transfer(&token), None);
 
-    // Verify offering issuer is updated
-    let offering = client.get_offering(&issuer, &token);
+    // Verify offering issuer is updated - offering is now stored under new_issuer
+    let offering = client.get_offering(&new_issuer, &token);
     assert!(offering.is_some());
     assert_eq!(offering.unwrap().issuer, new_issuer);
 }
@@ -2692,6 +3036,10 @@ fn issuer_transfer_new_issuer_can_deposit_revenue() {
 
     // New issuer should be able to deposit revenue
     let result = client.try_deposit_revenue(&new_issuer, &token, &payment_token, &100_000, &1);
+    assert!(result.is_ok());
+}
+
+#[test]
 fn testnet_mode_can_be_toggled() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2835,6 +3183,11 @@ fn issuer_transfer_cancel_emits_event() {
     client.propose_issuer_transfer(&token, &new_issuer);
     let before = env.events().all().len();
     client.cancel_issuer_transfer(&token);
+    let after = env.events().all().len();
+    assert_eq!(after, before + 1);
+}
+
+#[test]
 fn testnet_mode_disabled_enforces_concentration() {
     let env = Env::default();
     env.mock_all_auths();
@@ -3081,7 +3434,7 @@ fn issuer_transfer_multiple_offerings_isolation() {
     let new_issuer_b = Address::generate(&env);
 
     // Register second offering
-    client.register_offering(&issuer, &token_b, &3_000);
+    client.register_offering(&issuer, &token_b, &3_000, &token_b);
 
     // Propose transfers for both
     client.propose_issuer_transfer(&token_a, &new_issuer_a);
@@ -3145,11 +3498,11 @@ fn issuer_transfer_cancel_blocked_when_frozen() {
 
 #[test]
 fn issuer_transfer_preserves_audit_summary() {
-    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();
     let new_issuer = Address::generate(&env);
 
     // Report revenue before transfer
-    client.report_revenue(&issuer, &token, &100_000, &1);
+    client.report_revenue(&issuer, &token, &payment_token, &100_000, &1, &false);
     let summary_before = client.get_audit_summary(&issuer, &token).unwrap();
 
     // Transfer issuer
@@ -3164,14 +3517,15 @@ fn issuer_transfer_preserves_audit_summary() {
 
 #[test]
 fn issuer_transfer_new_issuer_can_report_revenue() {
-    let (env, client, _issuer, token, _payment_token, _contract_id) = claim_setup();
+    let (env, client, _issuer, token, payment_token, _contract_id) = claim_setup();
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&token, &new_issuer);
     client.accept_issuer_transfer(&token);
 
     // New issuer can report revenue
-    let result = client.try_report_revenue(&new_issuer, &token, &200_000, &2);
+    let result =
+        client.try_report_revenue(&new_issuer, &token, &payment_token, &200_000, &2, &false);
     assert!(result.is_ok());
 }
 
@@ -3264,8 +3618,8 @@ fn issuer_transfer_get_offering_still_works() {
     client.propose_issuer_transfer(&token, &new_issuer);
     client.accept_issuer_transfer(&token);
 
-    // get_offering should still find the offering under old issuer key
-    let offering = client.get_offering(&issuer, &token);
+    // get_offering should find the offering under new issuer now
+    let offering = client.get_offering(&new_issuer, &token);
     assert!(offering.is_some());
     assert_eq!(offering.unwrap().issuer, new_issuer);
 }
@@ -3280,7 +3634,7 @@ fn issuer_transfer_preserves_revenue_share_bps() {
     client.propose_issuer_transfer(&token, &new_issuer);
     client.accept_issuer_transfer(&token);
 
-    let offering_after = client.get_offering(&issuer, &token).unwrap();
+    let offering_after = client.get_offering(&new_issuer, &token).unwrap();
     assert_eq!(
         offering_before.revenue_share_bps,
         offering_after.revenue_share_bps
@@ -3313,6 +3667,9 @@ fn issuer_transfer_new_issuer_can_report_concentration() {
     // New issuer can report concentration
     let result = client.try_report_concentration(&new_issuer, &token, &5_000);
     assert!(result.is_ok());
+}
+
+#[test]
 fn testnet_mode_normal_operations_unaffected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -3540,7 +3897,7 @@ fn calculate_distribution_bps_100_percent() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &10_000);
+    client.register_offering(&issuer, &token, &10_000, &token);
 
     let payout =
         client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
@@ -3558,7 +3915,7 @@ fn calculate_distribution_bps_25_percent() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &2_500);
+    client.register_offering(&issuer, &token, &2_500, &token);
 
     let payout =
         client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &200, &holder);
@@ -3635,7 +3992,7 @@ fn calculate_distribution_rounds_down() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &3_333);
+    client.register_offering(&issuer, &token, &3_333, &token);
 
     let payout = client.calculate_distribution(&caller, &issuer, &token, &100, &100, &10, &holder);
 
@@ -3652,7 +4009,7 @@ fn calculate_distribution_rounds_down_exact() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &2_500);
+    client.register_offering(&issuer, &token, &2_500, &token);
 
     let payout =
         client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &400, &holder);
@@ -3703,7 +4060,7 @@ fn calculate_distribution_multiple_holders_sum() {
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &5_000);
+    client.register_offering(&issuer, &token, &5_000, &token);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -3756,7 +4113,7 @@ fn calculate_distribution_requires_auth() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &5_000);
+    client.register_offering(&issuer, &token, &5_000, &token);
 
     client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
 }
@@ -3778,7 +4135,7 @@ fn calculate_total_distributable_bps_100_percent() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &10_000);
+    client.register_offering(&issuer, &token, &10_000, &token);
 
     let total = client.calculate_total_distributable(&issuer, &token, &100_000);
 
@@ -3793,7 +4150,7 @@ fn calculate_total_distributable_bps_25_percent() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &2_500);
+    client.register_offering(&issuer, &token, &2_500, &token);
 
     let total = client.calculate_total_distributable(&issuer, &token, &100_000);
 
@@ -3817,7 +4174,7 @@ fn calculate_total_distributable_rounds_down() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &token, &3_333);
+    client.register_offering(&issuer, &token, &3_333, &token);
 
     let total = client.calculate_total_distributable(&issuer, &token, &100);
 
@@ -3852,7 +4209,7 @@ fn calculate_distribution_offering_isolation() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &token_b, &8_000);
+    client.register_offering(&issuer, &token_b, &8_000, &token_b);
 
     let payout_a =
         client.calculate_distribution(&caller, &issuer, &token, &100_000, &1_000, &100, &holder);
@@ -3868,7 +4225,7 @@ fn calculate_total_distributable_offering_isolation() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer, &token_b, &8_000);
+    client.register_offering(&issuer, &token_b, &8_000, &token_b);
 
     let total_a = client.calculate_total_distributable(&issuer, &token, &100_000);
     let total_b = client.calculate_total_distributable(&issuer, &token_b, &100_000);
