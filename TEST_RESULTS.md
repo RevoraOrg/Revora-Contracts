@@ -199,6 +199,34 @@ Tests interaction with other contract features:
 ### Storage Impact
 - +2 new storage keys per offering (when transfer pending)
 - No ongoing storage overhead after transfer complete
+---
+
+# Auth Negative Tests – Results
+
+## Execution
+
+```bash
+cargo test
+```
+
+## Summary
+
+- Negative auth tests executed for admin/safety, issuer-only, holder-only, and blacklist entrypoints.
+- Unauthorized calls returned errors via client `try_*` methods.
+- Contract state remained unchanged after each unauthorized attempt.
+
+## Highlights
+
+- Admin-only without auth: set_testnet_mode, set_platform_fee, freeze, set_admin → rejected, no state mutation.
+- Issuer-only with wrong issuer: register_offering, report_revenue, deposit_revenue, set_holder_share, set_concentration_limit, set_rounding_mode, set_min_revenue_threshold, set_claim_delay, set_offering_metadata → rejected, no state mutation.
+- Blacklist ops restricted to issuer or admin; unauthorized add/remove rejected, list remains unchanged.
+- Cross-offering issuer confusion prevented (issuer B cannot modify issuer A’s offering).
+- Claim without holder auth rejected.
+
+## Notes
+
+- Tests that require missing-signature failures for issuer transfer flows need granular auth mocking. Current suite focuses on logic-unauthorized and admin-signature-required cases to ensure robust coverage of access control barriers.
+- No ongoing storage overhead after transfer complete
 - Reverse lookup adds 1 permanent storage entry per offering
 
 ## Compliance with Requirements
