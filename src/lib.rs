@@ -153,6 +153,9 @@ pub enum DataKey {
     Safety,
     /// Global pause flag; when true, state-mutating ops are disabled (#7).
     Paused,
+    /// Per-offering reentrancy/in-progress flag used to prevent
+    /// accidental double-execution or re-entrant calls.
+    InProgress(Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -534,6 +537,20 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env);
         caller.require_auth();
 
+        // Reentrancy / reuse guard: prevent the same offering's
+        // mutable entrypoint being executed re-entrantly or while
+        // another execution is in-progress for the same `token`.
+        let guard_key = DataKey::InProgress(token.clone());
+        let already = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&guard_key)
+            .unwrap_or(false);
+        if already {
+            panic!("reentrancy detected for token");
+        }
+        env.storage().persistent().set(&guard_key, &true);
+
         let key = DataKey::Blacklist(token.clone());
         let mut map: Map<Address, bool> = env
             .storage()
@@ -544,8 +561,10 @@ impl RevoraRevenueShare {
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
 
-        env.events()
-            .publish((EVENT_BL_ADD, token, caller), investor);
+        // clear the guard after mutation completes
+        env.storage().persistent().set(&guard_key, &false);
+
+        env.events().publish((EVENT_BL_ADD, token, caller), investor);
         Ok(())
     }
 
@@ -560,6 +579,18 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env);
         caller.require_auth();
 
+        // Reentrancy / reuse guard (symmetric to `blacklist_add`).
+        let guard_key = DataKey::InProgress(token.clone());
+        let already = env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&guard_key)
+            .unwrap_or(false);
+        if already {
+            panic!("reentrancy detected for token");
+        }
+        env.storage().persistent().set(&guard_key, &true);
+
         let key = DataKey::Blacklist(token.clone());
         let mut map: Map<Address, bool> = env
             .storage()
@@ -570,8 +601,10 @@ impl RevoraRevenueShare {
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
 
-        env.events()
-            .publish((EVENT_BL_REM, token, caller), investor);
+        // clear the guard after mutation completes
+        env.storage().persistent().set(&guard_key, &false);
+
+        env.events().publish((EVENT_BL_REM, token, caller), investor);
         Ok(())
     }
 
