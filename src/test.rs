@@ -192,7 +192,18 @@ fn combined_flow_preserves_event_order() {
             (
                 contract_id.clone(),
                 (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (amount, period_id, empty_bl).into_val(&env),
+                (amount, period_id, empty_bl.clone()).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
+                (
+                    symbol_short!("rev_repa"),
+                    issuer.clone(),
+                    token.clone(),
+                    token.clone()
+                )
+                    .into_val(&env),
+                (amount, period_id).into_val(&env),
             ),
             (
                 contract_id.clone(),
@@ -257,7 +268,7 @@ fn complex_mixed_flow_events_in_order() {
                     symbol_short!("rev_inia"),
                     issuer_a.clone(),
                     token_x.clone(),
-                    token_x.clone()
+                    token_x.clone(),
                 )
                     .into_val(&env),
                 (100_000i128, 1u64, empty_bl.clone()).into_val(&env),
@@ -273,7 +284,7 @@ fn complex_mixed_flow_events_in_order() {
                     symbol_short!("rev_repa"),
                     issuer_a.clone(),
                     token_x.clone(),
-                    token_x.clone()
+                    token_x.clone(),
                 )
                     .into_val(&env),
                 (100_000i128, 1u64).into_val(&env),
@@ -289,7 +300,7 @@ fn complex_mixed_flow_events_in_order() {
                     symbol_short!("rev_inia"),
                     issuer_b.clone(),
                     token_y.clone(),
-                    token_y.clone()
+                    token_y.clone(),
                 )
                     .into_val(&env),
                 (200_000i128, 1u64, empty_bl.clone()).into_val(&env),
@@ -305,7 +316,7 @@ fn complex_mixed_flow_events_in_order() {
                     symbol_short!("rev_repa"),
                     issuer_b.clone(),
                     token_y.clone(),
-                    token_y.clone()
+                    token_y.clone(),
                 )
                     .into_val(&env),
                 (200_000i128, 1u64).into_val(&env),
@@ -989,7 +1000,7 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
         }
     }
 
-    assert_eq!(env.events().all().len(), 1 + (calls as u32) * 4);
+    assert_eq!(env.events().all().len(), calls as u32 * 4 + 1);
 }
 
 #[test]
@@ -1032,7 +1043,7 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
         client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
     }
 
-    assert_eq!(env.events().all().len(), 1 + (FUZZ_ITERATIONS as u32) * 4);
+    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32 * 4 + 1);
 }
 
 // ---------------------------------------------------------------------------
