@@ -72,7 +72,7 @@ fn unpause_safety_unauthorized() {
     client.pause_safety(&safety);
     let attacker = Address::generate(&env);
     assert!(client.try_unpause_safety(&attacker).is_err());
-    assert!(RevoraRevenueShareClient::is_paused(&env));
+    assert!(client.is_paused());
     client.unpause_safety(&safety);
     assert!(!client.is_paused());
 }
@@ -194,7 +194,10 @@ fn set_rounding_mode_wrong_issuer_no_mutation() {
     assert!(client
         .try_set_rounding_mode(&attacker, &token, &RoundingMode::RoundHalfUp)
         .is_err());
-    assert_eq!(client.get_rounding_mode(&issuer, &token), RoundingMode::Truncation);
+    assert_eq!(
+        client.get_rounding_mode(&issuer, &token),
+        RoundingMode::Truncation
+    );
 }
 
 #[test]
