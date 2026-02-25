@@ -4780,3 +4780,197 @@ fn test_metadata_content_hash_format() {
     let retrieved = client.get_offering_metadata(&issuer, &token);
     assert_eq!(retrieved, Some(content_hash));
 }
+
+// ── Platform fee tests (#6) ─────────────────────────────────
+
+#[test]
+fn default_platform_fee_is_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_and_get_platform_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&250);
+    assert_eq!(client.get_platform_fee(), 250);
+}
+
+#[test]
+fn set_platform_fee_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500);
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+fn set_platform_fee_to_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&5000);
+    assert_eq!(client.get_platform_fee(), 5000);
+}
+
+#[test]
+fn set_platform_fee_above_maximum_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    let result = client.try_set_platform_fee(&5001);
+    assert!(result.is_err());
+}
+
+#[test]
+fn update_platform_fee_multiple_times() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+    assert_eq!(client.get_platform_fee(), 100);
+    client.set_platform_fee(&200);
+    assert_eq!(client.get_platform_fee(), 200);
+    client.set_platform_fee(&0);
+    assert_eq!(client.get_platform_fee(), 0);
+}
+
+#[test]
+#[should_panic]
+fn set_platform_fee_requires_admin() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+}
+
+#[test]
+fn calculate_platform_fee_basic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&250); // 2.5%
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 250); // 10000 * 250 / 10000 = 250
+}
+
+#[test]
+fn calculate_platform_fee_with_zero_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500);
+    let fee = client.calculate_platform_fee(&0);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn calculate_platform_fee_with_zero_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn calculate_platform_fee_at_maximum_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&5000); // 50%
+    let fee = client.calculate_platform_fee(&10_000);
+    assert_eq!(fee, 5_000);
+}
+
+#[test]
+fn calculate_platform_fee_precision() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&1); // 0.01%
+    let fee = client.calculate_platform_fee(&1_000_000);
+    assert_eq!(fee, 100); // 1000000 * 1 / 10000 = 100
+}
+
+#[test]
+#[should_panic]
+fn platform_fee_only_admin_can_set() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100);
+}
+
+#[test]
+fn platform_fee_large_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&100); // 1%
+    let large_amount: i128 = 1_000_000_000_000;
+    let fee = client.calculate_platform_fee(&large_amount);
+    assert_eq!(fee, 10_000_000_000); // 1% of 1 trillion
+}
+
+#[test]
+fn platform_fee_integration_with_revenue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>);
+    client.set_platform_fee(&500); // 5%
+    let revenue: i128 = 100_000;
+    let fee = client.calculate_platform_fee(&revenue);
+    assert_eq!(fee, 5_000); // 5% of 100,000
+    let remaining = revenue - fee;
+    assert_eq!(remaining, 95_000);
+}

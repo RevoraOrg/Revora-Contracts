@@ -183,10 +183,15 @@ pub enum DataKey {
     EventVersioningEnabled,
     /// Per (issuer, token): metadata reference (IPFS hash, HTTPS URI, etc.)
     OfferingMetadata(Address, Address),
+    /// Platform fee in basis points (max 5000 = 50%) taken from reported revenue (#6).
+    PlatformFeeBps,
 }
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
+
+/// Maximum platform fee in basis points (50%).
+const MAX_PLATFORM_FEE_BPS: u32 = 5_000;
 
 /// Maximum number of periods that can be claimed in a single transaction.
 /// Keeps compute costs predictable within Soroban limits.
@@ -1589,6 +1594,42 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, bool>(&DataKey::TestnetMode)
             .unwrap_or(false)
+    }
+
+    // ── Platform fee configuration (#6) ────────────────────────
+
+    /// Set the platform fee in basis points.  Admin-only.
+    /// Maximum value is 5 000 bps (50 %).  Pass 0 to disable.
+    pub fn set_platform_fee(env: Env, fee_bps: u32) -> Result<(), RevoraError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::LimitReached)?;
+        admin.require_auth();
+
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlatformFeeBps, &fee_bps);
+        Ok(())
+    }
+
+    /// Return the current platform fee in basis points (default 0).
+    pub fn get_platform_fee(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(0)
+    }
+
+    /// Calculate the platform fee for a given amount.
+    pub fn calculate_platform_fee(env: Env, amount: i128) -> i128 {
+        let fee_bps = Self::get_platform_fee(env) as i128;
+        (amount * fee_bps).checked_div(BPS_DENOMINATOR).unwrap_or(0)
     }
 }
 
