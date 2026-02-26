@@ -4839,6 +4839,98 @@ fn test_metadata_content_hash_format() {
     assert_eq!(retrieved, Some(content_hash));
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// REGRESSION TEST SUITE
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// This module contains regression tests for critical bugs discovered in production,
+// audits, or security reviews. Each test documents the original issue and verifies
+// that the fix prevents recurrence.
+//
+// ## Guidelines for Adding Regression Tests
+//
+// 1. **Issue Reference:** Link to the GitHub issue, audit report, or incident ticket
+// 2. **Bug Description:** Clearly explain what went wrong and why
+// 3. **Expected Behavior:** Document the correct behavior after the fix
+// 4. **Determinism:** Use fixed seeds, mock timestamps, and predictable addresses
+// 5. **Performance:** Keep tests fast (<100ms) and avoid unnecessary setup
+// 6. **Naming:** Use descriptive names: `regression_issue_N_description`
+//
+// ## Test Template
+//
+// ```rust
+// /// Regression Test: [Brief Title]
+// ///
+// /// **Related Issue:** #N or [Audit Report Section X.Y]
+// ///
+// /// **Original Bug:**
+// /// [Detailed description of the bug, including conditions that triggered it]
+// ///
+// /// **Expected Behavior:**
+// /// [What should happen instead]
+// ///
+// /// **Fix Applied:**
+// /// [Brief description of the code change that fixed it]
+// #[test]
+// fn regression_issue_N_description() {
+//     let env = Env::default();
+//     env.mock_all_auths();
+//     let client = make_client(&env);
+//
+//     // Arrange: Set up the conditions that triggered the bug
+//     // ...
+//
+//     // Act: Perform the operation that previously failed
+//     // ...
+//
+//     // Assert: Verify the fix prevents the bug
+//     // ...
+// }
+// ```
+//
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod regression {
+    use super::*;
+
+    /// Regression Test Template
+    ///
+    /// **Related Issue:** #0 (Template - not a real bug)
+    ///
+    /// **Original Bug:**
+    /// This is a template test demonstrating the structure for regression tests.
+    /// Replace this with actual bug details when adding real regression cases.
+    ///
+    /// **Expected Behavior:**
+    /// The contract should handle the edge case correctly without panicking or
+    /// producing incorrect results.
+    ///
+    /// **Fix Applied:**
+    /// N/A - This is a template. Document the actual fix when adding real tests.
+    #[test]
+    fn regression_template_example() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+
+        // Arrange: Set up test conditions
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        // Act: Perform the operation
+        client.register_offering(&issuer, &token, &1_000, &payout_asset);
+
+        // Assert: Verify correct behavior
+        let offering = client.get_offering(&issuer, &token);
+        assert!(offering.is_some());
+        assert_eq!(offering.unwrap().revenue_share_bps, 1_000);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Add new regression tests below this line
+    // ──────────────────────────────────────────────────────────────────────────
 // ── Platform fee tests (#6) ─────────────────────────────────
 
 #[test]

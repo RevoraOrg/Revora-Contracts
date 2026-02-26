@@ -2270,6 +2270,87 @@ cargo build --release
 cargo test
 ```
 
+### Regression Testing Policy
+
+The contract includes a dedicated regression test suite to capture and prevent recurrence of critical bugs discovered in production, audits, or security reviews. All regression tests are located in `src/test.rs` under the `mod regression` section.
+
+#### When to Add a Regression Test
+
+Add a regression test when:
+- A critical bug is discovered in production or testnet deployments
+- An audit or security review identifies a vulnerability
+- A bug fix addresses incorrect behavior that could recur
+- An edge case causes unexpected contract behavior or panic
+- A fix prevents data corruption or loss of funds
+
+#### Naming Convention
+
+Use descriptive names that reference the issue:
+- Format: `regression_issue_N_brief_description`
+- Example: `regression_issue_48_overflow_in_share_calculation`
+- For audit findings: `regression_audit_2024_q1_section_3_2`
+
+#### Required Documentation Format
+
+Each regression test MUST include:
+
+```rust
+/// Regression Test: [Brief Title]
+///
+/// **Related Issue:** #N or [Audit Report Reference]
+///
+/// **Original Bug:**
+/// [Detailed description of what went wrong, including:
+///  - Conditions that triggered the bug
+///  - Incorrect behavior observed
+///  - Impact (panic, wrong calculation, security issue)]
+///
+/// **Expected Behavior:**
+/// [What should happen instead]
+///
+/// **Fix Applied:**
+/// [Brief description of the code change that resolved it]
+#[test]
+fn regression_issue_N_description() {
+    // Test implementation
+}
+```
+
+#### Determinism Requirements
+
+All regression tests MUST be deterministic and CI-safe:
+- Use `Env::default()` with `mock_all_auths()` for predictable auth
+- Use `Address::generate(&env)` for test addresses (deterministic within test)
+- Avoid `env.ledger().timestamp()` without explicit mocking
+- Use fixed seeds for any pseudo-random test data
+- No external network calls or file system dependencies
+
+#### Performance Expectations
+
+- Individual tests should complete in <100ms
+- Avoid unnecessary setup; use helper functions (`make_client()`, `setup()`)
+- Keep test scope focused on the specific bug being prevented
+- Use minimal data sets that reproduce the issue
+
+#### Coverage Requirement
+
+The overall test suite (including regression tests) MUST maintain minimum 95% code coverage. Run coverage checks with:
+
+```bash
+cargo tarpaulin --out Html --output-dir coverage
+```
+
+#### CI Integration
+
+Regression tests run automatically as part of `cargo test`:
+- No special flags or environment variables required
+- Tests must pass on all supported platforms (Linux, macOS, Windows)
+- Snapshot tests in `test_snapshots/` are validated automatically
+
+#### Example Regression Test
+
+See `src/test.rs::regression::regression_template_example` for a complete template demonstrating the required structure and documentation format.
+
 ### Contributor guidelines (reduce merge conflicts)
 
 - Use feature branches per change (e.g. `feature/structured-error-codes`, `feature/storage-limit-negative-tests`).
