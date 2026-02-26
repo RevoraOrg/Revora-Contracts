@@ -51,10 +51,11 @@ impl RevoraRevenueShare {
         issuer.require_auth();
 
         // Reject if this period has been explicitly closed.
-        let is_closed = env
-            .storage()
-            .instance()
-            .has(&DataKey::Closed(issuer.clone(), token.clone(), period_id));
+        let is_closed = env.storage().instance().has(&DataKey::Closed(
+            issuer.clone(),
+            token.clone(),
+            period_id,
+        ));
         if is_closed {
             panic!("period closed");
         }
@@ -69,14 +70,16 @@ impl RevoraRevenueShare {
                 panic!("out-of-order period");
             }
             if period_id > prev {
-                env.storage()
-                    .instance()
-                    .set(&DataKey::LatestPeriod(issuer.clone(), token.clone()), &period_id);
+                env.storage().instance().set(
+                    &DataKey::LatestPeriod(issuer.clone(), token.clone()),
+                    &period_id,
+                );
             }
         } else {
-            env.storage()
-                .instance()
-                .set(&DataKey::LatestPeriod(issuer.clone(), token.clone()), &period_id);
+            env.storage().instance().set(
+                &DataKey::LatestPeriod(issuer.clone(), token.clone()),
+                &period_id,
+            );
         }
 
         env.events().publish(
@@ -119,4 +122,3 @@ impl RevoraRevenueShare {
 }
 
 mod test;
-

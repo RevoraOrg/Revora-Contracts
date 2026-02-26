@@ -1,6 +1,9 @@
 #![cfg(test)]
 extern crate std;
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env,
+};
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 
