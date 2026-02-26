@@ -160,6 +160,8 @@ const EVENT_REV_BELOW_THRESHOLD: Symbol = symbol_short!("rev_below");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Represents a revenue-share offering registered on-chain.
+/// Offerings are immutable once registered.
 // ── Data structures ──────────────────────────────────────────
 /// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: u32 = 1;
@@ -167,8 +169,11 @@ pub const CONTRACT_VERSION: u32 = 1;
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offering {
+    /// The address authorized to manage this offering.
     pub issuer: Address,
+    /// The token representing this offering.
     pub token: Address,
+    /// Cumulative revenue share for all holders in basis points (0-10000).
     pub revenue_share_bps: u32,
     pub payout_asset: Address,
 }
@@ -176,18 +181,24 @@ pub struct Offering {
 /// Per-offering concentration guardrail config (#26).
 /// max_bps: max allowed single-holder share in basis points (0 = disabled).
 /// enforce: if true, report_revenue fails when current concentration > max_bps.
+/// Configuration for single-holder concentration guardrails.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConcentrationLimitConfig {
+    /// Maximum allowed share in basis points for a single holder (0 = disabled).
     pub max_bps: u32,
+    /// If true, `report_revenue` will fail if current concentration exceeds `max_bps`.
     pub enforce: bool,
 }
 
 /// Per-offering audit log summary (#34).
+/// Summarizes the audit trail for a specific offering.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuditSummary {
+    /// Cumulative revenue amount reported for this offering.
     pub total_revenue: i128,
+    /// Total number of revenue reports submitted.
     pub report_count: u64,
 }
 
@@ -211,13 +222,13 @@ pub struct SimulateDistributionResult {
     pub payouts: Vec<(Address, i128)>,
 }
 
-/// Rounding mode for distribution share calculations (#44).
+/// Defines how fractional shares are handled during distribution calculations.
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundingMode {
-    /// Truncate toward zero: share = (amount * bps) / 10000
+    /// Truncate toward zero: share = (amount * bps) / 10000.
     Truncation = 0,
-    /// Round half up: share = (amount * bps * 2 + 10000) / 20000
+    /// Standard rounding: share = round((amount * bps) / 10000), where >= 0.5 rounds up.
     RoundHalfUp = 1,
 }
 
@@ -435,6 +446,18 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+
+    /// Initialize the contract with an admin and an optional safety role.
+    ///
+    /// This method follows the singleton pattern and can only be called once.
+    ///
+    /// ### Parameters
+    /// - `admin`: The primary administrative address with authority to pause/unpause and manage offerings.
+    /// - `safety`: Optional address allowed to trigger emergency pauses but not manage offerings.
+    ///
+    /// ### Panics
+    /// Panics if the contract has already been initialized.
+
     /// Get the current issuer for an offering token (used for auth checks after transfers).
     fn get_current_issuer(env: &Env, token: &Address) -> Option<Address> {
         let key = DataKey::OfferingIssuer(token.clone());
@@ -442,6 +465,8 @@ impl RevoraRevenueShare {
     }
 
     /// Initialize admin and optional safety role for emergency pause (#7).
+    /// Can only be called once; panics if already initialized
+    pub fn initialize(env: Env, admin: Address, safety: Option<Address>) {
     /// `event_only` configures the contract to skip persistent business state (#72).
     /// Can only be called once; panics if already initialized.
     pub fn initialize(env: Env, admin: Address, safety: Option<Address>, event_only: Option<bool>) {
@@ -458,7 +483,13 @@ impl RevoraRevenueShare {
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
 
-    /// Pause the contract (admin only). Idempotent.
+    /// Pause the contract (Admin only).
+    ///
+    /// When paused, all state-mutating operations are disabled to protect the system.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address of the admin (must match initialized admin).
     pub fn pause_admin(env: Env, caller: Address) {
         caller.require_auth();
         let admin: Address =
@@ -470,7 +501,13 @@ impl RevoraRevenueShare {
         env.events().publish((EVENT_PAUSED, caller.clone()), ());
     }
 
-    /// Unpause the contract (admin only). Idempotent.
+    /// Unpause the contract (Admin only).
+    ///
+    /// Re-enables state-mutating operations after a pause.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address of the admin (must match initialized admin).
     pub fn unpause_admin(env: Env, caller: Address) {
         caller.require_auth();
         let admin: Address =
@@ -482,7 +519,13 @@ impl RevoraRevenueShare {
         env.events().publish((EVENT_UNPAUSED, caller.clone()), ());
     }
 
-    /// Pause the contract (safety role only). Idempotent.
+    /// Pause the contract (Safety role only).
+    ///
+    /// Allows the safety role to trigger an emergency pause.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address of the safety role (must match initialized safety address).
     pub fn pause_safety(env: Env, caller: Address) {
         caller.require_auth();
         let safety: Address =
@@ -494,7 +537,13 @@ impl RevoraRevenueShare {
         env.events().publish((EVENT_PAUSED, caller.clone()), ());
     }
 
-    /// Unpause the contract (safety role only). Idempotent.
+    /// Unpause the contract (Safety role only).
+    ///
+    /// Allows the safety role to resume contract operations.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address of the safety role (must match initialized safety address).
     pub fn unpause_safety(env: Env, caller: Address) {
         caller.require_auth();
         let safety: Address =
@@ -522,8 +571,23 @@ impl RevoraRevenueShare {
     // ── Offering management ───────────────────────────────────
 
     /// Register a new revenue-share offering.
+
+    ///
+    /// Once registered, an offering's parameters are immutable.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The address with authority to manage this offering. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `revenue_share_bps`: Total revenue share for all holders in basis points (0-10000).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::InvalidRevenueShareBps)` if `revenue_share_bps` exceeds 10000.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+
     /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
     /// In testnet mode, bps validation is skipped to allow flexible testing.
+
     pub fn register_offering(
         env: Env,
         issuer: Address,
@@ -619,7 +683,17 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    /// Fetch a single offering by issuer and token (scans issuer's offerings).
+    /// Fetch a single offering by issuer and token.
+    ///
+    /// This method scans the issuer's registered offerings to find the one matching the given token.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The address that registered the offering.
+    /// - `token`: The token address associated with the offering.
+    ///
+    /// ### Returns
+    /// - `Some(Offering)` if found.
+    /// - `None` otherwise.
     pub fn get_offering(env: Env, issuer: Address, token: Address) -> Option<Offering> {
         let count = Self::get_offering_count(env.clone(), issuer.clone());
         for i in 0..count {
@@ -642,10 +716,30 @@ impl RevoraRevenueShare {
         tokens
     }
 
+
+    /// Record a revenue report for an offering and emit an audit event.
+    ///
+    /// This method is primarily for off-chain audit trails. It does not transfer funds.
+    /// It emits an event containing the revenue amount, period ID, and a snapshot of the current blacklist.
+    /// Updates the per-offering `AuditSummary`.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `amount`: Total revenue amount to report.
+    /// - `period_id`: Unique identifier for the revenue period (e.g., a timestamp or sequence).
+    /// - `override_existing`: If true, allows updating reports for previously reported periods.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ConcentrationLimitExceeded)` if enforcement is enabled and concentration exceeds limit.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+
     /// Record a revenue report for an offering. Updates audit summary (#34).
     /// Fails with `ConcentrationLimitExceeded` (#26) if concentration enforcement is on and current concentration exceeds limit.
     /// In testnet mode, concentration enforcement is skipped.
     /// `override_existing`: if true, allows overwriting a previously reported period.
+
     ///
     /// The event payload includes the current blacklist so off-chain
     /// distribution engines can filter recipients in the same atomic step.
@@ -995,7 +1089,19 @@ impl RevoraRevenueShare {
         (results, next_cursor)
     }
 
-    /// Add `investor` to the per-offering blacklist for `token`. Idempotent.
+    /// Add an investor to the per-offering blacklist.
+    ///
+    /// Blacklisted addresses are prohibited from claiming revenue for the specified token.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `investor`: The address to be blacklisted.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn blacklist_add(
         env: Env,
         caller: Address,
@@ -1052,7 +1158,19 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    /// Remove `investor` from the per-offering blacklist for `token`. Idempotent.
+    /// Remove an investor from the per-offering blacklist.
+    ///
+    /// Re-enables the address to claim revenue for the specified token.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `investor`: The address to be removed from the blacklist.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn blacklist_remove(
         env: Env,
         caller: Address,
@@ -1218,9 +1336,20 @@ impl RevoraRevenueShare {
         Self::get_whitelist(env, token).len() > 0
     // ── Holder concentration guardrail (#26) ───────────────────
 
-    /// Set per-offering concentration limit. Caller must be the offering issuer.
-    /// `max_bps`: max allowed single-holder share in basis points (0 = disable).
-    /// `enforce`: if true, report_revenue will fail when reported concentration exceeds max_bps.
+    /// Set the concentration limit for an offering.
+    ///
+    /// Configures the maximum share a single holder can own and whether it is enforced.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `max_bps`: The maximum allowed single-holder share in basis points (0-10000, 0 = disabled).
+    /// - `enforce`: If true, `report_revenue` will fail if current concentration exceeds `max_bps`.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::LimitReached)` if the offering is not found.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn set_concentration_limit(
         env: Env,
         issuer: Address,
@@ -1248,7 +1377,19 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    /// Report current top-holder concentration in bps. Emits warning event if over configured limit.
+    /// Report the current top-holder concentration for an offering.
+    ///
+    /// Stores the provided concentration value. If it exceeds the configured limit,
+    /// a `conc_warn` event is emitted. The stored value is used for enforcement in `report_revenue`.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `concentration_bps`: The current top-holder share in basis points.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn report_concentration(
         env: Env,
         issuer: Address,
@@ -1316,7 +1457,19 @@ impl RevoraRevenueShare {
 
     // ── Configurable rounding (#44) ───────────────────────────
 
-    /// Set rounding mode for an offering's share calculations. Caller must be issuer.
+    /// Set the rounding mode for an offering's share calculations.
+    ///
+    /// The rounding mode determines how fractional payouts are handled.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `mode`: The rounding mode to use (`RoundingMode::Truncation` or `RoundingMode::RoundHalfUp`).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::LimitReached)` if the offering is not found.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn set_rounding_mode(
         env: Env,
         issuer: Address,
@@ -1421,8 +1574,22 @@ impl RevoraRevenueShare {
     /// Deposit revenue for a specific period of an offering.
     ///
     /// Transfers `amount` of `payment_token` from `issuer` to the contract.
-    /// The payment token is locked per offering on first deposit; subsequent
+    /// The payment token is locked per offering on the first deposit; subsequent
     /// deposits must use the same payment token.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `payment_token`: The token used to pay out revenue (e.g., XLM or USDC).
+    /// - `amount`: Total revenue amount to deposit.
+    /// - `period_id`: Unique identifier for the revenue period.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
+    /// - `Err(RevoraError::PeriodAlreadyDeposited)` if revenue has already been deposited for this `period_id`.
+    /// - `Err(RevoraError::PaymentTokenMismatch)` if `payment_token` differs from previously locked token.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn deposit_revenue(
         env: Env,
         issuer: Address,
@@ -1562,7 +1729,19 @@ impl RevoraRevenueShare {
 
     /// Set a holder's revenue share (in basis points) for an offering.
     ///
-    /// Only the offering issuer may call this. `share_bps` must be <= 10000.
+    /// The share determines the percentage of a period's revenue the holder can claim.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `holder`: The address of the token holder.
+    /// - `share_bps`: The holder's share in basis points (0-10000).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
+    /// - `Err(RevoraError::InvalidShareBps)` if `share_bps` exceeds 10000.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn set_holder_share(
         env: Env,
         issuer: Address,
@@ -1601,14 +1780,19 @@ impl RevoraRevenueShare {
 
     /// Claim aggregated revenue across multiple unclaimed periods.
     ///
-    /// `max_periods` controls how many periods to process in one call
-    /// (0 = up to MAX_CLAIM_PERIODS). Returns the total payout amount.
+    /// Payouts are calculated based on the holder's share at the time of claim.
+    /// Capped at `MAX_CLAIM_PERIODS` (50) per transaction for gas safety.
     ///
-    /// Aggregation semantics:
-    /// - Periods are processed in deposit order (sequential index).
-    /// - Each holder's payout per period = `period_revenue * share_bps / 10000`.
-    /// - The holder's claim index advances regardless of zero-value periods.
-    /// - Capped at MAX_CLAIM_PERIODS (50) per transaction for gas safety.
+    /// ### Parameters
+    /// - `holder`: The address of the token holder. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `max_periods`: Maximum number of periods to process (0 = `MAX_CLAIM_PERIODS`).
+    ///
+    /// ### Returns
+    /// - `Ok(i128)` The total payout amount on success.
+    /// - `Err(RevoraError::HolderBlacklisted)` if the holder is blacklisted.
+    /// - `Err(RevoraError::NoPendingClaims)` if no share is set or all periods are claimed.
+    /// - `Err(RevoraError::ClaimDelayNotElapsed)` if the next period is still within the claim delay window.
     pub fn claim(
         env: Env,
         holder: Address,
@@ -1709,8 +1893,16 @@ impl RevoraRevenueShare {
         periods
     }
 
-    /// Preview the total claimable amount for a holder without claiming.
-    /// Respects per-offering claim delay (#27): only sums periods past the delay.
+    /// Preview the total claimable amount for a holder without mutating state.
+    ///
+    /// This method respects the per-offering claim delay and only sums periods that have passed the delay.
+    ///
+    /// ### Parameters
+    /// - `token`: The token representing the offering.
+    /// - `holder`: The address of the token holder.
+    ///
+    /// ### Returns
+    /// The total amount (i128) currently claimable by the holder.
     pub fn get_claimable(env: Env, token: Address, holder: Address) -> i128 {
         let share_bps = Self::get_holder_share(env.clone(), token.clone(), holder.clone());
         if share_bps == 0 {
@@ -1745,7 +1937,19 @@ impl RevoraRevenueShare {
 
     // ── Time-delayed claim configuration (#27) ──────────────────
 
-    /// Set per-offering claim delay in seconds. Only issuer may set. 0 = immediate claim.
+    /// Set the claim delay for an offering in seconds.
+    ///
+    /// The delay starts from the time of deposit and must elapse before a period can be claimed.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `token`: The token representing the offering.
+    /// - `delay_secs`: Delay in seconds (0 = immediate claim).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     pub fn set_claim_delay(
         env: Env,
         issuer: Address,
