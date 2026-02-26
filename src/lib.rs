@@ -43,6 +43,10 @@ pub enum RevoraError {
     PayoutAssetMismatch = 15,
     /// Metadata string exceeds maximum allowed length.
     MetadataTooLarge = 16,
+    /// Amount is invalid (e.g. negative for deposit, or out of allowed range) (#35).
+    InvalidAmount = 17,
+    /// period_id is invalid (e.g. zero when required to be positive) (#35).
+    InvalidPeriodId = 18,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -87,6 +91,9 @@ const EVENT_MIN_REV_THRESHOLD_SET: Symbol = symbol_short!("min_rev");
 const EVENT_REV_BELOW_THRESHOLD: Symbol = symbol_short!("rev_below");
 
 const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
+pub const CONTRACT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -230,6 +237,30 @@ impl RevoraRevenueShare {
             .unwrap_or(false)
         {
             return Err(RevoraError::ContractFrozen);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require amount > 0 for transfers/deposits.
+    fn require_positive_amount(amount: i128) -> Result<(), RevoraError> {
+        if amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require period_id > 0 where 0 would be ambiguous.
+    fn require_valid_period_id(period_id: u64) -> Result<(), RevoraError> {
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require amount >= 0 for reporting (allow zero revenue report).
+    fn require_non_negative_amount(amount: i128) -> Result<(), RevoraError> {
+        if amount < 0 {
+            return Err(RevoraError::InvalidAmount);
         }
         Ok(())
     }
@@ -441,6 +472,8 @@ impl RevoraRevenueShare {
 
         Self::require_not_paused(&env);
         issuer.require_auth();
+
+        Self::require_non_negative_amount(amount)?;
 
         let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
             .ok_or(RevoraError::OfferingNotFound)?;
@@ -902,6 +935,8 @@ impl RevoraRevenueShare {
 
         issuer.require_auth();
 
+        Self::require_non_negative_amount(min_amount)?;
+
         let key = DataKey::MinRevenueThreshold(issuer.clone(), token.clone());
         let previous: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &min_amount);
@@ -983,6 +1018,9 @@ impl RevoraRevenueShare {
         }
 
         issuer.require_auth();
+
+        Self::require_positive_amount(amount)?;
+        Self::require_valid_period_id(period_id)?;
 
         // Check period not already deposited
         let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
@@ -1723,6 +1761,12 @@ impl RevoraRevenueShare {
     pub fn calculate_platform_fee(env: Env, amount: i128) -> i128 {
         let fee_bps = Self::get_platform_fee(env) as i128;
         (amount * fee_bps).checked_div(BPS_DENOMINATOR).unwrap_or(0)
+    }
+
+    /// Return the current contract version (#23). Used for upgrade compatibility and migration.
+    pub fn get_version(env: Env) -> u32 {
+        let _ = env;
+        CONTRACT_VERSION
     }
 }
 

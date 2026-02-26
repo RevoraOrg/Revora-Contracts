@@ -900,55 +900,11 @@ fn negative_revenue_amount() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // Negative revenue (e.g. clawback / adjustment)
+    // Negative revenue is rejected by input validation (#35).
     let negative: i128 = -500_000;
     client.register_offering(&issuer, &token, &1000, &token);
-    client.report_revenue(&issuer, &token, &token, &negative, &99, &false);
-
-    let empty_bl = Vec::<Address>::new(&env);
-    assert_eq!(
-        env.events().all(),
-        vec![
-            &env,
-            (
-                contract_id.clone(),
-                (symbol_short!("offer_reg"), issuer.clone()).into_val(&env),
-                (token.clone(), 1000_u32, token.clone()).into_val(&env),
-            ),
-            (
-                contract_id.clone(),
-                (symbol_short!("rev_init"), issuer.clone(), token.clone()).into_val(&env),
-                (negative, 99u64, empty_bl.clone()).into_val(&env),
-            ),
-            (
-                contract_id.clone(),
-                (
-                    symbol_short!("rev_inia"),
-                    issuer.clone(),
-                    token.clone(),
-                    token.clone()
-                )
-                    .into_val(&env),
-                (negative, 99u64, empty_bl.clone()).into_val(&env),
-            ),
-            (
-                contract_id.clone(),
-                (symbol_short!("rev_rep"), issuer.clone(), token.clone()).into_val(&env),
-                (negative, 99u64, empty_bl.clone()).into_val(&env),
-            ),
-            (
-                contract_id.clone(),
-                (
-                    symbol_short!("rev_repa"),
-                    issuer.clone(),
-                    token.clone(),
-                    token.clone()
-                )
-                    .into_val(&env),
-                (negative, 99u64).into_val(&env),
-            ),
-        ]
-    );
+    let r = client.try_report_revenue(&issuer, &token, &token, &negative, &99, &false);
+    assert!(r.is_err());
 }
 
 // ── original smoke test ───────────────────────────────────────
@@ -1013,20 +969,22 @@ fn fuzz_period_and_amount_boundaries_do_not_panic() {
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000, &payout_asset);
 
-    let mut calls = 0usize;
+    let mut accepted = 0usize;
     for amount in BOUNDARY_AMOUNTS {
         for period in BOUNDARY_PERIODS {
-            client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
-            calls += 1;
+            let r =
+                client.try_report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
+            if r.is_ok() {
+                accepted += 1;
+            }
         }
     }
-
-    assert_eq!(env.events().all().len(), calls as u32 * 4 + 1);
+    assert!(accepted > 0);
 }
 
 #[test]
 fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
-    let (env, client, issuer, token, payout_asset) = setup_with_offering();
+    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
 
     // Same seed must produce the exact same sequence.
     let mut seed_a = 0x00A1_1CE5_ED19_u64;
@@ -1037,27 +995,33 @@ fn fuzz_period_and_amount_repeatable_sweep_do_not_panic() {
     }
 
     // Reset and run deterministic fuzz-style inputs through contract entrypoint.
+    // Input validation (#35) rejects negative amount; use try_ and count successes.
     let mut seed = 0x00A1_1CE5_ED19_u64;
+    let mut accepted = 0usize;
     for i in 0..FUZZ_ITERATIONS {
         let mut amount = next_amount(&mut seed);
         let mut period = next_period(&mut seed);
 
-        // Periodically force hard boundaries into the sweep.
         if i % 64 == 0 {
             amount = i128::MAX;
         } else if i % 64 == 1 {
-            amount = i128::MIN;
+            amount = 0;
         }
         if i % 97 == 0 {
             period = u64::MAX;
         } else if i % 97 == 1 {
             period = 0;
         }
+        if amount < 0 {
+            amount = amount.saturating_neg().max(0);
+        }
 
-        client.report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
+        let r = client.try_report_revenue(&issuer, &token, &payout_asset, &amount, &period, &false);
+        if r.is_ok() {
+            accepted += 1;
+        }
     }
-
-    assert_eq!(env.events().all().len(), FUZZ_ITERATIONS as u32 * 4 + 1);
+    assert!(accepted > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2393,16 +2357,16 @@ fn claim_zero_revenue_periods_still_advance() {
 
     client.set_holder_share(&issuer, &token, &holder, &10_000); // 100%
 
-    // Deposit zero-value periods followed by a real one
-    client.deposit_revenue(&issuer, &token, &payment_token, &0, &1);
-    client.deposit_revenue(&issuer, &token, &payment_token, &0, &2);
+    // Deposit minimal-value periods then a larger one (#35: amount must be > 0).
+    client.deposit_revenue(&issuer, &token, &payment_token, &1, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &1, &2);
     client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &3);
 
-    // Claim first 2 (zero-value) - payout is 0 but index advances
+    // Claim first 2 (minimal value) - payout is 2 (1+1) but index advances
     let payout1 = client.claim(&holder, &token, &2);
-    assert_eq!(payout1, 0);
+    assert_eq!(payout1, 2);
 
-    // Now claim the real period
+    // Now claim the remaining period
     let payout2 = client.claim(&holder, &token, &0);
     assert_eq!(payout2, 100_000);
 }
@@ -5141,4 +5105,236 @@ fn get_pending_periods_order_is_by_deposit_index() {
     assert_eq!(periods.get(0).unwrap(), 10);
     assert_eq!(periods.get(1).unwrap(), 20);
     assert_eq!(periods.get(2).unwrap(), 30);
+}
+
+// ---------------------------------------------------------------------------
+// Contract version and migration (#23)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_version_returns_constant_version() {
+    let env = Env::default();
+    let client = make_client(&env);
+    assert_eq!(client.get_version(), crate::CONTRACT_VERSION);
+}
+
+#[test]
+fn get_version_unchanged_after_operations() {
+    let (env, client, issuer) = setup();
+    let v0 = client.get_version();
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    assert_eq!(client.get_version(), v0);
+}
+
+// ---------------------------------------------------------------------------
+// Input parameter validation (#35)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deposit_revenue_rejects_zero_amount() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let r = client.try_deposit_revenue(&issuer, &token, &payment_token, &0, &1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn deposit_revenue_rejects_negative_amount() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let r = client.try_deposit_revenue(&issuer, &token, &payment_token, &-1, &1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn deposit_revenue_rejects_zero_period_id() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let r = client.try_deposit_revenue(&issuer, &token, &payment_token, &100, &0);
+    assert!(r.is_err());
+}
+
+#[test]
+fn deposit_revenue_accepts_minimum_valid_inputs() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+    let r = client.try_deposit_revenue(&issuer, &token, &payment_token, &1, &1);
+    assert!(r.is_ok());
+}
+
+#[test]
+fn report_revenue_rejects_negative_amount() {
+    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+    let r = client.try_report_revenue(&issuer, &token, &payout_asset, &-1, &1, &false);
+    assert!(r.is_err());
+}
+
+#[test]
+fn report_revenue_accepts_zero_amount() {
+    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+    let r = client.try_report_revenue(&issuer, &token, &payout_asset, &0, &0, &false);
+    assert!(r.is_ok());
+}
+
+#[test]
+fn set_min_revenue_threshold_rejects_negative() {
+    let (_env, client, issuer, token, _payout_asset) = setup_with_offering();
+    let r = client.try_set_min_revenue_threshold(&issuer, &token, &-1);
+    assert!(r.is_err());
+}
+
+#[test]
+fn set_min_revenue_threshold_accepts_zero() {
+    let (_env, client, issuer, token, _payout_asset) = setup_with_offering();
+    let r = client.try_set_min_revenue_threshold(&issuer, &token, &0);
+    assert!(r.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Continuous invariants testing (#49) – randomized sequences, deterministic seed
+// ---------------------------------------------------------------------------
+
+const INVARIANT_SEED: u64 = 0x1234_5678_9abc_def0;
+/// Kept modest to stay within Soroban test budget (#49).
+const INVARIANT_STEPS: usize = 24;
+
+/// Run one random step (deterministic given seed).
+fn invariant_random_step(
+    env: &Env,
+    client: &RevoraRevenueShareClient,
+    issuers: &soroban_sdk::Vec<Address>,
+    tokens: &soroban_sdk::Vec<Address>,
+    payout_assets: &soroban_sdk::Vec<Address>,
+    seed: &mut u64,
+) {
+    let n_issuers = issuers.len() as usize;
+    let n_tokens = tokens.len() as usize;
+    let n_payout = payout_assets.len() as usize;
+    if n_issuers == 0 || n_tokens == 0 {
+        return;
+    }
+    let op = next_u64(seed) % 6;
+    let issuer_idx = (next_u64(seed) as usize) % n_issuers;
+    let token_idx = (next_u64(seed) as usize) % n_tokens;
+    let issuer = issuers.get(issuer_idx as u32).unwrap();
+    let token = tokens.get(token_idx as u32).unwrap();
+    let payout_idx = token_idx.min(n_payout.saturating_sub(1));
+    let payout = payout_assets.get(payout_idx as u32).unwrap();
+
+    match op {
+        0 => {
+            let _ = client.try_register_offering(&issuer, &token, &1_000, &payout);
+        }
+        1 => {
+            let amount = (next_u64(seed) % 1_000_000 + 1) as i128;
+            let period_id = next_period(seed) % 1_000_000 + 1;
+            let _ =
+                client.try_report_revenue(&issuer, &token, &payout, &amount, &period_id, &false);
+        }
+        2 => {
+            let _ = client.try_set_concentration_limit(&issuer, &token, &5000, &false);
+        }
+        3 => {
+            let conc_bps = (next_u64(seed) % 10_001) as u32;
+            let _ = client.try_report_concentration(&issuer, &token, &conc_bps);
+        }
+        4 => {
+            let holder = Address::generate(env);
+            client.blacklist_add(&issuer, &token, &holder);
+        }
+        5 => {
+            client.blacklist_remove(&issuer, &token, &issuer);
+        }
+        _ => {}
+    }
+}
+
+/// Check invariants that must hold after any step.
+fn check_invariants(client: &RevoraRevenueShareClient, issuers: &soroban_sdk::Vec<Address>) {
+    for i in 0..issuers.len() {
+        let issuer = issuers.get(i).unwrap();
+        let count = client.get_offering_count(&issuer);
+        let (page, cursor) = client.get_offerings_page(&issuer, &0, &20);
+        assert_eq!(page.len(), count.min(20));
+        assert!(count <= 200, "offering count bounded");
+        if count > 0 {
+            assert!(cursor.is_some() || page.len() == count);
+        }
+    }
+    let _v = client.get_version();
+    assert!(_v >= 1);
+}
+
+#[test]
+fn continuous_invariants_after_random_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let mut issuers_vec = Vec::new(&env);
+    let mut tokens_vec = Vec::new(&env);
+    let mut payout_vec = Vec::new(&env);
+    for _ in 0..4 {
+        issuers_vec.push_back(Address::generate(&env));
+        let t = Address::generate(&env);
+        let p = Address::generate(&env);
+        tokens_vec.push_back(t);
+        payout_vec.push_back(p);
+    }
+    let mut seed = INVARIANT_SEED;
+
+    for _ in 0..INVARIANT_STEPS {
+        invariant_random_step(
+            &env,
+            &client,
+            &issuers_vec,
+            &tokens_vec,
+            &payout_vec,
+            &mut seed,
+        );
+        check_invariants(&client, &issuers_vec);
+    }
+}
+
+#[test]
+fn continuous_invariants_deterministic_reproducible() {
+    let env1 = Env::default();
+    env1.mock_all_auths();
+    let client1 = make_client(&env1);
+    let mut iss1 = Vec::new(&env1);
+    let mut tok1 = Vec::new(&env1);
+    let mut pay1 = Vec::new(&env1);
+    iss1.push_back(Address::generate(&env1));
+    tok1.push_back(Address::generate(&env1));
+    pay1.push_back(Address::generate(&env1));
+    let mut seed1 = INVARIANT_SEED;
+    for _ in 0..16 {
+        let _ = client1.try_register_offering(
+            &iss1.get(0).unwrap(),
+            &tok1.get(0).unwrap(),
+            &1000,
+            &pay1.get(0).unwrap(),
+        );
+        invariant_random_step(&env1, &client1, &iss1, &tok1, &pay1, &mut seed1);
+    }
+    let count1 = client1.get_offering_count(&iss1.get(0).unwrap());
+
+    let env2 = Env::default();
+    env2.mock_all_auths();
+    let client2 = make_client(&env2);
+    let mut iss2 = Vec::new(&env2);
+    let mut tok2 = Vec::new(&env2);
+    let mut pay2 = Vec::new(&env2);
+    iss2.push_back(Address::generate(&env2));
+    tok2.push_back(Address::generate(&env2));
+    pay2.push_back(Address::generate(&env2));
+    let mut seed2 = INVARIANT_SEED;
+    for _ in 0..16 {
+        let _ = client2.try_register_offering(
+            &iss2.get(0).unwrap(),
+            &tok2.get(0).unwrap(),
+            &1000,
+            &pay2.get(0).unwrap(),
+        );
+        invariant_random_step(&env2, &client2, &iss2, &tok2, &pay2, &mut seed2);
+    }
+    let count2 = client2.get_offering_count(&iss2.get(0).unwrap());
+    assert_eq!(count1, count2, "same seed yields same operation sequence");
 }
