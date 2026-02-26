@@ -33,6 +33,15 @@ pub enum RevoraError {
     ContractFrozen = 10,
     /// Revenue for this period is not yet claimable (delay not elapsed).
     ClaimDelayNotElapsed = 11,
+
+    /// Snapshot distribution is not enabled for this offering.
+    SnapshotNotEnabled = 12,
+    /// Provided snapshot reference is outdated or duplicates a previous one.
+    OutdatedSnapshot = 13,
+
+    /// Payout asset does not match the configured payout asset for this offering.
+    PayoutAssetMismatch = 12,
+
     /// A transfer is already pending for this offering.
     IssuerTransferPending = 12,
     /// No transfer is pending for this offering.
@@ -95,10 +104,20 @@ const EVENT_REV_REPA_V1: Symbol = symbol_short!("rv_repa1");
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const EVENT_CONCENTRATION_WARNING: Symbol = symbol_short!("conc_warn");
 const EVENT_REV_DEPOSIT: Symbol = symbol_short!("rev_dep");
+const EVENT_REV_DEP_SNAP: Symbol = symbol_short!("rev_snap");
 const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_SHARE_SET: Symbol = symbol_short!("share_set");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("delay_set");
+
+ 
+const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
+
+const EVENT_INIT: Symbol = symbol_short!("init");
+const EVENT_PAUSED: Symbol = symbol_short!("paused");
+const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
+ 
+
 const EVENT_ISSUER_TRANSFER_PROPOSED: Symbol = symbol_short!("iss_prop");
 const EVENT_ISSUER_TRANSFER_ACCEPTED: Symbol = symbol_short!("iss_acc");
 const EVENT_ISSUER_TRANSFER_CANCELLED: Symbol = symbol_short!("iss_canc");
@@ -221,16 +240,26 @@ pub enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
+
+ 
+    /// Per (issuer, token): whether snapshot distribution is enabled.
+    SnapshotConfig(Address, Address),
+    /// Per (issuer, token): latest recorded snapshot reference.
+    LastSnapshotRef(Address, Address),
+
+
     /// Pending issuer transfer for an offering token: token -> new_issuer.
     PendingIssuerTransfer(Address),
     /// Current issuer lookup by offering token: token -> issuer.
     OfferingIssuer(Address),
     /// Testnet mode flag; when true, enables fee-free/simplified behavior (#24).
     TestnetMode,
+
     /// Safety role address for emergency pause (#7).
     Safety,
     /// Global pause flag; when true, state-mutating ops are disabled (#7).
     Paused,
+ 
     /// Feature flag: emit versioned events when present (v1 schema).
     EventVersioningEnabled,
 
@@ -292,6 +321,61 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+ 
+    /// Internal helper for revenue deposits.
+    fn do_deposit_revenue(
+        env: &Env,
+        issuer: Address,
+        token: Address,
+        payment_token: Address,
+        amount: i128,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        // Verify offering exists
+        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Check period not already deposited
+        let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
+        if env.storage().persistent().has(&rev_key) {
+            return Err(RevoraError::PeriodAlreadyDeposited);
+        }
+
+        // Store or validate payment token for this offering
+        let pt_key = DataKey::PaymentToken(token.clone());
+        if let Some(existing_pt) = env.storage().persistent().get::<DataKey, Address>(&pt_key) {
+            if existing_pt != payment_token {
+                return Err(RevoraError::PaymentTokenMismatch);
+            }
+        } else {
+            env.storage().persistent().set(&pt_key, &payment_token);
+        }
+
+        // Transfer tokens from issuer to contract
+        let contract_addr = env.current_contract_address();
+        token::Client::new(env, &payment_token).transfer(&issuer, &contract_addr, &amount);
+
+        // Store period revenue
+        env.storage().persistent().set(&rev_key, &amount);
+
+        // Store deposit timestamp for time-delayed claims (#27)
+        let deposit_time = env.ledger().timestamp();
+        let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
+        env.storage().persistent().set(&time_key, &deposit_time);
+
+        // Append to indexed period list
+        let count_key = DataKey::PeriodCount(token.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let entry_key = DataKey::PeriodEntry(token.clone(), count);
+        env.storage().persistent().set(&entry_key, &period_id);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
+        env.events().publish(
+            (EVENT_REV_DEPOSIT, issuer, token),
+            (payment_token, amount, period_id),
+        );
+        Ok(())
     /// Return true if the contract is in event-only mode.
     pub fn is_event_only(env: &Env) -> bool {
         env.storage()
@@ -425,6 +509,7 @@ impl RevoraRevenueShare {
         {
             panic!("contract is paused");
         }
+ 
     }
 
     // ── Offering management ───────────────────────────────────
@@ -1315,6 +1400,10 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
+
+        Self::do_deposit_revenue(&env, issuer, token, payment_token, amount, period_id)
+    }
+
         // Verify offering exists
         let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
             .ok_or(RevoraError::OfferingNotFound)?;
@@ -1322,6 +1411,27 @@ impl RevoraRevenueShare {
             return Err(RevoraError::PayoutAssetMismatch);
         }
 
+
+    /// Deposit revenue for an offering using a specific snapshot reference.
+    ///
+    /// Requires that snapshot distribution is enabled for the offering.
+    /// The `snapshot_reference` (e.g., ledger sequence) must be strictly greater than
+    /// any previously recorded snapshot for this offering to prevent duplication.
+    pub fn deposit_revenue_with_snapshot(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        payment_token: Address,
+        amount: i128,
+        period_id: u64,
+        snapshot_reference: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+
+        // 1. Verify snapshots are enabled
+        if !Self::get_snapshot_config(env.clone(), issuer.clone(), token.clone()) {
+            return Err(RevoraError::SnapshotNotEnabled);
         issuer.require_auth();
 
         Self::require_positive_amount(amount)?;
@@ -1333,23 +1443,44 @@ impl RevoraRevenueShare {
             return Err(RevoraError::PeriodAlreadyDeposited);
         }
 
-        // Store or validate payment token for this offering
-        let pt_key = DataKey::PaymentToken(token.clone());
-        if let Some(existing_pt) = env.storage().persistent().get::<DataKey, Address>(&pt_key) {
-            if existing_pt != payment_token {
-                return Err(RevoraError::PaymentTokenMismatch);
-            }
-        } else {
-            env.storage().persistent().set(&pt_key, &payment_token);
+        // 2. Validate snapshot reference (must be strictly monotonic)
+        let snap_key = DataKey::LastSnapshotRef(issuer.clone(), token.clone());
+        let last_snap: u64 = env.storage().persistent().get(&snap_key).unwrap_or(0);
+        if snapshot_reference <= last_snap {
+            return Err(RevoraError::OutdatedSnapshot);
         }
 
-        // Transfer tokens from issuer to contract
-        let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &payment_token).transfer(&issuer, &contract_addr, &amount);
+        // 3. Delegate to core deposit logic
+        Self::do_deposit_revenue(
+            &env,
+            issuer.clone(),
+            token.clone(),
+            payment_token.clone(),
+            amount,
+            period_id,
+        )?;
 
-        // Store period revenue
-        env.storage().persistent().set(&rev_key, &amount);
+        // 4. Update last snapshot and emit specialized event
+        env.storage()
+            .persistent()
+            .set(&snap_key, &snapshot_reference);
+        env.events().publish(
+            (EVENT_REV_DEP_SNAP, issuer, token),
+            (payment_token, amount, period_id, snapshot_reference),
+        );
 
+        Ok(())
+    }
+
+    /// Enable or disable snapshot-based distribution for an offering.
+    pub fn set_snapshot_config(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        enabled: bool,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
         // Track total deposited revenue per offering (#39)
         let deposited_key = DataKey::DepositedRevenue(token.clone());
         let total_deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
@@ -1362,18 +1493,28 @@ impl RevoraRevenueShare {
         let time_key = DataKey::PeriodDepositTime(token.clone(), period_id);
         env.storage().persistent().set(&time_key, &deposit_time);
 
-        // Append to indexed period list
-        let count_key = DataKey::PeriodCount(token.clone());
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-        let entry_key = DataKey::PeriodEntry(token.clone(), count);
-        env.storage().persistent().set(&entry_key, &period_id);
-        env.storage().persistent().set(&count_key, &(count + 1));
+        if Self::get_offering(env.clone(), issuer.clone(), token.clone()).is_none() {
+            return Err(RevoraError::OfferingNotFound);
+        }
 
-        env.events().publish(
-            (EVENT_REV_DEPOSIT, issuer, token),
-            (payment_token, amount, period_id),
-        );
+        let key = DataKey::SnapshotConfig(issuer.clone(), token.clone());
+        env.storage().persistent().set(&key, &enabled);
+
+        env.events()
+            .publish((EVENT_SNAP_CONFIG, issuer, token), enabled);
         Ok(())
+    }
+
+    /// Check if snapshot-based distribution is enabled for an offering.
+    pub fn get_snapshot_config(env: Env, issuer: Address, token: Address) -> bool {
+        let key = DataKey::SnapshotConfig(issuer, token);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    }
+
+    /// Get the latest recorded snapshot reference for an offering.
+    pub fn get_last_snapshot_ref(env: Env, issuer: Address, token: Address) -> u64 {
+        let key = DataKey::LastSnapshotRef(issuer, token);
+        env.storage().persistent().get(&key).unwrap_or(0)
     }
 
     /// Set a holder's revenue share (in basis points) for an offering.
