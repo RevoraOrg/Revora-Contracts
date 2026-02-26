@@ -1,0 +1,10 @@
+test(contracts): set up regression test suite structure
+
+- Add dedicated regression test module in src/test.rs
+- Include comprehensive template with documentation format
+- Document regression testing policy in README
+- Ensure deterministic, CI-safe test patterns
+- Maintain 95% coverage requirement
+- All 247 tests passing (36.36s runtime)
+
+Resolves #48

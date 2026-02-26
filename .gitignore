@@ -1,20 +1,6 @@
-# Build artifacts
-target/
-
-# Cargo lock (library crate)
+/target/
 Cargo.lock
-
-# IDE / editor
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Soroban
-.soroban/
 test_snapshots/
+target/
+test_snapshots/
+
