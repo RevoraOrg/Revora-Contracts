@@ -4384,6 +4384,95 @@ fn calculate_distribution_single_holder_owns_all() {
     assert_eq!(payout, 50_000);
 }
 
+
+// ── Event-only mode tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_event_only_mode_register_and_report() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let amount: i128 = 100_000;
+    let period_id: u64 = 1;
+
+    // Initialize in event-only mode
+    client.initialize(&admin, &None, &Some(true));
+
+    assert!(client.is_event_only());
+
+    // Register offering should emit event but NOT persist state
+    client.register_offering(&issuer, &token, &1000, &payout_asset);
+
+    // Verify event emitted (skip checking EVENT_INIT)
+    let events = env.events().all();
+    assert!(events.iter().any(|e| e.1.contains(symbol_short!("offer_reg"))));
+
+    // Storage should be empty for this offering
+    assert!(client.get_offering(&issuer, &token).is_none());
+    assert_eq!(client.get_offering_count(&issuer), 0);
+
+    // Report revenue should emit event but NOT require offering to exist in storage
+    client.report_revenue(&issuer, &token, &payout_asset, &amount, &period_id, &false);
+
+    let events = env.events().all();
+    assert!(events.iter().any(|e| e.1.contains(symbol_short!("rev_init"))));
+    assert!(events.iter().any(|e| e.1.contains(symbol_short!("rev_rep"))));
+
+    // Audit summary should NOT be updated
+    assert!(client.get_audit_summary(&issuer, &token).is_none());
+}
+
+#[test]
+fn test_event_only_mode_blacklist() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let investor = Address::generate(&env);
+
+    client.initialize(&admin, &None, &Some(true));
+
+    // Blacklist add should emit event but NOT persist
+    client.blacklist_add(&issuer, &token, &investor);
+
+    let events = env.events().all();
+    assert!(events.iter().any(|e| e.1.contains(symbol_short!("bl_add"))));
+
+    assert!(!client.is_blacklisted(&token, &investor));
+    assert_eq!(client.get_blacklist(&token).len(), 0);
+}
+
+#[test]
+fn test_event_only_mode_testnet_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &None, &Some(true));
+
+    client.set_testnet_mode(&true);
+
+    let events = env.events().all();
+    assert!(events.iter().any(|e| e.1.contains(symbol_short!("test_mode"))));
+
+    assert!(!client.is_testnet_mode());
+
 // ── Per-offering metadata storage tests (#8) ──────────────────
 
 #[test]
@@ -5123,6 +5212,7 @@ fn platform_fee_integration_with_revenue() {
     assert_eq!(fee, 5_000); // 5% of 100,000
     let remaining = revenue - fee;
     assert_eq!(remaining, 95_000);
+
 }
 
 // ---------------------------------------------------------------------------
