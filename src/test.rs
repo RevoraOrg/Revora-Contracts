@@ -5338,3 +5338,301 @@ fn continuous_invariants_deterministic_reproducible() {
     let count2 = client2.get_offering_count(&iss2.get(0).unwrap());
     assert_eq!(count1, count2, "same seed yields same operation sequence");
 }
+
+// ===========================================================================
+// Cross-offering aggregation query tests (#39)
+// ===========================================================================
+
+#[test]
+fn aggregation_empty_issuer_returns_zeroes() {
+    let (_env, client, issuer) = setup();
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.total_reported_revenue, 0);
+    assert_eq!(metrics.total_deposited_revenue, 0);
+    assert_eq!(metrics.total_report_count, 0);
+    assert_eq!(metrics.offering_count, 0);
+}
+
+#[test]
+fn aggregation_single_offering_reported_revenue() {
+    let (env, client, issuer) = setup();
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &token, &1_000, &payout_asset);
+    client.report_revenue(&issuer, &token, &payout_asset, &100_000, &1, &false);
+    client.report_revenue(&issuer, &token, &payout_asset, &200_000, &2, &false);
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.total_reported_revenue, 300_000);
+    assert_eq!(metrics.total_report_count, 2);
+    assert_eq!(metrics.offering_count, 1);
+    assert_eq!(metrics.total_deposited_revenue, 0);
+}
+
+#[test]
+fn aggregation_multiple_offerings_same_issuer() {
+    let (env, client, issuer) = setup();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let payout_a = Address::generate(&env);
+    let payout_b = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_a, &1_000, &payout_a);
+    client.register_offering(&issuer, &token_b, &2_000, &payout_b);
+
+    client.report_revenue(&issuer, &token_a, &payout_a, &100_000, &1, &false);
+    client.report_revenue(&issuer, &token_b, &payout_b, &200_000, &1, &false);
+    client.report_revenue(&issuer, &token_b, &payout_b, &300_000, &2, &false);
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.total_reported_revenue, 600_000);
+    assert_eq!(metrics.total_report_count, 3);
+    assert_eq!(metrics.offering_count, 2);
+}
+
+#[test]
+fn aggregation_deposited_revenue_tracking() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &2);
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.total_deposited_revenue, 300_000);
+    assert_eq!(metrics.offering_count, 1);
+}
+
+#[test]
+fn aggregation_mixed_reported_and_deposited() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    // Report revenue
+    client.report_revenue(&issuer, &token, &payment_token, &500_000, &1, &false);
+
+    // Deposit revenue
+    client.deposit_revenue(&issuer, &token, &payment_token, &100_000, &10);
+    client.deposit_revenue(&issuer, &token, &payment_token, &200_000, &20);
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.total_reported_revenue, 500_000);
+    assert_eq!(metrics.total_deposited_revenue, 300_000);
+    assert_eq!(metrics.total_report_count, 1);
+    assert_eq!(metrics.offering_count, 1);
+}
+
+#[test]
+fn aggregation_per_issuer_isolation() {
+    let (env, client, issuer_a) = setup();
+    let issuer_b = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let payout_a = Address::generate(&env);
+    let payout_b = Address::generate(&env);
+
+    client.register_offering(&issuer_a, &token_a, &1_000, &payout_a);
+    client.register_offering(&issuer_b, &token_b, &2_000, &payout_b);
+
+    client.report_revenue(&issuer_a, &token_a, &payout_a, &100_000, &1, &false);
+    client.report_revenue(&issuer_b, &token_b, &payout_b, &500_000, &1, &false);
+
+    let metrics_a = client.get_issuer_aggregation(&issuer_a);
+    let metrics_b = client.get_issuer_aggregation(&issuer_b);
+
+    assert_eq!(metrics_a.total_reported_revenue, 100_000);
+    assert_eq!(metrics_a.offering_count, 1);
+    assert_eq!(metrics_b.total_reported_revenue, 500_000);
+    assert_eq!(metrics_b.offering_count, 1);
+}
+
+#[test]
+fn platform_aggregation_empty() {
+    let (_env, client, _issuer) = setup();
+    let metrics = client.get_platform_aggregation();
+    assert_eq!(metrics.total_reported_revenue, 0);
+    assert_eq!(metrics.total_deposited_revenue, 0);
+    assert_eq!(metrics.total_report_count, 0);
+    assert_eq!(metrics.offering_count, 0);
+}
+
+#[test]
+fn platform_aggregation_single_issuer() {
+    let (env, client, issuer) = setup();
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &token, &1_000, &payout);
+    client.report_revenue(&issuer, &token, &payout, &100_000, &1, &false);
+
+    let metrics = client.get_platform_aggregation();
+    assert_eq!(metrics.total_reported_revenue, 100_000);
+    assert_eq!(metrics.total_report_count, 1);
+    assert_eq!(metrics.offering_count, 1);
+}
+
+#[test]
+fn platform_aggregation_multiple_issuers() {
+    let (env, client, issuer_a) = setup();
+    let issuer_b = Address::generate(&env);
+    let issuer_c = Address::generate(&env);
+
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+    let payout_a = Address::generate(&env);
+    let payout_b = Address::generate(&env);
+    let payout_c = Address::generate(&env);
+
+    client.register_offering(&issuer_a, &token_a, &1_000, &payout_a);
+    client.register_offering(&issuer_b, &token_b, &2_000, &payout_b);
+    client.register_offering(&issuer_c, &token_c, &3_000, &payout_c);
+
+    client.report_revenue(&issuer_a, &token_a, &payout_a, &100_000, &1, &false);
+    client.report_revenue(&issuer_b, &token_b, &payout_b, &200_000, &1, &false);
+    client.report_revenue(&issuer_c, &token_c, &payout_c, &300_000, &1, &false);
+
+    let metrics = client.get_platform_aggregation();
+    assert_eq!(metrics.total_reported_revenue, 600_000);
+    assert_eq!(metrics.total_report_count, 3);
+    assert_eq!(metrics.offering_count, 3);
+}
+
+#[test]
+fn get_all_issuers_returns_registered() {
+    let (env, client, issuer_a) = setup();
+    let issuer_b = Address::generate(&env);
+
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let payout_a = Address::generate(&env);
+    let payout_b = Address::generate(&env);
+
+    client.register_offering(&issuer_a, &token_a, &1_000, &payout_a);
+    client.register_offering(&issuer_b, &token_b, &2_000, &payout_b);
+
+    let issuers = client.get_all_issuers();
+    assert_eq!(issuers.len(), 2);
+    assert!(issuers.contains(&issuer_a));
+    assert!(issuers.contains(&issuer_b));
+}
+
+#[test]
+fn get_all_issuers_empty_when_none_registered() {
+    let (_env, client, _issuer) = setup();
+    let issuers = client.get_all_issuers();
+    assert_eq!(issuers.len(), 0);
+}
+
+#[test]
+fn issuer_registered_once_even_with_multiple_offerings() {
+    let (env, client, issuer) = setup();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+    let payout_a = Address::generate(&env);
+    let payout_b = Address::generate(&env);
+    let payout_c = Address::generate(&env);
+
+    client.register_offering(&issuer, &token_a, &1_000, &payout_a);
+    client.register_offering(&issuer, &token_b, &2_000, &payout_b);
+    client.register_offering(&issuer, &token_c, &3_000, &payout_c);
+
+    let issuers = client.get_all_issuers();
+    assert_eq!(issuers.len(), 1);
+    assert_eq!(issuers.get(0).unwrap(), issuer);
+}
+
+#[test]
+fn get_total_deposited_revenue_per_offering() {
+    let (_env, client, issuer, token, payment_token, _contract_id) = claim_setup();
+
+    client.deposit_revenue(&issuer, &token, &payment_token, &50_000, &1);
+    client.deposit_revenue(&issuer, &token, &payment_token, &75_000, &2);
+    client.deposit_revenue(&issuer, &token, &payment_token, &125_000, &3);
+
+    let total = client.get_total_deposited_revenue(&token);
+    assert_eq!(total, 250_000);
+}
+
+#[test]
+fn get_total_deposited_revenue_zero_when_no_deposits() {
+    let (env, _client, _issuer) = setup();
+    let client = make_client(&env);
+    let random_token = Address::generate(&env);
+    assert_eq!(client.get_total_deposited_revenue(&random_token), 0);
+}
+
+#[test]
+fn aggregation_no_reports_only_offerings() {
+    let (env, client, issuer) = setup();
+    register_n(&env, &client, &issuer, 5);
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.offering_count, 5);
+    assert_eq!(metrics.total_reported_revenue, 0);
+    assert_eq!(metrics.total_deposited_revenue, 0);
+    assert_eq!(metrics.total_report_count, 0);
+}
+
+#[test]
+fn platform_aggregation_with_deposits_across_issuers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer_a = Address::generate(&env);
+    let issuer_b = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    let (pt_a, pt_a_admin) = create_payment_token(&env);
+    let (pt_b, pt_b_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer_a, &token_a, &5_000, &pt_a);
+    client.register_offering(&issuer_b, &token_b, &3_000, &pt_b);
+
+    mint_tokens(&env, &pt_a, &pt_a_admin, &issuer_a, &5_000_000);
+    mint_tokens(&env, &pt_b, &pt_b_admin, &issuer_b, &5_000_000);
+
+    client.deposit_revenue(&issuer_a, &token_a, &pt_a, &100_000, &1);
+    client.deposit_revenue(&issuer_b, &token_b, &pt_b, &200_000, &1);
+
+    let metrics = client.get_platform_aggregation();
+    assert_eq!(metrics.total_deposited_revenue, 300_000);
+    assert_eq!(metrics.offering_count, 2);
+}
+
+#[test]
+fn aggregation_stress_many_offerings() {
+    let (env, client, issuer) = setup();
+
+    // Register 20 offerings and report revenue on each
+    let mut tokens = soroban_sdk::Vec::new(&env);
+    let mut payouts = soroban_sdk::Vec::new(&env);
+    for _i in 0..20_u32 {
+        let token = Address::generate(&env);
+        let payout = Address::generate(&env);
+        tokens.push_back(token.clone());
+        payouts.push_back(payout.clone());
+        client.register_offering(&issuer, &token, &1_000, &payout);
+    }
+
+    for i in 0..20_u32 {
+        let token = tokens.get(i).unwrap();
+        let payout = payouts.get(i).unwrap();
+        client.report_revenue(
+            &issuer,
+            &token,
+            &payout,
+            &((i as i128 + 1) * 10_000),
+            &1,
+            &false,
+        );
+    }
+
+    let metrics = client.get_issuer_aggregation(&issuer);
+    assert_eq!(metrics.offering_count, 20);
+    // Sum of 10_000 + 20_000 + ... + 200_000 = 10_000 * (1 + 2 + ... + 20) = 10_000 * 210 = 2_100_000
+    assert_eq!(metrics.total_reported_revenue, 2_100_000);
+    assert_eq!(metrics.total_report_count, 20);
+}
