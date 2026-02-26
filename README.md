@@ -38,6 +38,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `get_pending_issuer_transfer` | `token: Address` | `Option<Address>` | — | Get the proposed new issuer for a pending transfer, if any. |
 | `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
 | `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
+| `get_version` | — | `u32` | — | Return the current contract version (#23). Used for upgrade compatibility. |
 
 ### Types
 
@@ -56,6 +57,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 12 | `IssuerTransferPending` | A transfer is already pending for this offering. |
 | 13 | `NoTransferPending` | No transfer is pending for this offering (accept/cancel failed). |
 | 14 | `UnauthorizedTransferAccept` | Caller is not authorized to accept this transfer. |
+| 17 | `InvalidAmount` | Amount is invalid (e.g. negative, or zero for deposit) (#35). |
+| 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -85,6 +88,32 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 - **Rounding:** Use `compute_share(amount, revenue_share_bps, mode)` for consistent distribution math. Per-offering default is `get_rounding_mode(issuer, token)` (Truncation if unset). Sum of shares must not exceed total; both modes keep result in [0, amount].
 - **Issuer Transfer:** See [ISSUER_TRANSFER.md](./ISSUER_TRANSFER.md) for comprehensive documentation on securely transferring issuer control via the two-step propose/accept flow.
 - **Testnet mode:** Admin can enable testnet mode via `set_testnet_mode(true)` to relax certain validations for non-production deployments. When enabled: (1) `register_offering` allows `revenue_share_bps > 10000`, (2) `report_revenue` skips concentration enforcement. Use only for testnet/development environments. Check mode with `is_testnet_mode()`.
+
+### Contract version and migration (#23)
+
+- **Version:** Call `get_version()` to read the current contract version (a constant, e.g. `1`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
+- **Upgrade strategy:** This codebase deploys a single WASM contract; there is no in-place upgrade. Future upgrades are expected to:
+  1. Deploy a new contract (new WASM) with a higher `CONTRACT_VERSION`.
+  2. Optionally run a one-time migration (e.g. admin or migration script) that reads state from the old contract and writes into the new one, or that emits migration-milestone events for indexers.
+  3. Indexers and frontends should use `get_version()` to detect the deployed version and handle schema/API differences.
+- **Migration milestones:** When a new version is deployed, integrators can treat the first transaction that succeeds on the new contract as a migration milestone; the contract does not currently emit a dedicated "migration" event, but event schemas may include a version field (e.g. v1 events) for consumers.
+
+### Input parameter validation (#35)
+
+Accepted ranges and rejection semantics:
+
+| Parameter | Entrypoint(s) | Accepted range | Error if invalid |
+|-----------|----------------|----------------|------------------|
+| `revenue_share_bps` | `register_offering` | 0–10000 (testnet: any) | `InvalidRevenueShareBps` |
+| `share_bps` | `set_holder_share` | 0–10000 | `InvalidShareBps` |
+| `amount` | `report_revenue` | ≥ 0 | `InvalidAmount` |
+| `amount` | `deposit_revenue` | > 0 | `InvalidAmount` |
+| `period_id` | `deposit_revenue` | > 0 | `InvalidPeriodId` |
+| `period_id` | `report_revenue` | any u64 | — |
+| `min_amount` | `set_min_revenue_threshold` | ≥ 0 | `InvalidAmount` |
+| `fee_bps` | `set_platform_fee` | 0–5000 | `LimitReached` |
+
+Use `try_*` client methods to receive these errors as `Result`.
 
 ---
 
@@ -2240,6 +2269,87 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test
 ```
+
+### Regression Testing Policy
+
+The contract includes a dedicated regression test suite to capture and prevent recurrence of critical bugs discovered in production, audits, or security reviews. All regression tests are located in `src/test.rs` under the `mod regression` section.
+
+#### When to Add a Regression Test
+
+Add a regression test when:
+- A critical bug is discovered in production or testnet deployments
+- An audit or security review identifies a vulnerability
+- A bug fix addresses incorrect behavior that could recur
+- An edge case causes unexpected contract behavior or panic
+- A fix prevents data corruption or loss of funds
+
+#### Naming Convention
+
+Use descriptive names that reference the issue:
+- Format: `regression_issue_N_brief_description`
+- Example: `regression_issue_48_overflow_in_share_calculation`
+- For audit findings: `regression_audit_2024_q1_section_3_2`
+
+#### Required Documentation Format
+
+Each regression test MUST include:
+
+```rust
+/// Regression Test: [Brief Title]
+///
+/// **Related Issue:** #N or [Audit Report Reference]
+///
+/// **Original Bug:**
+/// [Detailed description of what went wrong, including:
+///  - Conditions that triggered the bug
+///  - Incorrect behavior observed
+///  - Impact (panic, wrong calculation, security issue)]
+///
+/// **Expected Behavior:**
+/// [What should happen instead]
+///
+/// **Fix Applied:**
+/// [Brief description of the code change that resolved it]
+#[test]
+fn regression_issue_N_description() {
+    // Test implementation
+}
+```
+
+#### Determinism Requirements
+
+All regression tests MUST be deterministic and CI-safe:
+- Use `Env::default()` with `mock_all_auths()` for predictable auth
+- Use `Address::generate(&env)` for test addresses (deterministic within test)
+- Avoid `env.ledger().timestamp()` without explicit mocking
+- Use fixed seeds for any pseudo-random test data
+- No external network calls or file system dependencies
+
+#### Performance Expectations
+
+- Individual tests should complete in <100ms
+- Avoid unnecessary setup; use helper functions (`make_client()`, `setup()`)
+- Keep test scope focused on the specific bug being prevented
+- Use minimal data sets that reproduce the issue
+
+#### Coverage Requirement
+
+The overall test suite (including regression tests) MUST maintain minimum 95% code coverage. Run coverage checks with:
+
+```bash
+cargo tarpaulin --out Html --output-dir coverage
+```
+
+#### CI Integration
+
+Regression tests run automatically as part of `cargo test`:
+- No special flags or environment variables required
+- Tests must pass on all supported platforms (Linux, macOS, Windows)
+- Snapshot tests in `test_snapshots/` are validated automatically
+
+#### Example Regression Test
+
+See `src/test.rs::regression::regression_template_example` for a complete template demonstrating the required structure and documentation format.
 
 ### Contributor guidelines (reduce merge conflicts)
 
