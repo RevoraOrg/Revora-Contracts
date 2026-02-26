@@ -29,6 +29,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `get_audit_summary` | `issuer: Address`, `token: Address` | `Option<AuditSummary>` | — | Per-offering audit summary (total_revenue, report_count). |
 | `set_rounding_mode` | `issuer: Address`, `token: Address`, `mode: RoundingMode` | `Result<(), RevoraError>` | issuer | Set rounding mode for share calculations. Offering must exist. |
 | `get_rounding_mode` | `issuer: Address`, `token: Address` | `RoundingMode` | — | Get rounding mode (default Truncation if not set). |
+| `set_min_revenue_threshold` | `issuer: Address`, `token: Address`, `min_amount: i128` | `Result<(), RevoraError>` | issuer | Per-offering minimum revenue per period; below this, `report_revenue` emits `rev_below` and skips updating reports/audit. 0 = disabled. Emits `min_rev` when set or changed. |
+| `get_min_revenue_threshold` | `issuer: Address`, `token: Address` | `i128` | — | Minimum revenue threshold for offering (0 = none). |
 | `compute_share` | `amount: i128`, `revenue_share_bps: u32`, `mode: RoundingMode` | `i128` | — | Compute share of amount at given bps with given rounding. Bounds: 0 ≤ result ≤ amount. |
 | `propose_issuer_transfer` | `token: Address`, `new_issuer: Address` | `Result<(), RevoraError>` | current issuer | Propose transferring issuer control to a new address. First step of two-step transfer. |
 | `accept_issuer_transfer` | `token: Address` | `Result<(), RevoraError>` | proposed new issuer | Accept a pending issuer transfer. Completes the transfer and grants full control to new issuer. |
@@ -36,6 +38,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `get_pending_issuer_transfer` | `token: Address` | `Option<Address>` | — | Get the proposed new issuer for a pending transfer, if any. |
 | `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
 | `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
+| `get_version` | — | `u32` | — | Return the current contract version (#23). Used for upgrade compatibility. |
 
 ### Types
 
@@ -54,6 +57,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 12 | `IssuerTransferPending` | A transfer is already pending for this offering. |
 | 13 | `NoTransferPending` | No transfer is pending for this offering (accept/cancel failed). |
 | 14 | `UnauthorizedTransferAccept` | Caller is not authorized to accept this transfer. |
+| 17 | `InvalidAmount` | Amount is invalid (e.g. negative, or zero for deposit) (#35). |
+| 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -65,6 +70,8 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `rev_rep` | `(issuer, token), (amount, period_id, blacklist_vec)` | After `report_revenue`. |
 | `bl_add` | `(token, caller), investor` | After `blacklist_add`. |
 | `bl_rem` | `(token, caller), investor` | After `blacklist_remove`. |
+| `min_rev` | `(issuer, token), (previous_amount, new_amount)` | When `set_min_revenue_threshold` is set or changed. |
+| `rev_below` | `(issuer, token), (amount, period_id, threshold)` | When `report_revenue` is called with amount below the offering's minimum threshold; no report/audit update. |
 | `conc_warn` | `(issuer, token), (concentration_bps, limit_bps)` | When `report_concentration` is called and reported concentration exceeds configured limit (warning only; enforce blocks at `report_revenue`). |
 | `iss_prop` | `(token), (current_issuer, proposed_new_issuer)` | When `propose_issuer_transfer` is called. |
 | `iss_acc` | `(token), (old_issuer, new_issuer)` | When `accept_issuer_transfer` completes the transfer. |
@@ -73,12 +80,40 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 
 ### Call patterns and limits
 
-- **Pagination:** Use `get_offerings_page(issuer, start, limit)` with `start = 0` then `start = next_cursor` until `next_cursor` is `None`. Max page size 20.
+- **Pagination:** Use `get_offerings_page(issuer, start, limit)` with `start = 0` then `start = next_cursor` until `next_cursor` is `None`. Max page size 20. Ordering: by registration index (creation order), deterministic.
+- **Ordering:** `get_offerings_page` returns offerings by registration index. `get_blacklist` returns addresses in insertion order. `get_pending_periods` returns period IDs by deposit index. All query results are deterministic.
+- **Minimum revenue threshold:** Issuers can set `set_min_revenue_threshold(issuer, token, min_amount)`. When `report_revenue` is called with `amount < min_amount`, the contract emits `rev_below` and does not update revenue reports or audit summary (skipped distribution). Set to 0 to disable.
 - **Off-chain:** Prefer small page sizes and bounded blacklist sizes for predictable gas. See storage/gas tests in `src/test.rs` for stress behavior.
 - **Holder concentration:** Concentration is not computed on-chain (no token balance reads). Issuer or indexer calls `report_concentration(issuer, token, bps)` with the current top-holder share in bps; the contract stores it and enforces or warns based on `set_concentration_limit`. Use `try_report_revenue` when enforcement may be enabled.
 - **Rounding:** Use `compute_share(amount, revenue_share_bps, mode)` for consistent distribution math. Per-offering default is `get_rounding_mode(issuer, token)` (Truncation if unset). Sum of shares must not exceed total; both modes keep result in [0, amount].
 - **Issuer Transfer:** See [ISSUER_TRANSFER.md](./ISSUER_TRANSFER.md) for comprehensive documentation on securely transferring issuer control via the two-step propose/accept flow.
 - **Testnet mode:** Admin can enable testnet mode via `set_testnet_mode(true)` to relax certain validations for non-production deployments. When enabled: (1) `register_offering` allows `revenue_share_bps > 10000`, (2) `report_revenue` skips concentration enforcement. Use only for testnet/development environments. Check mode with `is_testnet_mode()`.
+
+### Contract version and migration (#23)
+
+- **Version:** Call `get_version()` to read the current contract version (a constant, e.g. `1`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
+- **Upgrade strategy:** This codebase deploys a single WASM contract; there is no in-place upgrade. Future upgrades are expected to:
+  1. Deploy a new contract (new WASM) with a higher `CONTRACT_VERSION`.
+  2. Optionally run a one-time migration (e.g. admin or migration script) that reads state from the old contract and writes into the new one, or that emits migration-milestone events for indexers.
+  3. Indexers and frontends should use `get_version()` to detect the deployed version and handle schema/API differences.
+- **Migration milestones:** When a new version is deployed, integrators can treat the first transaction that succeeds on the new contract as a migration milestone; the contract does not currently emit a dedicated "migration" event, but event schemas may include a version field (e.g. v1 events) for consumers.
+
+### Input parameter validation (#35)
+
+Accepted ranges and rejection semantics:
+
+| Parameter | Entrypoint(s) | Accepted range | Error if invalid |
+|-----------|----------------|----------------|------------------|
+| `revenue_share_bps` | `register_offering` | 0–10000 (testnet: any) | `InvalidRevenueShareBps` |
+| `share_bps` | `set_holder_share` | 0–10000 | `InvalidShareBps` |
+| `amount` | `report_revenue` | ≥ 0 | `InvalidAmount` |
+| `amount` | `deposit_revenue` | > 0 | `InvalidAmount` |
+| `period_id` | `deposit_revenue` | > 0 | `InvalidPeriodId` |
+| `period_id` | `report_revenue` | any u64 | — |
+| `min_amount` | `set_min_revenue_threshold` | ≥ 0 | `InvalidAmount` |
+| `fee_bps` | `set_platform_fee` | 0–5000 | `LimitReached` |
+
+Use `try_*` client methods to receive these errors as `Result`.
 
 ---
 
@@ -2229,6 +2264,8 @@ This section enumerates key security assumptions, trust boundaries, and mitigati
 ### Build and test
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test
 ```
@@ -2238,3 +2275,4 @@ cargo test
 - Use feature branches per change (e.g. `feature/structured-error-codes`, `feature/storage-limit-negative-tests`).
 - Tests in `src/test.rs` are grouped by area (pagination, blacklist, structured errors, storage stress, gas characterization). Add new tests in the relevant section so parallel PRs touch different regions.
 - Keep the contract interface summary above in sync when adding or changing entrypoints or events.
+- Follow the contract lint/style policy in [`docs/contracts-style.md`](./docs/contracts-style.md).

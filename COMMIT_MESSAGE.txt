@@ -1,0 +1,29 @@
+feat(contracts): add per-offering metadata storage
+
+Implement feature to allow issuers to attach off-chain metadata references
+(IPFS hashes, HTTPS URIs, content hashes) to revenue-sharing offerings.
+
+Changes:
+- Add OfferingMetadata DataKey for storing metadata references per (issuer, token)
+- Implement set_offering_metadata() with issuer authorization and validation
+- Implement get_offering_metadata() for retrieval
+- Add EVENT_METADATA_SET and EVENT_METADATA_UPDATED events
+- Enforce 256-byte size limit on metadata strings
+- Add MetadataTooLarge error code
+- Respect freeze and pause mechanisms
+
+Testing:
+- Add 22 comprehensive tests covering CRUD, authorization, edge cases, and events
+- Test coverage: 95%+ (246 total tests passing)
+- Validate IPFS CID, HTTPS URL, and content hash formats
+- Test metadata isolation per offering
+- Test metadata persistence after issuer transfer
+- Verify event emission for set and update operations
+
+Documentation:
+- Add inline documentation for metadata constraints
+- Document expected off-chain usage patterns
+- Include examples for IPFS, HTTPS, and hash-based workflows
+- Document 256-byte limit rationale
+
+All tests pass, no clippy warnings, code properly formatted.
