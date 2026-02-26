@@ -55,6 +55,26 @@ pub enum RevoraError {
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
+const EVENT_BL_ADD: Symbol          = symbol_short!("bl_add");
+const EVENT_BL_REM: Symbol          = symbol_short!("bl_rem");
+const EVENT_WL_ADD: Symbol          = symbol_short!("wl_add");
+const EVENT_WL_REM: Symbol          = symbol_short!("wl_rem");
+
+// ── Storage key ──────────────────────────────────────────────
+/// One blacklist map per offering, keyed by the offering's token address.
+///
+/// Blacklist precedence rule: a blacklisted address is **always** excluded
+/// from payouts, regardless of any whitelist or investor registration.
+/// If the same address appears in both a whitelist and this blacklist,
+/// the blacklist wins unconditionally.
+///
+/// Whitelist is optional per offering. When enabled (non-empty), only
+/// whitelisted addresses are eligible for revenue distribution.
+/// When disabled (empty), all non-blacklisted holders are eligible.
+#[contracttype]
+pub enum DataKey {
+    Blacklist(Address),
+    Whitelist(Address),
 const EVENT_REVENUE_REPORTED_ASSET: Symbol = symbol_short!("rev_repa");
 const EVENT_REVENUE_REPORT_INITIAL: Symbol = symbol_short!("rev_init");
 const EVENT_REVENUE_REPORT_INITIAL_ASSET: Symbol = symbol_short!("rev_inia");
@@ -994,6 +1014,77 @@ impl RevoraRevenueShare {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    // ── Whitelist management ──────────────────────────────────
+
+    /// Add `investor` to the per-offering whitelist for `token`.
+    ///
+    /// Idempotent — calling with an already-whitelisted address is safe.
+    /// When a whitelist exists (non-empty), only whitelisted addresses
+    /// are eligible for revenue distribution (subject to blacklist override).
+    pub fn whitelist_add(env: Env, caller: Address, token: Address, investor: Address) {
+        caller.require_auth();
+
+        let key = DataKey::Whitelist(token.clone());
+        let mut map: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Map::new(&env));
+
+        map.set(investor.clone(), true);
+        env.storage().persistent().set(&key, &map);
+
+        env.events().publish((EVENT_WL_ADD, token, caller), investor);
+    }
+
+    /// Remove `investor` from the per-offering whitelist for `token`.
+    ///
+    /// Idempotent — calling when the address is not listed is safe.
+    pub fn whitelist_remove(env: Env, caller: Address, token: Address, investor: Address) {
+        caller.require_auth();
+
+        let key = DataKey::Whitelist(token.clone());
+        let mut map: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Map::new(&env));
+
+        map.remove(investor.clone());
+        env.storage().persistent().set(&key, &map);
+
+        env.events().publish((EVENT_WL_REM, token, caller), investor);
+    }
+
+    /// Returns `true` if `investor` is whitelisted for `token`'s offering.
+    ///
+    /// Note: If the whitelist is empty (disabled), this returns `false`.
+    /// Use `is_whitelist_enabled` to check if whitelist enforcement is active.
+    pub fn is_whitelisted(env: Env, token: Address, investor: Address) -> bool {
+        let key = DataKey::Whitelist(token);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.get(investor).unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Return all whitelisted addresses for `token`'s offering.
+    pub fn get_whitelist(env: Env, token: Address) -> Vec<Address> {
+        let key = DataKey::Whitelist(token);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, bool>>(&key)
+            .map(|m| m.keys())
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Returns `true` if whitelist enforcement is enabled for `token`'s offering.
+    ///
+    /// Whitelist is considered enabled when it contains at least one address.
+    /// When disabled (empty), all non-blacklisted holders are eligible.
+    pub fn is_whitelist_enabled(env: Env, token: Address) -> bool {
+        Self::get_whitelist(env, token).len() > 0
     // ── Holder concentration guardrail (#26) ───────────────────
 
     /// Set per-offering concentration limit. Caller must be the offering issuer.
