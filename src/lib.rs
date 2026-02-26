@@ -1,7 +1,9 @@
 #![no_std]
+#![deny(unsafe_code)]
+#![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Map,
-    Symbol, Vec,
+    String, Symbol, Vec,
 };
 
 /// Centralized contract error codes. Auth failures are signaled by host panic (require_auth).
@@ -39,6 +41,12 @@ pub enum RevoraError {
     UnauthorizedTransferAccept = 14,
     /// Payout asset does not match the configured payout asset for this offering.
     PayoutAssetMismatch = 15,
+    /// Metadata string exceeds maximum allowed length.
+    MetadataTooLarge = 16,
+    /// Amount is invalid (e.g. negative for deposit, or out of allowed range) (#35).
+    InvalidAmount = 17,
+    /// period_id is invalid (e.g. zero when required to be positive) (#35).
+    InvalidPeriodId = 18,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -75,8 +83,17 @@ const EVENT_INIT: Symbol = symbol_short!("init");
 const EVENT_PAUSED: Symbol = symbol_short!("paused");
 const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
+const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
+const EVENT_METADATA_UPDATED: Symbol = symbol_short!("meta_upd");
+/// Emitted when per-offering minimum revenue threshold is set or changed (#25).
+const EVENT_MIN_REV_THRESHOLD_SET: Symbol = symbol_short!("min_rev");
+/// Emitted when reported revenue is below the offering's minimum threshold; no distribution triggered (#25).
+const EVENT_REV_BELOW_THRESHOLD: Symbol = symbol_short!("rev_below");
 
 const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
+pub const CONTRACT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +150,8 @@ pub enum RoundingMode {
 #[derive(Clone)]
 pub enum DataKey {
     Blacklist(Address),
+    /// Per-token: blacklist addresses in insertion order for deterministic get_blacklist (#38).
+    BlacklistOrder(Address),
     OfferCount(Address),
     OfferItem(Address, u32),
     /// Per (issuer, token): concentration limit config.
@@ -181,10 +200,19 @@ pub enum DataKey {
     InProgress(Address),
     /// Feature flag: emit versioned events when present (v1 schema).
     EventVersioningEnabled,
+    /// Per (issuer, token): metadata reference (IPFS hash, HTTPS URI, etc.)
+    OfferingMetadata(Address, Address),
+    /// Platform fee in basis points (max 5000 = 50%) taken from reported revenue (#6).
+    PlatformFeeBps,
+    /// Per (issuer, token): minimum revenue per period below which no distribution is triggered (#25).
+    MinRevenueThreshold(Address, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
+
+/// Maximum platform fee in basis points (50%).
+const MAX_PLATFORM_FEE_BPS: u32 = 5_000;
 
 /// Maximum number of periods that can be claimed in a single transaction.
 /// Keeps compute costs predictable within Soroban limits.
@@ -213,6 +241,30 @@ impl RevoraRevenueShare {
             .unwrap_or(false)
         {
             return Err(RevoraError::ContractFrozen);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require amount > 0 for transfers/deposits.
+    fn require_positive_amount(amount: i128) -> Result<(), RevoraError> {
+        if amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require period_id > 0 where 0 would be ambiguous.
+    fn require_valid_period_id(period_id: u64) -> Result<(), RevoraError> {
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+        Ok(())
+    }
+
+    /// Input validation (#35): require amount >= 0 for reporting (allow zero revenue report).
+    fn require_non_negative_amount(amount: i128) -> Result<(), RevoraError> {
+        if amount < 0 {
+            return Err(RevoraError::InvalidAmount);
         }
         Ok(())
     }
@@ -425,10 +477,23 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env);
         issuer.require_auth();
 
+        Self::require_non_negative_amount(amount)?;
+
         let offering = Self::get_offering(env.clone(), issuer.clone(), token.clone())
             .ok_or(RevoraError::OfferingNotFound)?;
         if offering.payout_asset != payout_asset {
             return Err(RevoraError::PayoutAssetMismatch);
+        }
+
+        // Per-offering minimum revenue threshold (#25): skip distribution when below threshold
+        let min_threshold =
+            Self::get_min_revenue_threshold(env.clone(), issuer.clone(), token.clone());
+        if min_threshold > 0 && amount < min_threshold {
+            env.events().publish(
+                (EVENT_REV_BELOW_THRESHOLD, issuer, token),
+                (amount, period_id, min_threshold),
+            );
+            return Ok(());
         }
 
         // Skip concentration enforcement in testnet mode
@@ -592,6 +657,7 @@ impl RevoraRevenueShare {
     }
 
     /// Return a page of offerings for `issuer`. Limit capped at MAX_PAGE_LIMIT (20).
+    /// Ordering: by registration index (creation order), deterministic (#38).
     pub fn get_offerings_page(
         env: Env,
         issuer: Address,
@@ -655,11 +721,23 @@ impl RevoraRevenueShare {
             .get(&key)
             .unwrap_or_else(|| Map::new(&env));
 
+        let was_present = map.get(investor.clone()).unwrap_or(false);
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
 
         // clear the guard after mutation completes
         env.storage().persistent().set(&guard_key, &false);
+        // Maintain insertion order for deterministic get_blacklist (#38)
+        if !was_present {
+            let order_key = DataKey::BlacklistOrder(token.clone());
+            let mut order: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&order_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            order.push_back(investor.clone());
+            env.storage().persistent().set(&order_key, &order);
+        }
 
         env.events()
             .publish((EVENT_BL_ADD, token, caller), investor);
@@ -701,6 +779,21 @@ impl RevoraRevenueShare {
 
         // clear the guard after mutation completes
         env.storage().persistent().set(&guard_key, &false);
+        // Rebuild order vec so get_blacklist stays deterministic (#38)
+        let order_key = DataKey::BlacklistOrder(token.clone());
+        let old_order: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&order_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut new_order = Vec::new(&env);
+        for i in 0..old_order.len() {
+            let addr = old_order.get(i).unwrap();
+            if map.get(addr.clone()).unwrap_or(false) {
+                new_order.push_back(addr);
+            }
+        }
+        env.storage().persistent().set(&order_key, &new_order);
 
         env.events()
             .publish((EVENT_BL_REM, token, caller), investor);
@@ -718,12 +811,12 @@ impl RevoraRevenueShare {
     }
 
     /// Return all blacklisted addresses for `token`'s offering.
+    /// Ordering: by insertion order, deterministic and stable across calls (#38).
     pub fn get_blacklist(env: Env, token: Address) -> Vec<Address> {
-        let key = DataKey::Blacklist(token);
+        let order_key = DataKey::BlacklistOrder(token);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.keys())
+            .get::<DataKey, Vec<Address>>(&order_key)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -854,6 +947,47 @@ impl RevoraRevenueShare {
             .unwrap_or(RoundingMode::Truncation)
     }
 
+    // ── Per-offering minimum revenue threshold (#25) ─────────────────────
+
+    /// Set minimum revenue per period below which no distribution is triggered.
+    /// Only the offering issuer may set this. Emits event when configured or changed.
+    /// Pass 0 to disable the threshold.
+    pub fn set_min_revenue_threshold(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        min_amount: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        let current_issuer =
+            Self::get_current_issuer(&env, &token).ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        issuer.require_auth();
+
+        Self::require_non_negative_amount(min_amount)?;
+
+        let key = DataKey::MinRevenueThreshold(issuer.clone(), token.clone());
+        let previous: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &min_amount);
+
+        env.events().publish(
+            (EVENT_MIN_REV_THRESHOLD_SET, issuer, token),
+            (previous, min_amount),
+        );
+        Ok(())
+    }
+
+    /// Get minimum revenue threshold for an offering. 0 means no threshold.
+    pub fn get_min_revenue_threshold(env: Env, issuer: Address, token: Address) -> i128 {
+        let key = DataKey::MinRevenueThreshold(issuer, token);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
     /// Compute share of `amount` at `revenue_share_bps` using the given rounding mode.
     /// Guarantees: result between 0 and amount (inclusive); no loss of funds when summing shares if caller uses same mode.
     pub fn compute_share(
@@ -918,6 +1052,9 @@ impl RevoraRevenueShare {
         }
 
         issuer.require_auth();
+
+        Self::require_positive_amount(amount)?;
+        Self::require_valid_period_id(period_id)?;
 
         // Check period not already deposited
         let rev_key = DataKey::PeriodRevenue(token.clone(), period_id);
@@ -1097,6 +1234,7 @@ impl RevoraRevenueShare {
     }
 
     /// Return unclaimed period IDs for a holder on an offering.
+    /// Ordering: by deposit index (creation order), deterministic (#38).
     pub fn get_pending_periods(env: Env, token: Address, holder: Address) -> Vec<u64> {
         let count_key = DataKey::PeriodCount(token.clone());
         let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
@@ -1443,6 +1581,8 @@ impl RevoraRevenueShare {
     ///
     /// Rounding: Uses integer division which rounds down (floor).
     /// This is conservative and ensures the contract never over-distributes.
+    // This entrypoint shape is part of the public contract interface and mirrors
+    // off-chain inputs directly, so we allow this specific arity.
     #[allow(clippy::too_many_arguments)]
     pub fn calculate_distribution(
         env: Env,
@@ -1525,6 +1665,75 @@ impl RevoraRevenueShare {
             .expect("division overflow")
     }
 
+    // ── Per-offering metadata storage (#8) ─────────────────────
+
+    /// Maximum allowed length for metadata strings (256 bytes).
+    /// Supports IPFS CIDs (46 chars), URLs, and content hashes.
+    const MAX_METADATA_LENGTH: usize = 256;
+
+    /// Set or update metadata reference for an offering.
+    ///
+    /// Only callable by the current issuer of the offering.
+    /// Metadata can be an IPFS hash (e.g., "Qm..."), HTTPS URI, or any reference string.
+    /// Maximum length: 256 bytes.
+    ///
+    /// Emits `EVENT_METADATA_SET` on first set, `EVENT_METADATA_UPDATED` on subsequent updates.
+    ///
+    /// # Errors
+    /// - `OfferingNotFound`: offering doesn't exist or caller is not the current issuer
+    /// - `MetadataTooLarge`: metadata string exceeds MAX_METADATA_LENGTH
+    /// - `ContractFrozen`: contract is frozen
+    pub fn set_offering_metadata(
+        env: Env,
+        issuer: Address,
+        token: Address,
+        metadata: String,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env);
+
+        // Verify offering exists and issuer is current
+        let current_issuer =
+            Self::get_current_issuer(&env, &token).ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        issuer.require_auth();
+
+        // Validate metadata length
+        let metadata_bytes = metadata.len();
+        if metadata_bytes > Self::MAX_METADATA_LENGTH as u32 {
+            return Err(RevoraError::MetadataTooLarge);
+        }
+
+        let key = DataKey::OfferingMetadata(issuer.clone(), token.clone());
+        let is_update = env.storage().persistent().has(&key);
+
+        // Store metadata
+        env.storage().persistent().set(&key, &metadata);
+
+        // Emit appropriate event
+        if is_update {
+            env.events()
+                .publish((EVENT_METADATA_UPDATED, issuer, token), metadata);
+        } else {
+            env.events()
+                .publish((EVENT_METADATA_SET, issuer, token), metadata);
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve metadata reference for an offering.
+    ///
+    /// Returns `None` if no metadata has been set for this offering.
+    pub fn get_offering_metadata(env: Env, issuer: Address, token: Address) -> Option<String> {
+        let key = DataKey::OfferingMetadata(issuer, token);
+        env.storage().persistent().get(&key)
+    }
+
     // ── Testnet mode configuration (#24) ───────────────────────
 
     /// Enable or disable testnet mode. Only admin may call.
@@ -1550,6 +1759,48 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, bool>(&DataKey::TestnetMode)
             .unwrap_or(false)
+    }
+
+    // ── Platform fee configuration (#6) ────────────────────────
+
+    /// Set the platform fee in basis points.  Admin-only.
+    /// Maximum value is 5 000 bps (50 %).  Pass 0 to disable.
+    pub fn set_platform_fee(env: Env, fee_bps: u32) -> Result<(), RevoraError> {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::LimitReached)?;
+        admin.require_auth();
+
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PlatformFeeBps, &fee_bps);
+        Ok(())
+    }
+
+    /// Return the current platform fee in basis points (default 0).
+    pub fn get_platform_fee(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PlatformFeeBps)
+            .unwrap_or(0)
+    }
+
+    /// Calculate the platform fee for a given amount.
+    pub fn calculate_platform_fee(env: Env, amount: i128) -> i128 {
+        let fee_bps = Self::get_platform_fee(env) as i128;
+        (amount * fee_bps).checked_div(BPS_DENOMINATOR).unwrap_or(0)
+    }
+
+    /// Return the current contract version (#23). Used for upgrade compatibility and migration.
+    pub fn get_version(env: Env) -> u32 {
+        let _ = env;
+        CONTRACT_VERSION
     }
 }
 
