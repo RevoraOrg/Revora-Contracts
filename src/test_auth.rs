@@ -216,7 +216,7 @@ fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
 fn set_claim_delay_wrong_issuer_no_mutation() {
     let env = Env::default();
     let client = make_client(&env);
-    let (issuer, token) = setup_offering(&env, &client);
+    let (_issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     assert!(client
         .try_set_claim_delay(&attacker, &token, &100u64)
@@ -230,7 +230,7 @@ fn set_offering_metadata_wrong_issuer_no_mutation() {
     let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
-    let meta: SdkString = "m".into();
+    let meta: SdkString = SdkString::from_str(&env, "m");
     assert!(client
         .try_set_offering_metadata(&attacker, &token, &meta)
         .is_err());
@@ -261,7 +261,7 @@ fn blacklist_remove_wrong_caller_no_mutation() {
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
     client.register_offering(&issuer, &token, &1_000, &token);
-    client.blacklist_add(&issuer, &token, &investor).unwrap();
+    client.blacklist_add(&issuer, &token, &investor);
     let attacker = Address::generate(&env);
     assert!(client
         .try_blacklist_remove(&attacker, &token, &investor)

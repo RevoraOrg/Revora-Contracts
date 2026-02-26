@@ -1915,7 +1915,7 @@ fn compute_share_no_overflow_bounds() {
 fn create_payment_token(env: &Env) -> (Address, Address) {
     let admin = Address::generate(env);
     let token_id = env.register_stellar_asset_contract(admin.clone());
-    (token_id.address().clone(), admin)
+    (token_id, admin)
 }
 
 /// Mint `amount` of payment token to `recipient`.
