@@ -6985,44 +6985,76 @@ mod regression {
         assert!(env.events().all().len() > before);
     }
 
-#[test]
-fn report_below_threshold_emits_event_and_skips_distribution() {
-    let (env, client, issuer, token, payout_asset) = setup_with_offering();
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &10_000);
-    let events_before = env.events().all().len();
-    client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &1_000, &1, &false);
-    let events_after = env.events().all().len();
-    assert!(events_after > events_before, "should emit rev_below event");
-    let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
-    assert!(
-        summary.is_none() || summary.as_ref().clone().unwrap().report_count == 0,
-        "below-threshold report must not count toward audit"
-    );
-}
+    #[test]
+    fn report_below_threshold_emits_event_and_skips_distribution() {
+        let (env, client, issuer, token, payout_asset) = setup_with_offering();
+        client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &10_000);
+        let events_before = env.events().all().len();
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &1_000,
+            &1,
+            &false,
+        );
+        let events_after = env.events().all().len();
+        assert!(events_after > events_before, "should emit rev_below event");
+        let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
+        assert!(
+            summary.is_none() || summary.as_ref().clone().unwrap().report_count == 0,
+            "below-threshold report must not count toward audit"
+        );
+    }
 
-#[test]
-fn report_at_or_above_threshold_updates_state() {
-    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
-    client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &1_000, &1, &false);
-    let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
-    assert_eq!(summary.clone().unwrap().report_count, 1);
-    assert_eq!(summary.clone().unwrap().total_revenue, 1_000);
-    client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &2_000, &2, &false);
-    let summary2 = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
-    assert_eq!(summary2.report_count, 2);
-    assert_eq!(summary2.total_revenue, 3_000);
-}
+    #[test]
+    fn report_at_or_above_threshold_updates_state() {
+        let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+        client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &1_000,
+            &1,
+            &false,
+        );
+        let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
+        assert_eq!(summary.clone().unwrap().report_count, 1);
+        assert_eq!(summary.clone().unwrap().total_revenue, 1_000);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &2_000,
+            &2,
+            &false,
+        );
+        let summary2 = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
+        assert_eq!(summary2.report_count, 2);
+        assert_eq!(summary2.total_revenue, 3_000);
+    }
 
-#[test]
-fn zero_threshold_disables_check() {
-    let (_env, client, issuer, token, payout_asset) = setup_with_offering();
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &100);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
-    client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &50, &1, &false);
-    let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
-    assert_eq!(summary.clone().unwrap().report_count, 1);
-}
+    #[test]
+    fn zero_threshold_disables_check() {
+        let (_env, client, issuer, token, payout_asset) = setup_with_offering();
+        client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &100);
+        client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &50,
+            &1,
+            &false,
+        );
+        let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
+        assert_eq!(summary.clone().unwrap().report_count, 1);
+    }
     #[test]
     fn report_below_threshold_emits_event_and_skips_distribution() {
         let (env, client, issuer, token, payout_asset) = setup_with_offering();
@@ -7108,28 +7140,28 @@ fn zero_threshold_disables_check() {
     // Deterministic ordering for query results (#38)
     // ---------------------------------------------------------------------------
 
-#[test]
-fn get_offerings_page_order_is_by_registration_index() {
-    let (env, client, issuer) = setup();
-    let t0 = Address::generate(&env);
-    let t1 = Address::generate(&env);
-    let t2 = Address::generate(&env);
-    let t3 = Address::generate(&env);
-    let p0 = Address::generate(&env);
-    let p1 = Address::generate(&env);
-    let p2 = Address::generate(&env);
-    let p3 = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0);
-    let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
-    assert_eq!(page.len(), 4);
-    assert_eq!(page.get(0).clone().unwrap().token, t0);
-    assert_eq!(page.get(1).clone().unwrap().token, t1);
-    assert_eq!(page.get(2).clone().unwrap().token, t2);
-    assert_eq!(page.get(3).clone().unwrap().token, t3);
-}
+    #[test]
+    fn get_offerings_page_order_is_by_registration_index() {
+        let (env, client, issuer) = setup();
+        let t0 = Address::generate(&env);
+        let t1 = Address::generate(&env);
+        let t2 = Address::generate(&env);
+        let t3 = Address::generate(&env);
+        let p0 = Address::generate(&env);
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+        let p3 = Address::generate(&env);
+        client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0);
+        let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
+        assert_eq!(page.len(), 4);
+        assert_eq!(page.get(0).clone().unwrap().token, t0);
+        assert_eq!(page.get(1).clone().unwrap().token, t1);
+        assert_eq!(page.get(2).clone().unwrap().token, t2);
+        assert_eq!(page.get(3).clone().unwrap().token, t3);
+    }
     #[test]
     fn get_offerings_page_order_is_by_registration_index() {
         let (env, client, issuer) = setup();
@@ -7982,7 +8014,15 @@ mod scenarios {
         // 2. Report revenue for period 1
         // total_revenue = 1,000,000
         // distributable = 1,000,000 * 50% = 500,000
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &1_000_000, &1, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &1_000_000,
+            &1,
+            &false,
+        );
 
         // 3. Investors set their shares for period 1 (Total supply 100)
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor_a, &60); // 60%
@@ -7991,7 +8031,15 @@ mod scenarios {
         // 4. Report revenue for period 2
         // total_revenue = 2,000,000
         // distributable = 2,000,000 * 50% = 1,000,000
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &2_000_000, &2, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &2_000_000,
+            &2,
+            &false,
+        );
 
         // 5. Investors' shares shift for period 2
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor_a, &20); // 20%
@@ -8016,9 +8064,11 @@ mod scenarios {
         assert_eq!(payout_b, 1_000_000);
 
         // Verify no pending claims
-        let remaining_a = client.get_unclaimed_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
+        let remaining_a =
+            client.get_unclaimed_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
         assert!(remaining_a.is_empty());
-        let claimable_b_after = client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor_b);
+        let claimable_b_after =
+            client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor_b);
         assert_eq!(claimable_b_after, 0);
 
         // Verify aggregation totals
@@ -8039,14 +8089,37 @@ mod scenarios {
         let investor = Address::generate(&env);
 
         // 1. Offering registered with 100% revenue share and a time delay (86400 secs)
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payout_asset, &86400);
+        client.register_offering(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &10_000,
+            &payout_asset,
+            &86400,
+        );
 
         // 2. Issuer attempts to report negative revenue (validation should reject)
-        let res = client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &-500, &1, &false);
+        let res = client.try_report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &-500,
+            &1,
+            &false,
+        );
         assert!(res.is_err());
 
         // 3. Issuer successfully reports valid revenue for period 1
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &100_000,
+            &1,
+            &false,
+        );
 
         // 4. Investor is assigned 100% share for period 1
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor, &100);
@@ -8061,12 +8134,24 @@ mod scenarios {
         env.ledger().set_timestamp(env.ledger().timestamp() + 2 * 86400);
 
         // 7. Issuer corrects the revenue report for period 1 via override (changes to 50_000)
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &50_000, &1, &true);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &50_000,
+            &1,
+            &true,
+        );
 
         // 8. Investor successfully claims after delay and override
-        let claim_preview_after = client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor);
-        assert_eq!(claim_preview_after, 50_000, "Preview should reflect overridden amount and passed delay");
-        
+        let claim_preview_after =
+            client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor);
+        assert_eq!(
+            claim_preview_after, 50_000,
+            "Preview should reflect overridden amount and passed delay"
+        );
+
         let payout = client.claim(&issuer, &symbol_short!("def"), &token, &investor, &0);
         assert_eq!(payout, 50_000);
 
@@ -8074,14 +8159,1039 @@ mod scenarios {
         client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
 
         // 10. Issuer reports revenue for period 2
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200_000, &2, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &200_000,
+            &2,
+            &false,
+        );
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor, &100);
 
         // 11. Investor attempts claim but is blocked by blacklist
         env.ledger().set_timestamp(env.ledger().timestamp() + 2 * 86400); // pass delay
-        let claim_res_blocked = client.try_claim(&issuer, &symbol_short!("def"), &token, &investor, &0);
+        let claim_res_blocked =
+            client.try_claim(&issuer, &symbol_short!("def"), &token, &investor, &0);
         assert!(claim_res_blocked.is_err(), "Claim should fail due to blacklist");
     }
 }
-} // mod regression
 
+// ===========================================================================
+// Notification Preferences Tests (#156)
+// ===========================================================================
+mod notification_preferences_tests {
+    use super::*;
+    use crate::{
+        NotificationChannel, NotificationFrequency, NotificationPreferences, NotificationPriority,
+        EVENT_NOTIF_CHANNEL_ADD, EVENT_NOTIF_CHANNEL_REM, EVENT_NOTIF_PREFS_SET,
+        EVENT_NOTIF_PRIORITY_SET,
+    };
+
+    // ── Basic CRUD Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_preferences_succeeds_with_valid_input() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain, NotificationChannel::Email];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Daily,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &false,
+            &500,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn get_notification_preferences_returns_default_when_not_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let prefs = client.get_notification_preferences(&user);
+
+        assert_eq!(prefs.channels.len(), 1);
+        assert_eq!(prefs.frequency, NotificationFrequency::Immediate);
+        assert_eq!(prefs.priority, NotificationPriority::Standard);
+        assert!(prefs.revenue_notifications);
+        assert!(prefs.claim_notifications);
+        assert!(prefs.eligibility_notifications);
+        assert_eq!(prefs.max_batch_size, 100);
+    }
+
+    #[test]
+    fn set_and_get_notification_preferences_persists() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::Webhook];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Hourly,
+            &NotificationPriority::Critical,
+            &false,
+            &true,
+            &true,
+            &250,
+        );
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.channels.len(), 1);
+        assert_eq!(prefs.frequency, NotificationFrequency::Hourly);
+        assert_eq!(prefs.priority, NotificationPriority::Critical);
+        assert!(!prefs.revenue_notifications);
+        assert!(prefs.claim_notifications);
+        assert!(prefs.eligibility_notifications);
+        assert_eq!(prefs.max_batch_size, 250);
+    }
+
+    #[test]
+    fn set_notification_preferences_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &false,
+            &true,
+            &100,
+        );
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let (_contract, topics, _data) = last_event;
+        let event_symbol: Symbol = topics.get(0).clone().try_into_val(&env).unwrap();
+        assert_eq!(event_symbol, EVENT_NOTIF_PREFS_SET);
+    }
+
+    // ── Validation Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_preferences_fails_with_empty_channels() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = Vec::new(&env);
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    #[test]
+    fn set_notification_preferences_fails_with_all_notification_types_disabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &false,
+            &false,
+            &false,
+            &100,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    #[test]
+    fn set_notification_preferences_fails_with_batch_size_exceeded() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &1001,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationBatchSizeExceeded);
+    }
+
+    #[test]
+    fn set_notification_preferences_fails_with_zero_batch_size() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &0,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationBatchSizeExceeded);
+    }
+
+    #[test]
+    fn set_notification_preferences_fails_with_webhook_url_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let long_url = "https://example.com/".to_string() + &"a".repeat(2100);
+        let result = client.try_set_webhook_url(&user, &Some(SdkString::from_str(&env, &long_url)));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    // ── Channel Management Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn add_notification_channel_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_add_notification_channel(&user, &NotificationChannel::Email);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.channels.len(), 2);
+    }
+
+    #[test]
+    fn add_notification_channel_fails_when_already_exists() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_add_notification_channel(&user, &NotificationChannel::OnChain);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationChannelAlreadySubscribed);
+    }
+
+    #[test]
+    fn add_notification_channel_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        client.add_notification_channel(&user, &NotificationChannel::Webhook);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let (_contract, topics, _data) = last_event;
+        let event_symbol: Symbol = topics.get(0).clone().try_into_val(&env).unwrap();
+        assert_eq!(event_symbol, EVENT_NOTIF_CHANNEL_ADD);
+    }
+
+    #[test]
+    fn remove_notification_channel_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain, NotificationChannel::Email];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_remove_notification_channel(&user, &NotificationChannel::OnChain);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.channels.len(), 1);
+    }
+
+    #[test]
+    fn remove_notification_channel_fails_when_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_remove_notification_channel(&user, &NotificationChannel::Webhook);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationChannelNotFound);
+    }
+
+    #[test]
+    fn remove_notification_channel_fails_when_last_channel() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_remove_notification_channel(&user, &NotificationChannel::OnChain);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    #[test]
+    fn remove_notification_channel_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain, NotificationChannel::Email];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        client.remove_notification_channel(&user, &NotificationChannel::OnChain);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let (_contract, topics, _data) = last_event;
+        let event_symbol: Symbol = topics.get(0).clone().try_into_val(&env).unwrap();
+        assert_eq!(event_symbol, EVENT_NOTIF_CHANNEL_REM);
+    }
+
+    // ── Frequency and Priority Tests ─────────────────────────────────────────
+
+    #[test]
+    fn set_notification_frequency_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_frequency(&user, &NotificationFrequency::Weekly);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.frequency, NotificationFrequency::Weekly);
+    }
+
+    #[test]
+    fn set_notification_priority_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_priority(&user, &NotificationPriority::All);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.priority, NotificationPriority::All);
+    }
+
+    #[test]
+    fn set_notification_priority_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        client.set_notification_priority(&user, &NotificationPriority::Critical);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let (_contract, topics, _data) = last_event;
+        let event_symbol: Symbol = topics.get(0).clone().try_into_val(&env).unwrap();
+        assert_eq!(event_symbol, EVENT_NOTIF_PRIORITY_SET);
+    }
+
+    // ── Notification Types Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_types_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_types(&user, &true, &false, &true);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert!(prefs.revenue_notifications);
+        assert!(!prefs.claim_notifications);
+        assert!(prefs.eligibility_notifications);
+    }
+
+    #[test]
+    fn set_notification_types_fails_when_all_disabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_types(&user, &false, &false, &false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    // ── Batch Size Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_batch_size_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_batch_size(&user, &500);
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.max_batch_size, 500);
+    }
+
+    #[test]
+    fn set_notification_batch_size_fails_when_exceeds_max() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_batch_size(&user, &2000);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationBatchSizeExceeded);
+    }
+
+    #[test]
+    fn set_notification_batch_size_fails_when_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_notification_batch_size(&user, &0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationBatchSizeExceeded);
+    }
+
+    // ── Webhook URL Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_webhook_url_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::Webhook];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let url = SdkString::from_str(&env, "https://example.com/webhook");
+        let result = client.try_set_webhook_url(&user, &Some(url));
+        assert!(result.is_ok());
+
+        let webhook = client.get_webhook_url(&user);
+        assert!(webhook.is_some());
+    }
+
+    #[test]
+    fn set_webhook_url_fails_when_url_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let long_url = "https://example.com/".to_string() + &"a".repeat(2100);
+        let result = client.try_set_webhook_url(&user, &Some(SdkString::from_str(&env, &long_url)));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::NotificationPreferencesInvalid);
+    }
+
+    #[test]
+    fn set_webhook_url_to_none_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let url = SdkString::from_str(&env, "https://example.com/webhook");
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let result = client.try_set_webhook_url(&user, &None);
+        assert!(result.is_ok());
+
+        let webhook = client.get_webhook_url(&user);
+        assert!(webhook.is_none());
+    }
+
+    // ── Helper Function Tests ────────────────────────────────────────────────
+
+    #[test]
+    fn has_notification_type_enabled_returns_correct_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &false,
+            &true,
+            &100,
+        );
+
+        assert!(client.has_notification_type_enabled(&user, &0));
+        assert!(!client.has_notification_type_enabled(&user, &1));
+        assert!(client.has_notification_type_enabled(&user, &2));
+        assert!(!client.has_notification_type_enabled(&user, &3));
+    }
+
+    #[test]
+    fn has_notification_channel_enabled_returns_correct_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain, NotificationChannel::Email];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        assert!(client.has_notification_channel_enabled(&user, &NotificationChannel::OnChain));
+        assert!(client.has_notification_channel_enabled(&user, &NotificationChannel::Email));
+        assert!(!client.has_notification_channel_enabled(&user, &NotificationChannel::Webhook));
+    }
+
+    #[test]
+    fn has_custom_notif_prefs_returns_false_when_not_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        assert!(!client.has_custom_notif_prefs(&user));
+    }
+
+    #[test]
+    fn has_custom_notif_prefs_returns_true_when_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Weekly,
+            &NotificationPriority::Critical,
+            &true,
+            &false,
+            &false,
+            &500,
+        );
+
+        assert!(client.has_custom_notif_prefs(&user));
+    }
+
+    // ── Clear Preferences Tests ───────────────────────────────────────────────
+
+    #[test]
+    fn clear_notification_preferences_removes_prefs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Weekly,
+            &NotificationPriority::Critical,
+            &true,
+            &false,
+            &false,
+            &500,
+        );
+
+        assert!(client.has_custom_notif_prefs(&user));
+
+        client.clear_notification_preferences(&user);
+
+        assert!(!client.has_custom_notif_prefs(&user));
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.frequency, NotificationFrequency::Immediate);
+        assert_eq!(prefs.priority, NotificationPriority::Standard);
+    }
+
+    // ── Boundary Tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn batch_size_at_min_boundary_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &1,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn batch_size_at_max_boundary_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &1000,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn webhook_url_at_max_boundary_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        client.set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        let max_url = "https://example.com/".to_string() + &"a".repeat(2024);
+        let result = client.try_set_webhook_url(&user, &Some(SdkString::from_str(&env, &max_url)));
+        assert!(result.is_ok());
+    }
+
+    // ── All Notification Channels Test ────────────────────────────────────────
+
+    #[test]
+    fn all_channels_can_be_enabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![
+            &env,
+            NotificationChannel::OnChain,
+            NotificationChannel::Email,
+            NotificationChannel::Webhook,
+        ];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        assert!(result.is_ok());
+
+        let prefs = client.get_notification_preferences(&user);
+        assert_eq!(prefs.channels.len(), 3);
+    }
+
+    // ── Auth Tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_preferences_requires_auth() {
+        let env = Env::default();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        assert!(result.is_err());
+    }
+
+    // ── Frozen Contract Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn set_notification_preferences_fails_when_frozen() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin, &None, &Some(false));
+        client.pause_admin(&admin);
+
+        let user = Address::generate(&env);
+        let channels = vec![&env, NotificationChannel::OnChain];
+        let result = client.try_set_notification_preferences(
+            &user,
+            &channels,
+            &NotificationFrequency::Immediate,
+            &NotificationPriority::Standard,
+            &true,
+            &true,
+            &true,
+            &100,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, RevoraError::ContractFrozen);
+    }
+
+    // ── All Notification Frequencies Test ─────────────────────────────────────
+
+    #[test]
+    fn all_notification_frequencies_work() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+
+        for freq in [
+            NotificationFrequency::Immediate,
+            NotificationFrequency::Hourly,
+            NotificationFrequency::Daily,
+            NotificationFrequency::Weekly,
+        ] {
+            let result = client.try_set_notification_frequency(&user, &freq);
+            assert!(result.is_ok(), "Frequency {:?} should work", freq);
+        }
+    }
+
+    // ── All Notification Priorities Test ──────────────────────────────────────
+
+    #[test]
+    fn all_notification_priorities_work() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let user = Address::generate(&env);
+
+        let channels = vec![&env, NotificationChannel::OnChain];
+
+        for priority in [
+            NotificationPriority::Critical,
+            NotificationPriority::Standard,
+            NotificationPriority::All,
+        ] {
+            let result = client.try_set_notification_priority(&user, &priority);
+            assert!(result.is_ok(), "Priority {:?} should work", priority);
+        }
+    }
+}

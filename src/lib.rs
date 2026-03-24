@@ -2,8 +2,8 @@
 #![deny(unsafe_code)]
 #![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
-    BytesN, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, xdr::ToXdr,
+    Address, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 // Issue #109 — Revenue report correction workflow with audit trail.
@@ -73,6 +73,20 @@ pub enum RevoraError {
     SignatureReplay = 28,
     /// Off-chain signer key has not been registered.
     SignerKeyNotRegistered = 29,
+    /// Notification channel is invalid or not supported.
+    InvalidNotificationChannel = 30,
+    /// Notification frequency exceeds maximum allowed interval.
+    NotificationFrequencyTooHigh = 31,
+    /// Notification preferences validation failed.
+    NotificationPreferencesInvalid = 32,
+    /// Notification channel already subscribed.
+    NotificationChannelAlreadySubscribed = 33,
+    /// Notification channel not found for unsubscription.
+    NotificationChannelNotFound = 34,
+    /// Notification batch size exceeds maximum allowed.
+    NotificationBatchSizeExceeded = 35,
+    /// Invalid notification priority level.
+    InvalidNotificationPriority = 36,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -179,6 +193,13 @@ const EVENT_META_SIGNER_SET: Symbol = symbol_short!("meta_key");
 const EVENT_META_DELEGATE_SET: Symbol = symbol_short!("meta_del");
 const EVENT_META_SHARE_SET: Symbol = symbol_short!("meta_shr");
 const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
+
+/// Notification preference event symbols (#156).
+const EVENT_NOTIF_PREFS_SET: Symbol = symbol_short!("notif_set");
+const EVENT_NOTIF_CHANNEL_ADD: Symbol = symbol_short!("notif_add");
+const EVENT_NOTIF_CHANNEL_REM: Symbol = symbol_short!("notif_rem");
+const EVENT_NOTIF_BATCH_UPDATE: Symbol = symbol_short!("notif_bup");
+const EVENT_NOTIF_PRIORITY_SET: Symbol = symbol_short!("notif_pri");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
@@ -361,6 +382,81 @@ pub enum RoundingMode {
     RoundHalfUp = 1,
 }
 
+/// Supported notification channels for revenue and claim events (#156).
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationChannel {
+    /// On-chain event emission only (no external delivery).
+    OnChain = 0,
+    /// Email notification channel.
+    Email = 1,
+    /// Webhook notification channel.
+    Webhook = 2,
+}
+
+/// Notification frequency for batched notifications (#156).
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationFrequency {
+    /// Receive notifications immediately.
+    Immediate = 0,
+    /// Hourly batch notification.
+    Hourly = 1,
+    /// Daily batch notification.
+    Daily = 2,
+    /// Weekly batch notification.
+    Weekly = 3,
+}
+
+/// Notification priority levels for filtering (#156).
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationPriority {
+    /// Only critical notifications (e.g., large claims, system alerts).
+    Critical = 0,
+    /// Standard notifications including regular revenue distributions.
+    Standard = 1,
+    /// All notifications including minor updates.
+    All = 2,
+}
+
+/// Notification preferences for a user address (#156).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationPreferences {
+    /// Enabled notification channels.
+    pub channels: Vec<NotificationChannel>,
+    /// Notification frequency for batched updates.
+    pub frequency: NotificationFrequency,
+    /// Minimum priority level for notifications.
+    pub priority: NotificationPriority,
+    /// Whether to receive revenue report notifications.
+    pub revenue_notifications: bool,
+    /// Whether to receive claim availability notifications.
+    pub claim_notifications: bool,
+    /// Whether to receive blacklist/whitelist change notifications.
+    pub eligibility_notifications: bool,
+    /// Maximum batch size for batched notifications.
+    pub max_batch_size: u32,
+}
+
+/// Storage key for webhook URL (stored separately due to Soroban type constraints).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationWebhook {
+    pub url: String,
+    pub is_set: bool,
+}
+
+/// Maximum batch size for notification batching (#156).
+const MAX_NOTIFICATION_BATCH_SIZE: u32 = 1000;
+
+/// Minimum batch size (must be at least 1).
+const MIN_NOTIFICATION_BATCH_SIZE: u32 = 1;
+
+/// Maximum allowed webhook URL length in bytes.
+const MAX_WEBHOOK_URL_LEN: u32 = 2048;
+
 /// Storage keys: offerings use OfferCount/OfferItem; blacklist uses Blacklist(token).
 /// Multi-period claim keys use PeriodRevenue/PeriodEntry/PeriodCount for per-offering
 /// period tracking, HolderShare for holder allocations, LastClaimedIdx for claim progress,
@@ -468,6 +564,11 @@ pub enum DataKey {
     NamespaceCount(Address),
     NamespaceItem(Address, u32),
     NamespaceRegistered(Address, Symbol),
+
+    /// Notification preferences for an address.
+    NotificationPrefs(Address),
+    /// Webhook URL for notification preferences (stored separately due to Soroban type constraints).
+    NotificationWebhook(Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -569,11 +670,8 @@ impl RevoraRevenueShare {
     ) -> Result<(), RevoraError> {
         Self::require_valid_meta_nonce_and_expiry(env, signer, nonce, expiry)?;
         let pk_key = MetaDataKey::SignerKey(signer.clone());
-        let public_key: BytesN<32> = env
-            .storage()
-            .persistent()
-            .get(&pk_key)
-            .ok_or(RevoraError::SignerKeyNotRegistered)?;
+        let public_key: BytesN<32> =
+            env.storage().persistent().get(&pk_key).ok_or(RevoraError::SignerKeyNotRegistered)?;
         let payload = MetaAuthorization {
             version: Self::META_AUTH_VERSION,
             contract: env.current_contract_address(),
@@ -606,12 +704,10 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .set(&DataKey::HolderShare(offering_id, holder.clone()), &share_bps);
-        env.events()
-            .publish((EVENT_SHARE_SET, issuer, namespace, token), (holder, share_bps));
+        env.events().publish((EVENT_SHARE_SET, issuer, namespace, token), (holder, share_bps));
         Ok(())
     }
 
- 
     /// Internal helper for revenue deposits.
     fn do_deposit_revenue(
         env: &Env,
@@ -2242,7 +2338,14 @@ impl RevoraRevenueShare {
         }
 
         issuer.require_auth();
-        Self::set_holder_share_internal(&env, offering_id.issuer, offering_id.namespace, offering_id.token, holder, share_bps)
+        Self::set_holder_share_internal(
+            &env,
+            offering_id.issuer,
+            offering_id.namespace,
+            offering_id.token,
+            holder,
+            share_bps,
+        )
     }
 
     /// Register an ed25519 public key for a signer address.
@@ -2253,11 +2356,8 @@ impl RevoraRevenueShare {
         public_key: BytesN<32>,
     ) -> Result<(), RevoraError> {
         signer.require_auth();
-        env.storage()
-            .persistent()
-            .set(&MetaDataKey::SignerKey(signer.clone()), &public_key);
-        env.events()
-            .publish((EVENT_META_SIGNER_SET, signer), public_key);
+        env.storage().persistent().set(&MetaDataKey::SignerKey(signer.clone()), &public_key);
+        env.events().publish((EVENT_META_SIGNER_SET, signer), public_key);
         Ok(())
     }
 
@@ -2271,13 +2371,9 @@ impl RevoraRevenueShare {
         delegate: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        let current_issuer = Self::get_current_issuer(
-            &env,
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-        )
-        .ok_or(RevoraError::OfferingNotFound)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
@@ -2287,11 +2383,8 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&MetaDataKey::Delegate(offering_id), &delegate);
-        env.events()
-            .publish((EVENT_META_DELEGATE_SET, issuer, namespace, token), delegate);
+        env.storage().persistent().set(&MetaDataKey::Delegate(offering_id), &delegate);
+        env.events().publish((EVENT_META_DELEGATE_SET, issuer, namespace, token), delegate);
         Ok(())
     }
 
@@ -2302,14 +2395,8 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<Address> {
-        let offering_id = OfferingId {
-            issuer,
-            namespace,
-            token,
-        };
-        env.storage()
-            .persistent()
-            .get(&MetaDataKey::Delegate(offering_id))
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&MetaDataKey::Delegate(offering_id))
     }
 
     /// Meta-transaction variant of `set_holder_share`.
@@ -2360,12 +2447,7 @@ impl RevoraRevenueShare {
         )?;
         Self::mark_meta_nonce_used(&env, &signer, nonce);
         env.events().publish(
-            (
-                EVENT_META_SHARE_SET,
-                payload.issuer,
-                payload.namespace,
-                payload.token,
-            ),
+            (EVENT_META_SHARE_SET, payload.issuer, payload.namespace, payload.token),
             (signer, payload.holder, payload.share_bps, nonce, expiry),
         );
         Ok(())
@@ -2411,18 +2493,10 @@ impl RevoraRevenueShare {
         Self::verify_meta_signature(&env, &signer, nonce, expiry, action, &signature)?;
         env.storage()
             .persistent()
-            .set(
-                &MetaDataKey::RevenueApproved(offering_id, payload.period_id),
-                &true,
-            );
+            .set(&MetaDataKey::RevenueApproved(offering_id, payload.period_id), &true);
         Self::mark_meta_nonce_used(&env, &signer, nonce);
         env.events().publish(
-            (
-                EVENT_META_REV_APPROVE,
-                payload.issuer,
-                payload.namespace,
-                payload.token,
-            ),
+            (EVENT_META_REV_APPROVE, payload.issuer, payload.namespace, payload.token),
             (
                 signer,
                 payload.payout_asset,
@@ -2596,30 +2670,21 @@ impl RevoraRevenueShare {
         end_timestamp: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        let current_issuer = Self::get_current_issuer(
-            &env,
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-        )
-        .ok_or(RevoraError::OfferingNotFound)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
         issuer.require_auth();
-        let window = AccessWindow {
-            start_timestamp,
-            end_timestamp,
-        };
+        let window = AccessWindow { start_timestamp, end_timestamp };
         Self::validate_window(&window)?;
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&WindowDataKey::Report(offering_id), &window);
+        env.storage().persistent().set(&WindowDataKey::Report(offering_id), &window);
         env.events().publish(
             (EVENT_REPORT_WINDOW_SET, issuer, namespace, token),
             (start_timestamp, end_timestamp),
@@ -2638,30 +2703,21 @@ impl RevoraRevenueShare {
         end_timestamp: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        let current_issuer = Self::get_current_issuer(
-            &env,
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-        )
-        .ok_or(RevoraError::OfferingNotFound)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
         issuer.require_auth();
-        let window = AccessWindow {
-            start_timestamp,
-            end_timestamp,
-        };
+        let window = AccessWindow { start_timestamp, end_timestamp };
         Self::validate_window(&window)?;
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&WindowDataKey::Claim(offering_id), &window);
+        env.storage().persistent().set(&WindowDataKey::Claim(offering_id), &window);
         env.events().publish(
             (EVENT_CLAIM_WINDOW_SET, issuer, namespace, token),
             (start_timestamp, end_timestamp),
@@ -2676,14 +2732,8 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<AccessWindow> {
-        let offering_id = OfferingId {
-            issuer,
-            namespace,
-            token,
-        };
-        env.storage()
-            .persistent()
-            .get(&WindowDataKey::Report(offering_id))
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&WindowDataKey::Report(offering_id))
     }
 
     /// Read configured claiming window (if any) for an offering.
@@ -2693,14 +2743,8 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<AccessWindow> {
-        let offering_id = OfferingId {
-            issuer,
-            namespace,
-            token,
-        };
-        env.storage()
-            .persistent()
-            .get(&WindowDataKey::Claim(offering_id))
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&WindowDataKey::Claim(offering_id))
     }
 
     /// Return unclaimed period IDs for a holder on an offering.
@@ -3983,6 +4027,404 @@ impl RevoraRevenueShare {
         let _ = env;
         CONTRACT_VERSION
     }
+
+    // ── Notification Preferences (#156) ──────────────────────────
+
+    /// Validates notification preferences and returns Ok if valid, or an error code if invalid.
+    ///
+    /// Validation rules:
+    /// - At least one channel must be enabled.
+    /// - Max batch size must be within allowed bounds.
+    fn validate_notification_prefs(prefs: &NotificationPreferences) -> Result<(), RevoraError> {
+        if prefs.channels.is_empty() {
+            return Err(RevoraError::NotificationPreferencesInvalid);
+        }
+
+        if prefs.max_batch_size > MAX_NOTIFICATION_BATCH_SIZE {
+            return Err(RevoraError::NotificationBatchSizeExceeded);
+        }
+        if prefs.max_batch_size < MIN_NOTIFICATION_BATCH_SIZE {
+            return Err(RevoraError::NotificationBatchSizeExceeded);
+        }
+
+        if !prefs.revenue_notifications
+            && !prefs.claim_notifications
+            && !prefs.eligibility_notifications
+        {
+            return Err(RevoraError::NotificationPreferencesInvalid);
+        }
+
+        Ok(())
+    }
+
+    /// Checks if a channel is already in the list.
+    fn has_channel(channels: &Vec<NotificationChannel>, channel: NotificationChannel) -> bool {
+        for i in 0..channels.len() {
+            if channels.get(i).unwrap() == channel {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Set notification preferences for a user address.
+    ///
+    /// Allows users to configure their notification settings for revenue, claims, and eligibility changes.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to set preferences for. Must provide authentication.
+    /// - `channels`: List of enabled notification channels.
+    /// - `frequency`: Notification frequency for batched updates.
+    /// - `priority`: Minimum priority level for notifications.
+    /// - `revenue_notifications`: Enable revenue report notifications.
+    /// - `claim_notifications`: Enable claim availability notifications.
+    /// - `eligibility_notifications`: Enable eligibility change notifications.
+    /// - `max_batch_size`: Maximum batch size for notifications (1-1000).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationPreferencesInvalid)` if preferences fail validation.
+    /// - `Err(RevoraError::NotificationBatchSizeExceeded)` if batch size is out of bounds.
+    pub fn set_notification_preferences(
+        env: Env,
+        user: Address,
+        channels: Vec<NotificationChannel>,
+        frequency: NotificationFrequency,
+        priority: NotificationPriority,
+        revenue_notifications: bool,
+        claim_notifications: bool,
+        eligibility_notifications: bool,
+        max_batch_size: u32,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let prefs = NotificationPreferences {
+            channels,
+            frequency,
+            priority,
+            revenue_notifications,
+            claim_notifications,
+            eligibility_notifications,
+            max_batch_size,
+        };
+
+        Self::validate_notification_prefs(&prefs)?;
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        env.storage().persistent().set(&key, &prefs);
+
+        env.events().publish(
+            (EVENT_NOTIF_PREFS_SET, user.clone()),
+            (
+                prefs.revenue_notifications,
+                prefs.claim_notifications,
+                prefs.eligibility_notifications,
+            ),
+        );
+
+        Ok(())
+    }
+
+    /// Get notification preferences for a user address.
+    ///
+    /// Returns the stored preferences or default preferences if none are set.
+    /// Default: OnChain channel, Immediate frequency, Standard priority, all notifications enabled, batch size 100.
+    pub fn get_notification_preferences(env: Env, user: Address) -> NotificationPreferences {
+        let key = DataKey::NotificationPrefs(user);
+        env.storage().persistent().get(&key).unwrap_or(NotificationPreferences {
+            channels: vec![&env, NotificationChannel::OnChain],
+            frequency: NotificationFrequency::Immediate,
+            priority: NotificationPriority::Standard,
+            revenue_notifications: true,
+            claim_notifications: true,
+            eligibility_notifications: true,
+            max_batch_size: 100,
+        })
+    }
+
+    /// Add a notification channel for a user.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to add the channel for. Must provide authentication.
+    /// - `channel`: The notification channel to add.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationChannelAlreadySubscribed)` if channel is already enabled.
+    pub fn add_notification_channel(
+        env: Env,
+        user: Address,
+        channel: NotificationChannel,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        if Self::has_channel(&prefs.channels, channel) {
+            return Err(RevoraError::NotificationChannelAlreadySubscribed);
+        }
+
+        prefs.channels.push_back(channel);
+        env.storage().persistent().set(&key, &prefs);
+
+        env.events().publish((EVENT_NOTIF_CHANNEL_ADD, user.clone()), channel);
+        Ok(())
+    }
+
+    /// Remove a notification channel for a user.
+    ///
+    /// Requires at least one channel to remain enabled.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to remove the channel from. Must provide authentication.
+    /// - `channel`: The notification channel to remove.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationChannelNotFound)` if channel is not enabled.
+    /// - `Err(RevoraError::NotificationPreferencesInvalid)` if removal would leave no channels.
+    pub fn remove_notification_channel(
+        env: Env,
+        user: Address,
+        channel: NotificationChannel,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        let mut found = false;
+        let mut new_channels = Vec::new(&env);
+        for i in 0..prefs.channels.len() {
+            let ch = prefs.channels.get(i).unwrap();
+            if ch == channel {
+                found = true;
+            } else {
+                new_channels.push_back(ch);
+            }
+        }
+
+        if !found {
+            return Err(RevoraError::NotificationChannelNotFound);
+        }
+
+        if new_channels.is_empty() {
+            return Err(RevoraError::NotificationPreferencesInvalid);
+        }
+
+        prefs.channels = new_channels;
+        env.storage().persistent().set(&key, &prefs);
+
+        env.events().publish((EVENT_NOTIF_CHANNEL_REM, user.clone()), channel);
+        Ok(())
+    }
+
+    /// Update notification frequency for a user.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to update. Must provide authentication.
+    /// - `frequency`: The new notification frequency.
+    pub fn set_notification_frequency(
+        env: Env,
+        user: Address,
+        frequency: NotificationFrequency,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        prefs.frequency = frequency;
+        env.storage().persistent().set(&key, &prefs);
+
+        Ok(())
+    }
+
+    /// Update notification priority for a user.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to update. Must provide authentication.
+    /// - `priority`: The new minimum priority level.
+    pub fn set_notification_priority(
+        env: Env,
+        user: Address,
+        priority: NotificationPriority,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        prefs.priority = priority;
+        env.storage().persistent().set(&key, &prefs);
+
+        env.events().publish((EVENT_NOTIF_PRIORITY_SET, user.clone()), priority);
+        Ok(())
+    }
+
+    /// Update notification types for a user.
+    ///
+    /// At least one notification type must remain enabled.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to update. Must provide authentication.
+    /// - `revenue_notifications`: Enable/disable revenue notifications.
+    /// - `claim_notifications`: Enable/disable claim notifications.
+    /// - `eligibility_notifications`: Enable/disable eligibility notifications.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationPreferencesInvalid)` if all types would be disabled.
+    pub fn set_notification_types(
+        env: Env,
+        user: Address,
+        revenue_notifications: bool,
+        claim_notifications: bool,
+        eligibility_notifications: bool,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        if !revenue_notifications && !claim_notifications && !eligibility_notifications {
+            return Err(RevoraError::NotificationPreferencesInvalid);
+        }
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        prefs.revenue_notifications = revenue_notifications;
+        prefs.claim_notifications = claim_notifications;
+        prefs.eligibility_notifications = eligibility_notifications;
+
+        env.storage().persistent().set(&key, &prefs);
+        Ok(())
+    }
+
+    /// Update maximum batch size for a user.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to update. Must provide authentication.
+    /// - `max_batch_size`: New maximum batch size (1-1000).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationBatchSizeExceeded)` if batch size is out of bounds.
+    pub fn set_notification_batch_size(
+        env: Env,
+        user: Address,
+        max_batch_size: u32,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        if !(MIN_NOTIFICATION_BATCH_SIZE..=MAX_NOTIFICATION_BATCH_SIZE).contains(&max_batch_size) {
+            return Err(RevoraError::NotificationBatchSizeExceeded);
+        }
+
+        let key = DataKey::NotificationPrefs(user.clone());
+        let mut prefs = Self::get_notification_preferences(env.clone(), user.clone());
+
+        prefs.max_batch_size = max_batch_size;
+        env.storage().persistent().set(&key, &prefs);
+
+        env.events().publish((EVENT_NOTIF_BATCH_UPDATE, user.clone()), max_batch_size);
+        Ok(())
+    }
+
+    /// Update webhook URL for a user.
+    ///
+    /// Requires Webhook channel to be enabled.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to update. Must provide authentication.
+    /// - `webhook_url`: New webhook URL (None to remove).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::NotificationPreferencesInvalid)` if URL exceeds max length.
+    pub fn set_webhook_url(
+        env: Env,
+        user: Address,
+        webhook_url: Option<String>,
+    ) -> Result<(), RevoraError> {
+        user.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        if let Some(ref url) = webhook_url {
+            if url.len() > MAX_WEBHOOK_URL_LEN {
+                return Err(RevoraError::NotificationPreferencesInvalid);
+            }
+        }
+
+        let key = DataKey::NotificationWebhook(user.clone());
+        let webhook = NotificationWebhook {
+            url: webhook_url.clone().unwrap_or_else(|| String::from_str(&env, "")),
+            is_set: webhook_url.is_some(),
+        };
+        env.storage().persistent().set(&key, &webhook);
+        Ok(())
+    }
+
+    /// Get webhook URL for a user.
+    pub fn get_webhook_url(env: Env, user: Address) -> Option<String> {
+        let key = DataKey::NotificationWebhook(user);
+        if let Some(webhook) = env.storage().persistent().get::<DataKey, NotificationWebhook>(&key)
+        {
+            if webhook.is_set {
+                return Some(webhook.url);
+            }
+        }
+        None
+    }
+
+    /// Check if a user has a specific notification type enabled.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to check.
+    /// - `notification_type`: 0 = revenue, 1 = claim, 2 = eligibility.
+    pub fn has_notification_type_enabled(env: Env, user: Address, notification_type: u32) -> bool {
+        let prefs = Self::get_notification_preferences(env, user);
+        match notification_type {
+            0 => prefs.revenue_notifications,
+            1 => prefs.claim_notifications,
+            2 => prefs.eligibility_notifications,
+            _ => false,
+        }
+    }
+
+    /// Check if a user has a specific channel enabled.
+    ///
+    /// ### Parameters
+    /// - `user`: The address to check.
+    /// - `channel`: The notification channel to check.
+    pub fn has_notification_channel_enabled(
+        env: Env,
+        user: Address,
+        channel: NotificationChannel,
+    ) -> bool {
+        let prefs = Self::get_notification_preferences(env, user);
+        Self::has_channel(&prefs.channels, channel)
+    }
+
+    /// Check if user preferences exist (not just defaults).
+    pub fn has_custom_notif_prefs(env: Env, user: Address) -> bool {
+        let key = DataKey::NotificationPrefs(user);
+        env.storage().persistent().has(&key)
+    }
+
+    /// Clear all notification preferences for a user, reverting to defaults.
+    pub fn clear_notification_preferences(env: Env, user: Address) {
+        user.require_auth();
+        let key = DataKey::NotificationPrefs(user);
+        env.storage().persistent().remove(&key);
+    }
 }
 
 pub mod vesting;
@@ -3993,6 +4435,7 @@ mod vesting_test;
 #[cfg(test)]
 mod test_utils;
 
+#[cfg(test)]
 mod chunking_tests;
 mod test;
 mod test_auth;
