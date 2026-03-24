@@ -110,3 +110,87 @@ fn cliff_longer_than_duration_rejected() {
     let r = client.try_create_schedule(&admin, &beneficiary, &token_id, &1000, &1000, &2000, &1000);
     assert!(r.is_err());
 }
+
+/// **Issue #171:** Cliff boundary — no vesting at timestamps strictly before `cliff_time`;
+/// at exactly `cliff_time`, vested is still 0; linear uses `elapsed = now - cliff_time`.
+#[test]
+fn claimable_at_exact_cliff_timestamp_is_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, beneficiary, token_id) = setup(&env);
+    client.initialize_vesting(&admin);
+
+    let total = 1_000_000_i128;
+    let start = 1_000_u64;
+    let cliff = 500_u64;
+    let duration = 2_000_u64;
+    client.create_schedule(&admin, &beneficiary, &token_id, &total, &start, &cliff, &duration);
+
+    env.ledger().with_mut(|l| l.timestamp = start + cliff);
+    assert_eq!(client.get_claimable_vesting(&admin, &0), 0);
+}
+
+#[test]
+fn claimable_one_second_after_cliff_matches_linear_slice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, beneficiary, token_id) = setup(&env);
+    client.initialize_vesting(&admin);
+
+    let total = 1_000_000_i128;
+    let start = 1_000_u64;
+    let cliff = 500_u64;
+    let duration = 2_000_u64;
+    client.create_schedule(&admin, &beneficiary, &token_id, &total, &start, &cliff, &duration);
+
+    env.ledger().with_mut(|l| l.timestamp = start + cliff + 1);
+    let vesting_secs = duration - cliff;
+    let expected = (total as u128).saturating_mul(1).checked_div(vesting_secs as u128).unwrap() as i128;
+    assert_eq!(client.get_claimable_vesting(&admin, &0), expected);
+}
+
+#[test]
+fn claimable_last_second_before_end_one_step_below_full() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, beneficiary, token_id) = setup(&env);
+    client.initialize_vesting(&admin);
+
+    let total = 1_000_000_i128;
+    let start = 1_000_u64;
+    let cliff = 500_u64;
+    let duration = 2_000_u64;
+    client.create_schedule(&admin, &beneficiary, &token_id, &total, &start, &cliff, &duration);
+
+    let end = start + duration;
+    env.ledger().with_mut(|l| l.timestamp = end - 1);
+    let vesting_secs = duration - cliff;
+    let elapsed = (end - 1) - (start + cliff);
+    let expected = (total as u128).saturating_mul(elapsed as u128).checked_div(vesting_secs as u128).unwrap() as i128;
+    assert_eq!(client.get_claimable_vesting(&admin, &0), expected);
+    assert!(expected < total);
+}
+
+#[test]
+fn cliff_equals_duration_unlocks_full_amount_only_at_end() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, beneficiary, token_id) = setup(&env);
+    client.initialize_vesting(&admin);
+
+    let total = 10_000_i128;
+    let start = 100_u64;
+    let cliff = 1_000_u64;
+    let duration = 1_000_u64;
+    client.create_schedule(&admin, &beneficiary, &token_id, &total, &start, &cliff, &duration);
+
+    let cliff_time = start + cliff;
+    let end = start + duration;
+    assert_eq!(cliff_time, end);
+
+    env.ledger().with_mut(|l| l.timestamp = end - 1);
+    assert_eq!(client.get_claimable_vesting(&admin, &0), 0);
+
+    env.ledger().with_mut(|l| l.timestamp = end);
+    assert_eq!(client.get_claimable_vesting(&admin, &0), total);
+}

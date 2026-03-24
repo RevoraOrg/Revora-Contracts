@@ -62,8 +62,13 @@ impl RevoraVesting {
     }
 
     /// Create a vesting schedule. Admin only.
-    /// Linear vesting: amount vests linearly from start_time to end_time.
-    /// Cliff: nothing vests before cliff_time; after cliff, linear to end_time.
+    ///
+    /// **Cliff boundary (correctness):** Let `cliff_time = start_time + cliff_duration_secs`.
+    /// No tokens are vested for ledger timestamps `now` with `now < cliff_time`.
+    /// Linear accrual runs over `(cliff_time, end_time]` against `end_time = start_time + duration_secs`:
+    /// at `now == cliff_time` vested amount is **zero**; the first second with strictly positive
+    /// linear vesting is `cliff_time + 1` (subject to integer floor in the pro‑rata formula).
+    /// At `now >= end_time`, the full `total_amount` is vested.
     #[allow(clippy::too_many_arguments)]
     pub fn create_schedule(
         env: Env,
@@ -154,17 +159,27 @@ impl RevoraVesting {
         Ok(())
     }
 
-    /// Compute currently vested amount (linear from cliff to end).
+    /// Compute currently vested amount: **strictly before** `cliff_time` → `0`; from `cliff_time`
+    /// through `end_time - 1` → linear pro‑rata over `[cliff_time, end_time)`; at or after `end_time`
+    /// → `total_amount`.
     fn vested_amount(env: &Env, schedule: &VestingSchedule) -> i128 {
         let now = env.ledger().timestamp();
-        if now < schedule.cliff_time || schedule.cancelled {
+        if schedule.cancelled {
+            return 0;
+        }
+        // Inclusive of start, exclusive of cliff_time: same as timestamps in [start_time, cliff_time).
+        if now < schedule.cliff_time {
             return 0;
         }
         if now >= schedule.end_time {
             return schedule.total_amount;
         }
-        let vesting_duration = schedule.end_time - schedule.cliff_time;
-        let elapsed = now - schedule.cliff_time;
+        let vesting_duration = schedule.end_time.saturating_sub(schedule.cliff_time);
+        // Degenerate: cliff_time == end_time — only fully vested branch above applies; keep safe.
+        if vesting_duration == 0 {
+            return 0;
+        }
+        let elapsed = now.saturating_sub(schedule.cliff_time);
         let vested = (schedule.total_amount as u128)
             .saturating_mul(elapsed as u128)
             .checked_div(vesting_duration as u128)
