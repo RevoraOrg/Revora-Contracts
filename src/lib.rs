@@ -856,11 +856,12 @@ impl RevoraRevenueShare {
         env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false)
     }
 
-    /// Helper: panic if contract is paused. Used by state-mutating entrypoints.
-    fn require_not_paused(env: &Env) {
+    /// Helper: reject state mutations while the contract is paused.
+    fn require_not_paused(env: &Env) -> Result<(), RevoraError> {
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
-            panic!("contract is paused");
+            return Err(RevoraError::NotAuthorized);
         }
+        Ok(())
     }
 
     // ── Offering management ───────────────────────────────────
@@ -893,7 +894,7 @@ impl RevoraRevenueShare {
         supply_cap: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // Skip bps validation in testnet mode
@@ -1052,7 +1053,8 @@ impl RevoraRevenueShare {
         override_existing: bool,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
+        Self::require_non_negative_amount(amount)?;
         issuer.require_auth();
 
         let event_only = Self::is_event_only(&env);
@@ -1275,16 +1277,6 @@ impl RevoraRevenueShare {
             (payout_asset.clone(), amount, period_id),
         );
 
-        // Audit log summary (#34): maintain per-offering total revenue and report count
-        let summary_key = DataKey::AuditSummary(offering_id.clone());
-        let mut summary: AuditSummary = env
-            .storage()
-            .persistent()
-            .get(&summary_key)
-            .unwrap_or(AuditSummary { total_revenue: 0, report_count: 0 });
-        summary.total_revenue = summary.total_revenue.saturating_add(amount);
-        summary.report_count = summary.report_count.saturating_add(1);
-        env.storage().persistent().set(&summary_key, &summary);
         // Optionally emit versioned v1 events for forward-compatible consumers
         if Self::is_event_versioning_enabled(env.clone()) {
             env.events().publish(
@@ -1458,7 +1450,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -1467,11 +1459,12 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        if !Self::is_event_only(&env) {
-            let key = DataKey::Blacklist(offering_id.clone());
-            let mut map: Map<Address, bool> =
-                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+        let key = DataKey::Blacklist(offering_id.clone());
+        let mut map: Map<Address, bool> =
+            env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+        let was_present = map.get(investor.clone()).unwrap_or(false);
 
+        if !Self::is_event_only(&env) {
             map.set(investor.clone(), true);
             env.storage().persistent().set(&key, &map);
         }
@@ -1485,11 +1478,6 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
-            env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
-
-        let was_present = map.get(investor.clone()).unwrap_or(false);
         map.set(investor.clone(), true);
         env.storage().persistent().set(&key, &map);
 
@@ -1528,7 +1516,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -2324,7 +2312,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2383,7 +2371,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2942,43 +2930,8 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&count_key).unwrap_or(0)
     }
 
-    /// Test helper: insert a period entry and revenue without transferring tokens.
-    /// Only compiled in test builds to avoid affecting production contract.
-    #[cfg(test)]
-    pub fn test_insert_period(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        period_id: u64,
-        amount: i128,
-    ) {
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
-        };
-        // Append to indexed period list
-        let count_key = DataKey::PeriodCount(offering_id.clone());
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-        let entry_key = DataKey::PeriodEntry(offering_id.clone(), count);
-        env.storage().persistent().set(&entry_key, &period_id);
-        env.storage().persistent().set(&count_key, &(count + 1));
-
-        // Store period revenue and deposit time
-        let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
-        env.storage().persistent().set(&rev_key, &amount);
-        let time_key = DataKey::PeriodDepositTime(offering_id.clone(), period_id);
-        let deposit_time = env.ledger().timestamp();
-        env.storage().persistent().set(&time_key, &deposit_time);
-
-        // Update cumulative deposited revenue
-        let deposited_key = DataKey::DepositedRevenue(offering_id.clone());
-        let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
-        let new_deposited = deposited.saturating_add(amount);
-        env.storage().persistent().set(&deposited_key, &new_deposited);
-    }
-
+    // Test helper: insert a period entry and revenue without transferring tokens.
+    // Only compiled in test builds to avoid affecting production contract.
     // ── On-chain distribution simulation (#29) ────────────────────
 
     /// Read-only: simulate distribution for sample inputs without mutating state.
@@ -3441,6 +3394,11 @@ impl RevoraRevenueShare {
         let issuer_lookup_key = DataKey::OfferingIssuer(new_offering_id);
         env.storage().persistent().set(&issuer_lookup_key, &new_issuer);
 
+        // Keep old offering-id lookup pointing to the new issuer so old callers fail
+        // current-issuer checks after transfer.
+        let old_issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
+        env.storage().persistent().set(&old_issuer_lookup_key, &new_issuer);
+
         // Clear pending transfer
         env.storage().persistent().remove(&pending_key);
 
@@ -3674,7 +3632,7 @@ impl RevoraRevenueShare {
         metadata: String,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
 
         // Verify offering exists and issuer is current
         let offering_id = OfferingId {
@@ -3983,6 +3941,40 @@ impl RevoraRevenueShare {
         let _ = env;
         CONTRACT_VERSION
     }
+
+    /// Test helper: insert a period entry and revenue without transferring tokens.
+    /// Only available when the `testutils` feature is enabled.
+    #[cfg(feature = "testutils")]
+    pub fn test_insert_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+        amount: i128,
+    ) {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // Append to indexed period list
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let entry_key = DataKey::PeriodEntry(offering_id.clone(), count);
+        env.storage().persistent().set(&entry_key, &period_id);
+        env.storage().persistent().set(&count_key, &(count + 1));
+        // Store period revenue and deposit time
+        let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
+        env.storage().persistent().set(&rev_key, &amount);
+        let time_key = DataKey::PeriodDepositTime(offering_id.clone(), period_id);
+        let deposit_time = env.ledger().timestamp();
+        env.storage().persistent().set(&time_key, &deposit_time);
+        // Update cumulative deposited revenue
+        let deposited_key = DataKey::DepositedRevenue(offering_id.clone());
+        let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
+        env.storage().persistent().set(&deposited_key, &deposited.saturating_add(amount));
+    }
 }
 
 pub mod vesting;
@@ -3990,7 +3982,7 @@ pub mod vesting;
 #[cfg(test)]
 mod vesting_test;
 
-#[cfg(test)]
+    #[cfg(feature = "testutils")]
 mod test_utils;
 
 mod chunking_tests;

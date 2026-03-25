@@ -34,11 +34,21 @@ pub struct VestingSchedule {
     pub cancelled: bool,
 }
 
+/// Maximum schedules returned in a single `list_schedules_page` call.
+const MAX_SCHEDULES_PAGE: u32 = 50;
+
+/// Maximum schedules returned per beneficiary in a single `list_schedules_for_beneficiary` call.
+const MAX_SCHEDULES_PER_BENEFICIARY: u32 = 100;
+
 #[contracttype]
 pub enum VestingDataKey {
     Admin,
     ScheduleCount(Address),
     Schedule(Address, u32),
+    /// Number of schedule indices recorded for (admin, beneficiary). Secondary index.
+    BeneficiaryScheduleCount(Address, Address),
+    /// The global `schedule_index` stored at position `i` for (admin, beneficiary). Secondary index.
+    BeneficiaryScheduleItem(Address, Address, u32),
 }
 
 const EVENT_VESTING_CREATED: Symbol = symbol_short!("vest_crt");
@@ -112,6 +122,15 @@ impl RevoraVesting {
         let schedule_key = VestingDataKey::Schedule(admin.clone(), count);
         env.storage().persistent().set(&schedule_key, &schedule);
         env.storage().persistent().set(&count_key, &(count + 1));
+
+        // Maintain secondary beneficiary index (append-only).
+        let b_count_key =
+            VestingDataKey::BeneficiaryScheduleCount(admin.clone(), beneficiary.clone());
+        let b_count: u32 = env.storage().persistent().get(&b_count_key).unwrap_or(0);
+        let b_item_key =
+            VestingDataKey::BeneficiaryScheduleItem(admin.clone(), beneficiary.clone(), b_count);
+        env.storage().persistent().set(&b_item_key, &count);
+        env.storage().persistent().set(&b_count_key, &(b_count + 1));
 
         env.events().publish(
             (EVENT_VESTING_CREATED, admin, beneficiary),
@@ -237,5 +256,129 @@ impl RevoraVesting {
     /// Number of schedules created by an admin.
     pub fn get_schedule_count(env: Env, admin: Address) -> u32 {
         env.storage().persistent().get(&VestingDataKey::ScheduleCount(admin)).unwrap_or(0)
+    }
+
+    /// Return a paginated slice of all schedules for `admin`.
+    ///
+    /// - `start`: first index to return (0-based).
+    /// - `limit`: maximum items per page; clamped to [`MAX_SCHEDULES_PAGE`]. Pass `0` to use the
+    ///   maximum.
+    ///
+    /// Returns `(schedules, Some(next_start))` when a following page exists, or
+    /// `(schedules, None)` on the final page.
+    pub fn list_schedules_page(
+        env: Env,
+        admin: Address,
+        start: u32,
+        limit: u32,
+    ) -> (soroban_sdk::Vec<VestingSchedule>, Option<u32>) {
+        let count = Self::get_schedule_count(env.clone(), admin.clone());
+        if start >= count {
+            return (soroban_sdk::Vec::new(&env), None);
+        }
+        let effective_limit = match limit {
+            0 => MAX_SCHEDULES_PAGE,
+            l if l > MAX_SCHEDULES_PAGE => MAX_SCHEDULES_PAGE,
+            l => l,
+        };
+        let end = core::cmp::min(start.saturating_add(effective_limit), count);
+        let mut results = soroban_sdk::Vec::new(&env);
+        for i in start..end {
+            let key = VestingDataKey::Schedule(admin.clone(), i);
+            if let Some(schedule) = env.storage().persistent().get::<VestingDataKey, VestingSchedule>(&key) {
+                results.push_back(schedule);
+            }
+        }
+        let next_cursor = if end < count { Some(end) } else { None };
+        (results, next_cursor)
+    }
+
+    /// Number of schedules recorded under the secondary beneficiary index for `(admin, beneficiary)`.
+    ///
+    /// Returns 0 when no schedules exist. Does not require authentication.
+    pub fn get_beneficiary_schedule_count(env: Env, admin: Address, beneficiary: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&VestingDataKey::BeneficiaryScheduleCount(admin, beneficiary))
+            .unwrap_or(0)
+    }
+
+    /// Return all schedules assigned to `beneficiary` under `admin`.
+    ///
+    /// Results are ordered by creation time (ascending schedule index). Capped at
+    /// [`MAX_SCHEDULES_PER_BENEFICIARY`].
+    ///
+    /// Does not require authentication.
+    pub fn list_schedules_for_beneficiary(
+        env: Env,
+        admin: Address,
+        beneficiary: Address,
+    ) -> soroban_sdk::Vec<VestingSchedule> {
+        let b_count = Self::get_beneficiary_schedule_count(
+            env.clone(),
+            admin.clone(),
+            beneficiary.clone(),
+        );
+        let cap = core::cmp::min(b_count, MAX_SCHEDULES_PER_BENEFICIARY);
+        let mut results = soroban_sdk::Vec::new(&env);
+        for i in 0..cap {
+            let item_key =
+                VestingDataKey::BeneficiaryScheduleItem(admin.clone(), beneficiary.clone(), i);
+            if let Some(schedule_index) =
+                env.storage().persistent().get::<VestingDataKey, u32>(&item_key)
+            {
+                let sched_key = VestingDataKey::Schedule(admin.clone(), schedule_index);
+                if let Some(schedule) =
+                    env.storage().persistent().get::<VestingDataKey, VestingSchedule>(&sched_key)
+                {
+                    results.push_back(schedule);
+                }
+            }
+        }
+        results
+    }
+
+    /// Return only **active** schedules for `beneficiary` under `admin`.
+    ///
+    /// A schedule is _active_ when it is not cancelled and at least one of the following holds:
+    /// - tokens remain claimable (`vested − claimed > 0`), or
+    /// - vesting is still in progress (`now < end_time`).
+    ///
+    /// Capped at [`MAX_SCHEDULES_PER_BENEFICIARY`]. Does not require authentication.
+    pub fn active_schedules_for_beneficiary(
+        env: Env,
+        admin: Address,
+        beneficiary: Address,
+    ) -> soroban_sdk::Vec<VestingSchedule> {
+        let b_count = Self::get_beneficiary_schedule_count(
+            env.clone(),
+            admin.clone(),
+            beneficiary.clone(),
+        );
+        let cap = core::cmp::min(b_count, MAX_SCHEDULES_PER_BENEFICIARY);
+        let now = env.ledger().timestamp();
+        let mut results = soroban_sdk::Vec::new(&env);
+        for i in 0..cap {
+            let item_key =
+                VestingDataKey::BeneficiaryScheduleItem(admin.clone(), beneficiary.clone(), i);
+            if let Some(schedule_index) =
+                env.storage().persistent().get::<VestingDataKey, u32>(&item_key)
+            {
+                let sched_key = VestingDataKey::Schedule(admin.clone(), schedule_index);
+                if let Some(schedule) =
+                    env.storage().persistent().get::<VestingDataKey, VestingSchedule>(&sched_key)
+                {
+                    if schedule.cancelled {
+                        continue;
+                    }
+                    let vested = Self::vested_amount(&env, &schedule);
+                    let claimable = vested.saturating_sub(schedule.claimed_amount);
+                    if claimable > 0 || now < schedule.end_time {
+                        results.push_back(schedule);
+                    }
+                }
+            }
+        }
+        results
     }
 }
