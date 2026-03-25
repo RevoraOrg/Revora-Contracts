@@ -285,7 +285,9 @@ impl RevoraVesting {
         let mut results = soroban_sdk::Vec::new(&env);
         for i in start..end {
             let key = VestingDataKey::Schedule(admin.clone(), i);
-            if let Some(schedule) = env.storage().persistent().get::<VestingDataKey, VestingSchedule>(&key) {
+            if let Some(schedule) =
+                env.storage().persistent().get::<VestingDataKey, VestingSchedule>(&key)
+            {
                 results.push_back(schedule);
             }
         }
@@ -314,11 +316,8 @@ impl RevoraVesting {
         admin: Address,
         beneficiary: Address,
     ) -> soroban_sdk::Vec<VestingSchedule> {
-        let b_count = Self::get_beneficiary_schedule_count(
-            env.clone(),
-            admin.clone(),
-            beneficiary.clone(),
-        );
+        let b_count =
+            Self::get_beneficiary_schedule_count(env.clone(), admin.clone(), beneficiary.clone());
         let cap = core::cmp::min(b_count, MAX_SCHEDULES_PER_BENEFICIARY);
         let mut results = soroban_sdk::Vec::new(&env);
         for i in 0..cap {
@@ -350,11 +349,8 @@ impl RevoraVesting {
         admin: Address,
         beneficiary: Address,
     ) -> soroban_sdk::Vec<VestingSchedule> {
-        let b_count = Self::get_beneficiary_schedule_count(
-            env.clone(),
-            admin.clone(),
-            beneficiary.clone(),
-        );
+        let b_count =
+            Self::get_beneficiary_schedule_count(env.clone(), admin.clone(), beneficiary.clone());
         let cap = core::cmp::min(b_count, MAX_SCHEDULES_PER_BENEFICIARY);
         let now = env.ledger().timestamp();
         let mut results = soroban_sdk::Vec::new(&env);

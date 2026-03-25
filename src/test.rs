@@ -72,14 +72,7 @@ fn register_offering_emits_exact_event() {
     let payout_asset = Address::generate(&env);
     let bps: u32 = 1_500;
 
-    client.register_offering(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &bps,
-        &payout_asset,
-        &0,
-    );
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &payout_asset, &0);
 
     let events = env.events().all();
     let expected = (
@@ -365,14 +358,8 @@ fn same_issuer_different_tokens() {
     client.report_revenue(&issuer, &symbol_short!("def"), &token_x, &token_x, &500_000, &1, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token_y, &token_y, &750_000, &1, &false);
 
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_x, &1),
-        500_000
-    );
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_y, &1),
-        750_000
-    );
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_x, &1), 500_000);
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_y, &1), 750_000);
     let events = env.events().all();
     let rev_rep_val: soroban_sdk::Val = symbol_short!("rev_rep").into_val(&env);
     assert!(events.iter().any(|e| e.1.contains(rev_rep_val)));
@@ -394,10 +381,7 @@ fn topic_symbols_are_distinct() {
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &1_000_000, &1, &false);
 
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1),
-        1_000_000
-    );
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1), 1_000_000);
     let events = env.events().all();
     let offer_reg_val: soroban_sdk::Val = symbol_short!("offer_reg").into_val(&env);
     let rev_init_val: soroban_sdk::Val = symbol_short!("rev_init").into_val(&env);
@@ -421,10 +405,7 @@ fn rev_rep_topics_include_token_address() {
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &999, &7, &false);
 
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &7),
-        999
-    );
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &7), 999);
     let events = env.events().all();
     let rev_rep_val: soroban_sdk::Val = symbol_short!("rev_rep").into_val(&env);
     assert!(events.iter().any(|e| e.1.contains(rev_rep_val)));
@@ -491,10 +472,7 @@ fn zero_amount_revenue_report() {
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &0, &1, &false);
 
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1),
-        0
-    );
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1), 0);
     assert!(!env.events().all().is_empty());
 }
 
@@ -3939,10 +3917,7 @@ fn issuer_transfer_new_issuer_can_set_holder_share() {
     let result =
         client.try_set_holder_share(&new_issuer, &symbol_short!("def"), &token, &holder, &5_000);
     assert!(result.is_ok());
-    assert_eq!(
-        client.get_holder_share(&new_issuer, &symbol_short!("def"), &token, &holder),
-        5_000
-    );
+    assert_eq!(client.get_holder_share(&new_issuer, &symbol_short!("def"), &token, &holder), 5_000);
 }
 
 #[test]
@@ -5088,8 +5063,14 @@ fn register_blocked_while_paused() {
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.pause_admin(&admin);
-    let result =
-        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+    );
     assert!(result.is_err());
 }
 
@@ -7687,7 +7668,15 @@ mod scenarios {
         // 2. Report revenue for period 1
         // total_revenue = 1,000,000
         // distributable = 1,000,000 * 50% = 500,000
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &1_000_000, &1, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &1_000_000,
+            &1,
+            &false,
+        );
 
         // 3. Investors set their shares for period 1 (Total supply 100)
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_a, &60); // 60%
@@ -7696,7 +7685,15 @@ mod scenarios {
         // 4. Report revenue for period 2
         // total_revenue = 2,000,000
         // distributable = 2,000,000 * 50% = 1,000,000
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &2_000_000, &2, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &2_000_000,
+            &2,
+            &false,
+        );
 
         // 5. Investors' shares shift for period 2
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_a, &20); // 20%
@@ -7721,9 +7718,11 @@ mod scenarios {
         assert_eq!(payout_b, 1_000_000);
 
         // Verify no pending claims
-        let remaining_a = client.get_pending_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
+        let remaining_a =
+            client.get_pending_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
         assert!(remaining_a.is_empty());
-        let claimable_b_after = client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor_b);
+        let claimable_b_after =
+            client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor_b);
         assert_eq!(claimable_b_after, 0);
 
         // Verify aggregation totals
@@ -7745,14 +7744,37 @@ mod scenarios {
         let investor = Address::generate(&env);
 
         // 1. Offering registered with 100% revenue share and a time delay (86400 secs)
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payout_asset, &86400);
+        client.register_offering(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &10_000,
+            &payout_asset,
+            &86400,
+        );
 
         // 2. Issuer attempts to report negative revenue (validation should reject)
-        let res = client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &-500, &1, &false);
+        let res = client.try_report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &-500,
+            &1,
+            &false,
+        );
         assert!(res.is_err());
 
         // 3. Issuer successfully reports valid revenue for period 1
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &100_000,
+            &1,
+            &false,
+        );
 
         // 4. Investor is assigned 100% share for period 1
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor, &100);
@@ -7767,12 +7789,24 @@ mod scenarios {
         env.ledger().with_mut(|l| l.timestamp = l.timestamp + 2 * 86400);
 
         // 7. Issuer corrects the revenue report for period 1 via override (changes to 50_000)
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &50_000, &1, &true);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &50_000,
+            &1,
+            &true,
+        );
 
         // 8. Investor successfully claims after delay and override
-        let claim_preview_after = client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor);
-        assert_eq!(claim_preview_after, 50_000, "Preview should reflect overridden amount and passed delay");
-        
+        let claim_preview_after =
+            client.get_claimable(&issuer, &symbol_short!("def"), &token, &investor);
+        assert_eq!(
+            claim_preview_after, 50_000,
+            "Preview should reflect overridden amount and passed delay"
+        );
+
         let payout = client.claim(&investor, &issuer, &symbol_short!("def"), &token, &0);
         assert_eq!(payout, 50_000);
 
@@ -7780,13 +7814,21 @@ mod scenarios {
         client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
 
         // 10. Issuer reports revenue for period 2
-        client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200_000, &2, &false);
+        client.report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payout_asset,
+            &200_000,
+            &2,
+            &false,
+        );
         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor, &100);
 
         // 11. Investor attempts claim but is blocked by blacklist
         env.ledger().with_mut(|l| l.timestamp = l.timestamp + 2 * 86400); // pass delay
-        let claim_res_blocked = client.try_claim(&investor, &issuer, &symbol_short!("def"), &token, &0);
+        let claim_res_blocked =
+            client.try_claim(&investor, &issuer, &symbol_short!("def"), &token, &0);
         assert!(claim_res_blocked.is_err(), "Claim should fail due to blacklist");
     }
 }
-
