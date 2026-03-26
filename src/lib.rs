@@ -624,7 +624,7 @@ fn record_gas_measurement(
     }
 
     let measurement = GasMeasurement {
-        operation_type: operation_type.clone(),
+        operation_type,
         gas_used,
         timestamp: env.ledger().timestamp(),
         items_processed,
@@ -632,7 +632,7 @@ fn record_gas_measurement(
     };
 
     // Store the measurement
-    let measurements_key = GasDataKey::Measurements(operation_type.clone());
+    let measurements_key = GasDataKey::Measurements(operation_type);
     let mut measurements: Vec<GasMeasurement> = env
         .storage()
         .persistent()
@@ -659,7 +659,7 @@ fn record_gas_measurement(
 
     // Emit measurement event
     env.events().publish(
-        (EVENT_GAS_MEASURED, operation_type.clone()),
+        (EVENT_GAS_MEASURED, operation_type),
         (gas_used, items_processed),
     );
 
@@ -673,7 +673,7 @@ fn update_gas_stats(
     gas_used: u64,
     items_processed: u32,
 ) -> Result<(), RevoraError> {
-    let stats_key = GasDataKey::Stats(operation_type.clone());
+    let stats_key = GasDataKey::Stats(operation_type);
     let mut stats: Option<GasStats> = env.storage().persistent().get(&stats_key);
 
     let now = env.ledger().timestamp();
@@ -701,7 +701,7 @@ fn update_gas_stats(
     } else {
         // Create new stats
         stats = Some(GasStats {
-            operation_type: operation_type.clone(),
+            operation_type,
             measurement_count: 1,
             avg_gas_used: gas_used,
             min_gas_used: gas_used,
@@ -4420,11 +4420,11 @@ impl RevoraRevenueShare {
         }
         admin.require_auth();
         
-        let key = GasDataKey::Thresholds(thresholds.operation_type.clone());
+        let key = GasDataKey::Thresholds(thresholds.operation_type);
         env.storage().persistent().set(&key, &thresholds);
         
         env.events().publish(
-            (EVENT_GAS_THRESHOLDS_SET, thresholds.operation_type.clone()),
+            (EVENT_GAS_THRESHOLDS_SET, thresholds.operation_type),
             (thresholds.warning_threshold, thresholds.critical_threshold),
         );
         
@@ -4452,7 +4452,7 @@ impl RevoraRevenueShare {
     /// ### Returns
     /// - `GasThresholds`: Current thresholds (uses defaults if not set).
     pub fn get_gas_thresholds(env: Env, operation_type: GasOperationType) -> GasThresholds {
-        let key = GasDataKey::Thresholds(operation_type.clone());
+        let key = GasDataKey::Thresholds(operation_type);
         env.storage()
             .persistent()
             .get(&key)
@@ -4509,11 +4509,11 @@ impl RevoraRevenueShare {
         ];
         
         for op_type in operation_types.iter() {
-            if let Some(stats) = Self::get_gas_stats(env.clone(), op_type.clone()) {
+            if let Some(stats) = Self::get_gas_stats(env.clone(), *op_type) {
                 total_measurements += stats.measurement_count;
                 operation_stats.push_back(stats);
             }
-            thresholds.push_back(Self::get_gas_thresholds(env.clone(), op_type.clone()));
+            thresholds.push_back(Self::get_gas_thresholds(env.clone(), *op_type));
         }
         
         let report = GasCharacterizationReport {
@@ -4606,9 +4606,9 @@ impl RevoraRevenueShare {
         ];
         
         for op_type in operation_types.iter() {
-            env.storage().persistent().remove(&GasDataKey::Measurements(op_type.clone()));
-            env.storage().persistent().remove(&GasDataKey::Stats(op_type.clone()));
-            env.storage().persistent().remove(&GasDataKey::Thresholds(op_type.clone()));
+            env.storage().persistent().remove(&GasDataKey::Measurements(*op_type));
+            env.storage().persistent().remove(&GasDataKey::Stats(*op_type));
+            env.storage().persistent().remove(&GasDataKey::Thresholds(*op_type));
         }
         
         env.storage().persistent().remove(&GasDataKey::Count);
