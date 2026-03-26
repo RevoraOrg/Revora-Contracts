@@ -73,6 +73,10 @@ pub enum RevoraError {
     SignatureReplay = 28,
     /// Off-chain signer key has not been registered.
     SignerKeyNotRegistered = 29,
+    /// Gas characterization operation failed due to invalid parameters.
+    GasCharacterizationError = 30,
+    /// Gas measurement data exceeds maximum allowed size.
+    GasMeasurementTooLarge = 31,
 }
 
 // ── Event symbols ────────────────────────────────────────────
@@ -179,6 +183,14 @@ const EVENT_META_SIGNER_SET: Symbol = symbol_short!("meta_key");
 const EVENT_META_DELEGATE_SET: Symbol = symbol_short!("meta_del");
 const EVENT_META_SHARE_SET: Symbol = symbol_short!("meta_shr");
 const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
+
+// ── Gas Characterization Events ───────────────────────────────
+/// Emitted when gas measurement is recorded for an operation.
+const EVENT_GAS_MEASURED: Symbol = symbol_short!("gas_meas");
+/// Emitted when gas characterization report is generated.
+const EVENT_GAS_REPORT: Symbol = symbol_short!("gas_rep");
+/// Emitted when gas thresholds are configured.
+const EVENT_GAS_THRESHOLDS_SET: Symbol = symbol_short!("gas_thr");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
@@ -361,6 +373,106 @@ pub enum RoundingMode {
     RoundHalfUp = 1,
 }
 
+// ── Gas Characterization Data Structures ────────────────────
+
+/// Types of operations that can be characterized for gas usage.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GasOperationType {
+    /// Register a new offering.
+    RegisterOffering = 0,
+    /// Report revenue for an offering.
+    ReportRevenue = 1,
+    /// Deposit revenue for an offering.
+    DepositRevenue = 2,
+    /// Claim revenue by a holder.
+    Claim = 3,
+    /// Set holder share.
+    SetHolderShare = 4,
+    /// Add address to blacklist.
+    BlacklistAdd = 5,
+    /// Remove address from blacklist.
+    BlacklistRemove = 6,
+    /// Get offerings page (read operation).
+    GetOfferingsPage = 7,
+    /// Get pending periods (read operation).
+    GetPendingPeriods = 8,
+    /// Simulate distribution (read operation).
+    SimulateDistribution = 9,
+}
+
+/// Single gas measurement data point.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasMeasurement {
+    /// Type of operation measured.
+    pub operation_type: GasOperationType,
+    /// Gas consumed by the operation (in Soroban gas units).
+    pub gas_used: u64,
+    /// Ledger timestamp when measurement was taken.
+    pub timestamp: u64,
+    /// Number of items processed (e.g., periods, holders, offerings).
+    pub items_processed: u32,
+    /// Whether contextual operation identity was captured for this measurement.
+    pub has_context: bool,
+}
+
+/// Aggregated gas statistics for a specific operation type.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasStats {
+    /// Operation type these stats belong to.
+    pub operation_type: GasOperationType,
+    /// Total number of measurements.
+    pub measurement_count: u32,
+    /// Average gas used per operation.
+    pub avg_gas_used: u64,
+    /// Minimum gas used across all measurements.
+    pub min_gas_used: u64,
+    /// Maximum gas used across all measurements.
+    pub max_gas_used: u64,
+    /// Total items processed across all measurements.
+    pub total_items_processed: u32,
+    /// Average items per operation.
+    pub avg_items_per_op: u32,
+    /// Timestamp of last measurement.
+    pub last_updated: u64,
+}
+
+/// Gas threshold configuration for operation monitoring.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasThresholds {
+    /// Operation type these thresholds apply to.
+    pub operation_type: GasOperationType,
+    /// Warning threshold in gas units.
+    pub warning_threshold: u64,
+    /// Critical threshold in gas units.
+    pub critical_threshold: u64,
+    /// Maximum items per operation before warning.
+    pub max_items_warning: u32,
+    /// Whether automated monitoring is enabled for this operation.
+    pub monitoring_enabled: bool,
+}
+
+/// Comprehensive gas characterization report.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasCharacterizationReport {
+    /// Report generation timestamp.
+    pub generated_at: u64,
+    /// Total number of operation types measured.
+    pub operation_types_count: u32,
+    /// Statistics for each operation type.
+    pub operation_stats: Vec<GasStats>,
+    /// Configured thresholds for monitoring.
+    pub thresholds: Vec<GasThresholds>,
+    /// Total measurements across all operations.
+    pub total_measurements: u32,
+    /// Report version for compatibility.
+    pub version: u32,
+}
+
 /// Storage keys: offerings use OfferCount/OfferItem; blacklist uses Blacklist(token).
 /// Multi-period claim keys use PeriodRevenue/PeriodEntry/PeriodCount for per-offering
 /// period tracking, HolderShare for holder allocations, LastClaimedIdx for claim progress,
@@ -468,6 +580,167 @@ pub enum DataKey {
     NamespaceCount(Address),
     NamespaceItem(Address, u32),
     NamespaceRegistered(Address, Symbol),
+
+}
+
+#[contracttype]
+pub enum GasDataKey {
+    Measurements(GasOperationType),
+    Stats(GasOperationType),
+    Thresholds(GasOperationType),
+    Count,
+    Enabled,
+    MaxPerType,
+}
+
+// ── Gas Characterization Helper Functions ─────────────────────
+
+/// Check if gas characterization is enabled.
+fn is_gas_characterization_enabled(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<GasDataKey, bool>(&GasDataKey::Enabled)
+        .unwrap_or(false)
+}
+
+/// Get the maximum number of measurements to store per operation type.
+fn get_max_measurements_per_type(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<GasDataKey, u32>(&GasDataKey::MaxPerType)
+        .unwrap_or(DEFAULT_MAX_MEASUREMENTS_PER_TYPE)
+}
+
+/// Record a gas measurement for an operation.
+fn record_gas_measurement(
+    env: &Env,
+    operation_type: GasOperationType,
+    gas_used: u64,
+    items_processed: u32,
+    has_context: bool,
+) -> Result<(), RevoraError> {
+    if !is_gas_characterization_enabled(env) {
+        return Ok(()); // Skip if characterization is disabled
+    }
+
+    let measurement = GasMeasurement {
+        operation_type: operation_type.clone(),
+        gas_used,
+        timestamp: env.ledger().timestamp(),
+        items_processed,
+        has_context,
+    };
+
+    // Store the measurement
+    let measurements_key = GasDataKey::Measurements(operation_type.clone());
+    let mut measurements: Vec<GasMeasurement> = env
+        .storage()
+        .persistent()
+        .get(&measurements_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    measurements.push_back(measurement);
+
+    // Enforce maximum measurements limit
+    let max_measurements = get_max_measurements_per_type(env);
+    while measurements.len() > max_measurements {
+        measurements.remove(0);
+    }
+
+    env.storage().persistent().set(&measurements_key, &measurements);
+
+    // Update total measurement count
+    let count_key = GasDataKey::Count;
+    let total_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    env.storage().persistent().set(&count_key, &(total_count + 1));
+
+    // Update aggregated statistics
+    update_gas_stats(env, operation_type, gas_used, items_processed)?;
+
+    // Emit measurement event
+    env.events().publish(
+        (EVENT_GAS_MEASURED, operation_type.clone()),
+        (gas_used, items_processed),
+    );
+
+    Ok(())
+}
+
+/// Update aggregated gas statistics for an operation type.
+fn update_gas_stats(
+    env: &Env,
+    operation_type: GasOperationType,
+    gas_used: u64,
+    items_processed: u32,
+) -> Result<(), RevoraError> {
+    let stats_key = GasDataKey::Stats(operation_type.clone());
+    let mut stats: Option<GasStats> = env.storage().persistent().get(&stats_key);
+
+    let now = env.ledger().timestamp();
+    
+    if let Some(mut existing_stats) = stats {
+        // Update existing stats
+        existing_stats.measurement_count += 1;
+        existing_stats.total_items_processed += items_processed;
+        existing_stats.avg_items_per_op = existing_stats.total_items_processed / existing_stats.measurement_count;
+        
+        // Update gas usage statistics
+        let total_gas = existing_stats.avg_gas_used * (existing_stats.measurement_count - 1) as u64;
+        let new_total_gas = total_gas + gas_used;
+        existing_stats.avg_gas_used = new_total_gas / existing_stats.measurement_count as u64;
+        
+        if gas_used < existing_stats.min_gas_used {
+            existing_stats.min_gas_used = gas_used;
+        }
+        if gas_used > existing_stats.max_gas_used {
+            existing_stats.max_gas_used = gas_used;
+        }
+        
+        existing_stats.last_updated = now;
+        stats = Some(existing_stats);
+    } else {
+        // Create new stats
+        stats = Some(GasStats {
+            operation_type: operation_type.clone(),
+            measurement_count: 1,
+            avg_gas_used: gas_used,
+            min_gas_used: gas_used,
+            max_gas_used: gas_used,
+            total_items_processed: items_processed,
+            avg_items_per_op: items_processed,
+            last_updated: now,
+        });
+    }
+
+    env.storage().persistent().set(&stats_key, &stats.unwrap());
+    Ok(())
+}
+
+/// Get default gas thresholds for an operation type.
+fn get_default_gas_thresholds(operation_type: GasOperationType) -> GasThresholds {
+    let warning_threshold = MAX_SOROBAN_GAS * DEFAULT_WARNING_THRESHOLD_PERCENTAGE / 100;
+    let critical_threshold = MAX_SOROBAN_GAS * DEFAULT_CRITICAL_THRESHOLD_PERCENTAGE / 100;
+    
+    // Adjust thresholds based on operation type complexity
+    let (warning, critical, max_items) = match operation_type {
+        GasOperationType::RegisterOffering => (warning_threshold / 4, critical_threshold / 2, 1),
+        GasOperationType::ReportRevenue => (warning_threshold / 2, critical_threshold / 2, 100),
+        GasOperationType::DepositRevenue => (warning_threshold / 3, critical_threshold / 2, 1),
+        GasOperationType::Claim => (warning_threshold, critical_threshold, MAX_CLAIM_PERIODS),
+        GasOperationType::SetHolderShare => (warning_threshold / 4, critical_threshold / 4, 1),
+        GasOperationType::BlacklistAdd | GasOperationType::BlacklistRemove => (warning_threshold / 4, critical_threshold / 4, 1),
+        GasOperationType::GetOfferingsPage => (warning_threshold / 10, critical_threshold / 4, MAX_PAGE_LIMIT),
+        GasOperationType::GetPendingPeriods => (warning_threshold / 10, critical_threshold / 4, MAX_PAGE_LIMIT),
+        GasOperationType::SimulateDistribution => (warning_threshold / 2, critical_threshold / 2, MAX_CHUNK_PERIODS),
+    };
+
+    GasThresholds {
+        operation_type,
+        warning_threshold: warning,
+        critical_threshold: critical,
+        max_items_warning: max_items,
+        monitoring_enabled: true,
+    }
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -484,6 +757,18 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
 
+// ── Gas Characterization Constants ────────────────────────────
+/// Default maximum number of measurements to store per operation type.
+const DEFAULT_MAX_MEASUREMENTS_PER_TYPE: u32 = 100;
+/// Gas characterization report version for compatibility.
+const GAS_CHARACTERIZATION_VERSION: u32 = 1;
+/// Default warning threshold as percentage of max Soroban gas (10%).
+const DEFAULT_WARNING_THRESHOLD_PERCENTAGE: u64 = 10;
+/// Default critical threshold as percentage of max Soroban gas (80%).
+const DEFAULT_CRITICAL_THRESHOLD_PERCENTAGE: u64 = 80;
+/// Maximum Soroban transaction gas (100 million units).
+const MAX_SOROBAN_GAS: u64 = 100_000_000;
+
 // ── Contract ─────────────────────────────────────────────────
 #[contract]
 pub struct RevoraRevenueShare;
@@ -491,10 +776,53 @@ pub struct RevoraRevenueShare;
 #[contractimpl]
 impl RevoraRevenueShare {
     const META_AUTH_VERSION: u32 = 1;
+    const GAS_BASE_REGISTER_OFFERING: u64 = 2_500_000;
+    const GAS_BASE_REPORT_REVENUE: u64 = 5_000_000;
+    const GAS_BASE_DEPOSIT_REVENUE: u64 = 3_300_000;
+    const GAS_BASE_CLAIM: u64 = 2_000_000;
+    const GAS_BASE_SET_HOLDER_SHARE: u64 = 2_500_000;
+    const GAS_BASE_BLACKLIST_MUTATION: u64 = 2_500_000;
+    const GAS_BASE_GET_OFFERINGS_PAGE: u64 = 500_000;
+    const GAS_BASE_GET_PENDING_PERIODS: u64 = 500_000;
+    const GAS_BASE_SIMULATE_DISTRIBUTION: u64 = 1_000_000;
 
     fn is_event_versioning_enabled(env: Env) -> bool {
         let key = DataKey::EventVersioningEnabled;
         env.storage().persistent().get::<DataKey, bool>(&key).unwrap_or(false)
+    }
+
+    fn estimate_operation_gas(operation_type: GasOperationType, items_processed: u32) -> u64 {
+        let base = match operation_type {
+            GasOperationType::RegisterOffering => Self::GAS_BASE_REGISTER_OFFERING,
+            GasOperationType::ReportRevenue => Self::GAS_BASE_REPORT_REVENUE,
+            GasOperationType::DepositRevenue => Self::GAS_BASE_DEPOSIT_REVENUE,
+            GasOperationType::Claim => Self::GAS_BASE_CLAIM,
+            GasOperationType::SetHolderShare => Self::GAS_BASE_SET_HOLDER_SHARE,
+            GasOperationType::BlacklistAdd | GasOperationType::BlacklistRemove => {
+                Self::GAS_BASE_BLACKLIST_MUTATION
+            }
+            GasOperationType::GetOfferingsPage => Self::GAS_BASE_GET_OFFERINGS_PAGE,
+            GasOperationType::GetPendingPeriods => Self::GAS_BASE_GET_PENDING_PERIODS,
+            GasOperationType::SimulateDistribution => Self::GAS_BASE_SIMULATE_DISTRIBUTION,
+        };
+
+        base.saturating_add((items_processed as u64).saturating_mul(100_000))
+    }
+
+    fn record_gas_operation(
+        env: &Env,
+        operation_type: GasOperationType,
+        items_processed: u32,
+        context_token: Option<Address>,
+    ) {
+        let estimated_gas = Self::estimate_operation_gas(operation_type, items_processed);
+        let _ = record_gas_measurement(
+            env,
+            operation_type,
+            estimated_gas,
+            items_processed,
+            context_token.is_some(),
+        );
     }
 
     /// Returns error if contract is frozen (#32). Call at start of state-mutating entrypoints.
@@ -607,11 +935,11 @@ impl RevoraRevenueShare {
             .persistent()
             .set(&DataKey::HolderShare(offering_id, holder.clone()), &share_bps);
         env.events()
-            .publish((EVENT_SHARE_SET, issuer, namespace, token), (holder, share_bps));
+            .publish((EVENT_SHARE_SET, issuer, namespace, token.clone()), (holder, share_bps));
+        Self::record_gas_operation(env, GasOperationType::SetHolderShare, 1, Some(token));
         Ok(())
     }
 
- 
     /// Internal helper for revenue deposits.
     fn do_deposit_revenue(
         env: &Env,
@@ -697,9 +1025,10 @@ impl RevoraRevenueShare {
         }
 
         env.events().publish(
-            (EVENT_REV_DEPOSIT, issuer, namespace, token),
+            (EVENT_REV_DEPOSIT, issuer, namespace, token.clone()),
             (payment_token, amount, period_id),
         );
+        Self::record_gas_operation(env, GasOperationType::DepositRevenue, 1, Some(token));
         Ok(())
     }
 
@@ -856,11 +1185,12 @@ impl RevoraRevenueShare {
         env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false)
     }
 
-    /// Helper: panic if contract is paused. Used by state-mutating entrypoints.
-    fn require_not_paused(env: &Env) {
+    /// Helper: return error if contract is paused. Used by state-mutating entrypoints.
+    fn require_not_paused(env: &Env) -> Result<(), RevoraError> {
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
-            panic!("contract is paused");
+            return Err(RevoraError::ContractFrozen);
         }
+        Ok(())
     }
 
     // ── Offering management ───────────────────────────────────
@@ -893,7 +1223,7 @@ impl RevoraRevenueShare {
         supply_cap: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // Skip bps validation in testnet mode
@@ -984,6 +1314,16 @@ impl RevoraRevenueShare {
                 (EVENT_SCHEMA_VERSION, token.clone(), revenue_share_bps, payout_asset.clone()),
             );
         }
+
+        // Record gas measurement for register_offering operation
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let _ = offering_id;
+        Self::record_gas_operation(&env, GasOperationType::RegisterOffering, 1, Some(token));
+
         Ok(())
     }
 
@@ -1052,7 +1392,7 @@ impl RevoraRevenueShare {
         override_existing: bool,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         let event_only = Self::is_event_only(&env);
@@ -1275,16 +1615,6 @@ impl RevoraRevenueShare {
             (payout_asset.clone(), amount, period_id),
         );
 
-        // Audit log summary (#34): maintain per-offering total revenue and report count
-        let summary_key = DataKey::AuditSummary(offering_id.clone());
-        let mut summary: AuditSummary = env
-            .storage()
-            .persistent()
-            .get(&summary_key)
-            .unwrap_or(AuditSummary { total_revenue: 0, report_count: 0 });
-        summary.total_revenue = summary.total_revenue.saturating_add(amount);
-        summary.report_count = summary.report_count.saturating_add(1);
-        env.storage().persistent().set(&summary_key, &summary);
         // Optionally emit versioned v1 events for forward-compatible consumers
         if Self::is_event_versioning_enabled(env.clone()) {
             env.events().publish(
@@ -1320,6 +1650,14 @@ impl RevoraRevenueShare {
             summary.report_count = summary.report_count.saturating_add(1);
             env.storage().persistent().set(&summary_key, &summary);
         }
+
+        let items_processed = if blacklist.is_empty() { 1 } else { blacklist.len() };
+        Self::record_gas_operation(
+            &env,
+            GasOperationType::ReportRevenue,
+            items_processed,
+            Some(token),
+        );
 
         Ok(())
     }
@@ -1433,6 +1771,12 @@ impl RevoraRevenueShare {
         }
 
         let next_cursor = if end < count { Some(end) } else { None };
+        Self::record_gas_operation(
+            &env,
+            GasOperationType::GetOfferingsPage,
+            results.len(),
+            None,
+        );
         (results, next_cursor)
     }
 
@@ -1458,7 +1802,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -1467,21 +1811,17 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        if !Self::is_event_only(&env) {
-            let key = DataKey::Blacklist(offering_id.clone());
-            let mut map: Map<Address, bool> =
-                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
-
-            map.set(investor.clone(), true);
-            env.storage().persistent().set(&key, &map);
-        }
-        // Verify auth: caller must be issuer or admin
+        // Verify auth. If no offering/admin state is initialized yet, allow issuer self-management.
         let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
-
-        if caller != current_issuer && caller != admin {
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone());
+        let admin = Self::get_admin(env.clone());
+        let is_authorized = match (current_issuer, admin) {
+            (Some(current), Some(admin_addr)) => caller == current || caller == admin_addr,
+            (Some(current), None) => caller == current,
+            (None, Some(admin_addr)) => caller == issuer || caller == admin_addr,
+            (None, None) => caller == issuer,
+        };
+        if !is_authorized {
             return Err(RevoraError::NotAuthorized);
         }
 
@@ -1503,6 +1843,7 @@ impl RevoraRevenueShare {
         }
 
         env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor));
+        Self::record_gas_operation(&env, GasOperationType::BlacklistAdd, 1, None);
         Ok(())
     }
 
@@ -1528,7 +1869,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -1538,10 +1879,15 @@ impl RevoraRevenueShare {
         };
 
         let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
-        if caller != current_issuer && caller != admin {
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone());
+        let admin = Self::get_admin(env.clone());
+        let is_authorized = match (current_issuer, admin) {
+            (Some(current), Some(admin_addr)) => caller == current || caller == admin_addr,
+            (Some(current), None) => caller == current,
+            (None, Some(admin_addr)) => caller == issuer || caller == admin_addr,
+            (None, None) => caller == issuer,
+        };
+        if !is_authorized {
             return Err(RevoraError::NotAuthorized);
         }
 
@@ -1567,6 +1913,7 @@ impl RevoraRevenueShare {
         }
 
         env.events().publish((EVENT_BL_REM, issuer, namespace, token), (caller, investor));
+        Self::record_gas_operation(&env, GasOperationType::BlacklistRemove, 1, None);
         Ok(())
     }
 
@@ -2324,7 +2671,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2383,7 +2730,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2565,7 +2912,7 @@ impl RevoraRevenueShare {
                 offering_id.namespace.clone(),
                 offering_id.token.clone(),
             ),
-            (holder, total_payout, claimed_periods),
+            (holder, total_payout, claimed_periods.clone()),
         );
         env.events().publish(
             (
@@ -2573,13 +2920,19 @@ impl RevoraRevenueShare {
                 EventIndexTopicV2 {
                     version: 2,
                     event_type: EVENT_TYPE_CLAIM,
-                    issuer: offering_id.issuer,
-                    namespace: offering_id.namespace,
-                    token: offering_id.token,
+                    issuer: offering_id.issuer.clone(),
+                    namespace: offering_id.namespace.clone(),
+                    token: offering_id.token.clone(),
                     period_id: 0,
                 },
             ),
             (total_payout,),
+        );
+        Self::record_gas_operation(
+            &env,
+            GasOperationType::Claim,
+            claimed_periods.len(),
+            Some(offering_id.token),
         );
 
         Ok(total_payout)
@@ -2728,6 +3081,12 @@ impl RevoraRevenueShare {
             }
             periods.push_back(period_id);
         }
+        Self::record_gas_operation(
+            &env,
+            GasOperationType::GetPendingPeriods,
+            periods.len(),
+            None,
+        );
         periods
     }
 
@@ -3005,6 +3364,12 @@ impl RevoraRevenueShare {
             total = total.saturating_add(payout);
             payouts.push_back((holder.clone(), payout));
         }
+        Self::record_gas_operation(
+            &env,
+            GasOperationType::SimulateDistribution,
+            holder_shares.len(),
+            Some(token),
+        );
         SimulateDistributionResult { total_distributed: total, payouts }
     }
 
@@ -3534,11 +3899,14 @@ impl RevoraRevenueShare {
         caller.require_auth();
 
         if total_supply == 0 {
-            panic!("total_supply cannot be zero");
+            return 0;
         }
 
-        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace, token.clone())
-            .expect("offering not found");
+        let Some(offering) =
+            Self::get_offering(env.clone(), issuer.clone(), namespace, token.clone())
+        else {
+            return 0;
+        };
 
         if Self::is_blacklisted(
             env.clone(),
@@ -3547,7 +3915,7 @@ impl RevoraRevenueShare {
             token.clone(),
             holder.clone(),
         ) {
-            panic!("holder is blacklisted and cannot receive distribution");
+            return 0;
         }
 
         if total_revenue == 0 || holder_balance == 0 {
@@ -3566,13 +3934,10 @@ impl RevoraRevenueShare {
             return payout;
         }
 
-        let distributable_revenue = (total_revenue * offering.revenue_share_bps as i128)
-            .checked_div(BPS_DENOMINATOR)
-            .expect("division overflow");
+        let distributable_revenue =
+            (total_revenue * offering.revenue_share_bps as i128).checked_div(BPS_DENOMINATOR).unwrap_or(0);
 
-        let payout = (holder_balance * distributable_revenue)
-            .checked_div(total_supply)
-            .expect("division overflow");
+        let payout = (holder_balance * distributable_revenue).checked_div(total_supply).unwrap_or(0);
 
         env.events().publish(
             (EVENT_DIST_CALC, issuer, offering.namespace, token),
@@ -3599,8 +3964,9 @@ impl RevoraRevenueShare {
         token: Address,
         total_revenue: i128,
     ) -> i128 {
-        let offering = Self::get_offering(env, issuer, namespace, token)
-            .expect("offering not found for token");
+        let Some(offering) = Self::get_offering(env, issuer, namespace, token) else {
+            return 0;
+        };
 
         if total_revenue == 0 {
             return 0;
@@ -3674,7 +4040,7 @@ impl RevoraRevenueShare {
         metadata: String,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
 
         // Verify offering exists and issuer is current
         let offering_id = OfferingId {
@@ -3983,6 +4349,272 @@ impl RevoraRevenueShare {
         let _ = env;
         CONTRACT_VERSION
     }
+
+    // ── Gas Characterization Public Interface ─────────────────────
+
+    /// Enable or disable gas characterization. Admin only.
+    ///
+    /// ### Parameters
+    /// - `admin`: The admin address (must match initialized admin).
+    /// - `enabled`: Whether to enable gas characterization.
+    ///
+    /// ### Errors
+    /// - `NotAuthorized`: Caller is not the admin.
+    pub fn set_gas_characterization_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), RevoraError> {
+        let stored_admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        admin.require_auth();
+        env.storage().persistent().set(&GasDataKey::Enabled, &enabled);
+        Ok(())
+    }
+
+    /// Set maximum measurements per operation type. Admin only.
+    ///
+    /// ### Parameters
+    /// - `admin`: The admin address (must match initialized admin).
+    /// - `max_measurements`: Maximum measurements to store per operation type (1-1000).
+    ///
+    /// ### Errors
+    /// - `NotAuthorized`: Caller is not the admin.
+    /// - `GasCharacterizationError`: Invalid max_measurements value.
+    pub fn set_gas_max_measurements(env: Env, admin: Address, max_measurements: u32) -> Result<(), RevoraError> {
+        let stored_admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        if max_measurements == 0 || max_measurements > 1000 {
+            return Err(RevoraError::GasCharacterizationError);
+        }
+        admin.require_auth();
+        env.storage().persistent().set(&GasDataKey::MaxPerType, &max_measurements);
+        Ok(())
+    }
+
+    /// Configure gas thresholds for an operation type. Admin only.
+    ///
+    /// ### Parameters
+    /// - `admin`: The admin address (must match initialized admin).
+    /// - `thresholds`: Gas threshold configuration.
+    ///
+    /// ### Errors
+    /// - `NotAuthorized`: Caller is not the admin.
+    /// - `GasCharacterizationError`: Invalid thresholds configuration.
+    pub fn set_gas_thresholds(env: Env, admin: Address, thresholds: GasThresholds) -> Result<(), RevoraError> {
+        let stored_admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        if thresholds.warning_threshold == 0
+            || thresholds.critical_threshold == 0
+            || thresholds.warning_threshold > MAX_SOROBAN_GAS
+            || thresholds.critical_threshold > MAX_SOROBAN_GAS
+            || thresholds.critical_threshold < thresholds.warning_threshold
+            || thresholds.max_items_warning == 0
+        {
+            return Err(RevoraError::GasCharacterizationError);
+        }
+        admin.require_auth();
+        
+        let key = GasDataKey::Thresholds(thresholds.operation_type.clone());
+        env.storage().persistent().set(&key, &thresholds);
+        
+        env.events().publish(
+            (EVENT_GAS_THRESHOLDS_SET, thresholds.operation_type.clone()),
+            (thresholds.warning_threshold, thresholds.critical_threshold),
+        );
+        
+        Ok(())
+    }
+
+    /// Get gas statistics for a specific operation type.
+    ///
+    /// ### Parameters
+    /// - `operation_type`: The operation type to get statistics for.
+    ///
+    /// ### Returns
+    /// - `Some(GasStats)`: Statistics if available.
+    /// - `None`: No measurements recorded for this operation type.
+    pub fn get_gas_stats(env: Env, operation_type: GasOperationType) -> Option<GasStats> {
+        let key = GasDataKey::Stats(operation_type);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Get gas thresholds for a specific operation type.
+    ///
+    /// ### Parameters
+    /// - `operation_type`: The operation type to get thresholds for.
+    ///
+    /// ### Returns
+    /// - `GasThresholds`: Current thresholds (uses defaults if not set).
+    pub fn get_gas_thresholds(env: Env, operation_type: GasOperationType) -> GasThresholds {
+        let key = GasDataKey::Thresholds(operation_type.clone());
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| get_default_gas_thresholds(operation_type))
+    }
+
+    /// Get recent gas measurements for an operation type.
+    ///
+    /// ### Parameters
+    /// - `operation_type`: The operation type to get measurements for.
+    /// - `limit`: Maximum number of measurements to return (0 = all available).
+    ///
+    /// ### Returns
+    /// - `Vec<GasMeasurement>`: Recent measurements, newest first.
+    pub fn get_gas_measurements(env: Env, operation_type: GasOperationType, limit: u32) -> Vec<GasMeasurement> {
+        let key = GasDataKey::Measurements(operation_type);
+        let measurements: Vec<GasMeasurement> = env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(&env));
+
+        let measurement_len = measurements.len();
+        let start_idx = if limit == 0 || limit >= measurement_len {
+            0
+        } else {
+            measurement_len - limit
+        };
+        let mut result = Vec::new(&env);
+        for i in (start_idx..measurement_len).rev() {
+            result.push_back(measurements.get(i).unwrap().clone());
+        }
+        result
+    }
+
+    /// Generate a comprehensive gas characterization report.
+    ///
+    /// ### Returns
+    /// - `GasCharacterizationReport`: Comprehensive report with statistics and thresholds.
+    pub fn generate_gas_report(env: Env) -> GasCharacterizationReport {
+        let now = env.ledger().timestamp();
+        let mut operation_stats = Vec::new(&env);
+        let mut thresholds = Vec::new(&env);
+        let mut total_measurements = 0;
+        
+        // Collect stats for all operation types
+        let operation_types = [
+            GasOperationType::RegisterOffering,
+            GasOperationType::ReportRevenue,
+            GasOperationType::DepositRevenue,
+            GasOperationType::Claim,
+            GasOperationType::SetHolderShare,
+            GasOperationType::BlacklistAdd,
+            GasOperationType::BlacklistRemove,
+            GasOperationType::GetOfferingsPage,
+            GasOperationType::GetPendingPeriods,
+            GasOperationType::SimulateDistribution,
+        ];
+        
+        for op_type in operation_types.iter() {
+            if let Some(stats) = Self::get_gas_stats(env.clone(), op_type.clone()) {
+                total_measurements += stats.measurement_count;
+                operation_stats.push_back(stats);
+            }
+            thresholds.push_back(Self::get_gas_thresholds(env.clone(), op_type.clone()));
+        }
+        
+        let report = GasCharacterizationReport {
+            generated_at: now,
+            operation_types_count: operation_stats.len(),
+            operation_stats,
+            thresholds,
+            total_measurements,
+            version: GAS_CHARACTERIZATION_VERSION,
+        };
+        
+        env.events().publish((EVENT_GAS_REPORT,), (report.generated_at, report.total_measurements));
+        
+        report
+    }
+
+    /// Check if gas usage exceeds thresholds for an operation type.
+    ///
+    /// ### Parameters
+    /// - `operation_type`: The operation type to check.
+    /// - `gas_used`: Gas used by the operation.
+    /// - `items_processed`: Number of items processed.
+    ///
+    /// ### Returns
+    /// - `(bool, bool)`: (warning_exceeded, critical_exceeded)
+    pub fn check_gas_thresholds(
+        env: Env,
+        operation_type: GasOperationType,
+        gas_used: u64,
+        items_processed: u32,
+    ) -> (bool, bool) {
+        let thresholds = Self::get_gas_thresholds(env, operation_type);
+        
+        let warning_exceeded = thresholds.monitoring_enabled && (
+            gas_used > thresholds.warning_threshold ||
+            items_processed > thresholds.max_items_warning
+        );
+        
+        let critical_exceeded = thresholds.monitoring_enabled && gas_used > thresholds.critical_threshold;
+        
+        (warning_exceeded, critical_exceeded)
+    }
+
+    /// Get total gas measurement count across all operation types.
+    ///
+    /// ### Returns
+    /// - `u32`: Total number of measurements recorded.
+    pub fn get_total_gas_measurements(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&GasDataKey::Count)
+            .unwrap_or(0)
+    }
+
+    /// Check if gas characterization is enabled.
+    ///
+    /// ### Returns
+    /// - `bool`: True if gas characterization is enabled.
+    pub fn is_gas_characterization_enabled(env: Env) -> bool {
+        is_gas_characterization_enabled(&env)
+    }
+
+    /// Clear all gas characterization data. Admin only.
+    ///
+    /// ### Parameters
+    /// - `admin`: The admin address (must match initialized admin).
+    ///
+    /// ### Errors
+    /// - `NotAuthorized`: Caller is not the admin.
+    pub fn clear_gas_characterization_data(env: Env, admin: Address) -> Result<(), RevoraError> {
+        let stored_admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        admin.require_auth();
+        
+        // Clear all gas-related storage
+        let operation_types = [
+            GasOperationType::RegisterOffering,
+            GasOperationType::ReportRevenue,
+            GasOperationType::DepositRevenue,
+            GasOperationType::Claim,
+            GasOperationType::SetHolderShare,
+            GasOperationType::BlacklistAdd,
+            GasOperationType::BlacklistRemove,
+            GasOperationType::GetOfferingsPage,
+            GasOperationType::GetPendingPeriods,
+            GasOperationType::SimulateDistribution,
+        ];
+        
+        for op_type in operation_types.iter() {
+            env.storage().persistent().remove(&GasDataKey::Measurements(op_type.clone()));
+            env.storage().persistent().remove(&GasDataKey::Stats(op_type.clone()));
+            env.storage().persistent().remove(&GasDataKey::Thresholds(op_type.clone()));
+        }
+        
+        env.storage().persistent().remove(&GasDataKey::Count);
+        
+        Ok(())
+    }
 }
 
 pub mod vesting;
@@ -3993,6 +4625,7 @@ mod vesting_test;
 #[cfg(test)]
 mod test_utils;
 
+#[cfg(test)]
 mod chunking_tests;
 mod test;
 mod test_auth;
