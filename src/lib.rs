@@ -3,7 +3,7 @@
 #![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
-    BytesN, Env, Map, String, Symbol, Vec,
+    BytesN, Env, Map, String, Symbol, Vec, I256,
 };
 
 // Issue #109 — Revenue report correction workflow with audit trail.
@@ -638,6 +638,13 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
+        // Check minimum revenue threshold (#25)
+        let threshold_key = DataKey::MinRevenueThreshold(offering_id.clone());
+        let threshold: i128 = env.storage().persistent().get(&threshold_key).unwrap_or(0);
+        if amount < threshold {
+            return Err(RevoraError::InvalidAmount);
+        }
+
         // Check period not already deposited
         let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
         if env.storage().persistent().has(&rev_key) {
@@ -859,11 +866,12 @@ impl RevoraRevenueShare {
         env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false)
     }
 
-    /// Helper: panic if contract is paused. Used by state-mutating entrypoints.
-    fn require_not_paused(env: &Env) {
+    /// Helper: result Err if contract is paused. Used by state-mutating entrypoints.
+    fn require_not_paused(env: &Env) -> Result<(), RevoraError> {
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
-            panic!("contract is paused");
+            return Err(RevoraError::ContractPaused);
         }
+        Ok(())
     }
 
     // ── Offering management ───────────────────────────────────
@@ -896,7 +904,7 @@ impl RevoraRevenueShare {
         supply_cap: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // Skip bps validation in testnet mode
@@ -1055,7 +1063,7 @@ impl RevoraRevenueShare {
         override_existing: bool,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         let event_only = Self::is_event_only(&env);
@@ -1081,6 +1089,17 @@ impl RevoraRevenueShare {
                     .ok_or(RevoraError::OfferingNotFound)?;
             if offering.payout_asset != payout_asset {
                 return Err(RevoraError::PayoutAssetMismatch);
+            }
+
+            // Check minimum revenue threshold (#25)
+            let threshold_key = DataKey::MinRevenueThreshold(offering_id.clone());
+            let threshold: i128 = env.storage().persistent().get(&threshold_key).unwrap_or(0);
+            if amount < threshold {
+                env.events().publish(
+                    (EVENT_REV_BELOW_THRESHOLD, issuer, namespace, token),
+                    (amount, threshold, period_id),
+                );
+                return Ok(());
             }
 
             // Skip concentration enforcement in testnet mode
@@ -1450,7 +1469,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -1520,7 +1539,7 @@ impl RevoraRevenueShare {
         investor: Address,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
         let offering_id = OfferingId {
@@ -1987,41 +2006,54 @@ impl RevoraRevenueShare {
     // ── Per-offering minimum revenue threshold (#25) ─────────────────────
 
     /// Set minimum revenue per period below which no distribution is triggered.
-    /// Only the offering issuer may set this. Emits event when configured or changed.
+    /// Authorized by: Offering issuer OR platform admin.
+    /// Emits `min_rev` event when configured or changed.
     /// Pass 0 to disable the threshold.
+    ///
+    /// ### Parameters
+    /// - `caller`: The authorized address (issuer or admin).
+    /// - `issuer`: The offering issuer address.
+    /// - `namespace`: The offering namespace.
+    /// - `token`: The offering token address.
+    /// - `min_amount`: The threshold amount (>= 0).
     pub fn set_min_revenue_threshold(
         env: Env,
+        caller: Address,
         issuer: Address,
         namespace: Symbol,
         token: Address,
         min_amount: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+
+        // Authorization: caller must be issuer or admin
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        Self::require_non_negative_amount(min_amount)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
 
-        if current_issuer != issuer {
-            return Err(RevoraError::OfferingNotFound);
+        if !Self::is_event_only(&env) {
+            let key = DataKey::MinRevenueThreshold(offering_id);
+            env.storage().persistent().set(&key, &min_amount);
         }
-
-        issuer.require_auth();
-
-        Self::require_non_negative_amount(min_amount)?;
-
-        let key = DataKey::MinRevenueThreshold(offering_id);
-        let previous: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &min_amount);
 
         env.events().publish(
             (EVENT_MIN_REV_THRESHOLD_SET, issuer, namespace, token),
-            (previous, min_amount),
+            (caller, min_amount),
         );
         Ok(())
     }
@@ -2337,7 +2369,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2396,7 +2428,7 @@ impl RevoraRevenueShare {
         signature: BytesN<64>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
         let current_issuer = Self::get_current_issuer(
             &env,
             payload.issuer.clone(),
@@ -2538,14 +2570,14 @@ impl RevoraRevenueShare {
 
         for i in start_idx..end_idx {
             let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);
-            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap();
+            let period_id: u64 = env.storage().persistent().get(&entry_key).ok_or(RevoraError::NoPendingClaims)?;
             let time_key = DataKey::PeriodDepositTime(offering_id.clone(), period_id);
             let deposit_time: u64 = env.storage().persistent().get(&time_key).unwrap_or(0);
             if delay_secs > 0 && now < deposit_time.saturating_add(delay_secs) {
                 break;
             }
             let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
-            let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
+            let revenue: i128 = env.storage().persistent().get(&rev_key).ok_or(RevoraError::NoPendingClaims)?;
             let payout = revenue * (share_bps as i128) / 10_000;
             total_payout += payout;
             claimed_periods.push_back(period_id);
@@ -2559,7 +2591,7 @@ impl RevoraRevenueShare {
         // Transfer only if there is a positive payout
         if total_payout > 0 {
             let pt_key = DataKey::PaymentToken(offering_id.clone());
-            let payment_token: Address = env.storage().persistent().get(&pt_key).unwrap();
+            let payment_token: Address = env.storage().persistent().get(&pt_key).ok_or(RevoraError::OfferingNotFound)?;
             let contract_addr = env.current_contract_address();
             token::Client::new(&env, &payment_token).transfer(
                 &contract_addr,
@@ -3543,15 +3575,29 @@ impl RevoraRevenueShare {
         total_supply: i128,
         holder_balance: i128,
         holder: Address,
-    ) -> i128 {
+    ) -> Result<i128, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         caller.require_auth();
 
+        Self::require_non_negative_amount(total_revenue)?;
+        Self::require_non_negative_amount(total_supply)?;
+        Self::require_non_negative_amount(holder_balance)?;
+
         if total_supply == 0 {
-            panic!("total_supply cannot be zero");
+            return Err(RevoraError::InvalidAmount);
         }
 
-        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace, token.clone())
-            .expect("offering not found");
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Verify auth: caller must be current issuer, admin, or the holder themselves
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        let current_issuer = offering.issuer.clone();
+
+        if caller != current_issuer && caller != admin && caller != holder {
+            return Err(RevoraError::NotAuthorized);
+        }
 
         if Self::is_blacklisted(
             env.clone(),
@@ -3560,7 +3606,7 @@ impl RevoraRevenueShare {
             token.clone(),
             holder.clone(),
         ) {
-            panic!("holder is blacklisted and cannot receive distribution");
+            return Err(RevoraError::HolderBlacklisted);
         }
 
         if total_revenue == 0 || holder_balance == 0 {
@@ -3576,16 +3622,24 @@ impl RevoraRevenueShare {
                     payout,
                 ),
             );
-            return payout;
+            return Ok(payout);
         }
 
-        let distributable_revenue = (total_revenue * offering.revenue_share_bps as i128)
-            .checked_div(BPS_DENOMINATOR)
-            .expect("division overflow");
+        // Precise payout calculation using I256 intermediate:
+        // payout = (holder_balance * total_revenue * revenue_share_bps) / (total_supply * BPS_DENOMINATOR)
+        
+        let h_bal = I256::from_i128(&env, holder_balance);
+        let t_rev = I256::from_i128(&env, total_revenue);
+        let bps = I256::from_i128(&env, offering.revenue_share_bps as i128);
+        let t_sup = I256::from_i128(&env, total_supply);
+        let denom_bps = I256::from_i128(&env, BPS_DENOMINATOR as i128);
 
-        let payout = (holder_balance * distributable_revenue)
-            .checked_div(total_supply)
-            .expect("division overflow");
+        // (h_bal * t_rev * bps) / (t_sup * denom_bps)
+        let numerator = h_bal.mul(&t_rev).mul(&bps);
+        let denominator = t_sup.mul(&denom_bps);
+        let payout_256 = numerator.div(&denominator);
+
+        let payout = payout_256.to_i128().ok_or(RevoraError::InvalidAmount)?;
 
         env.events().publish(
             (EVENT_DIST_CALC, issuer, offering.namespace, token),
@@ -3599,7 +3653,7 @@ impl RevoraRevenueShare {
             ),
         );
 
-        payout
+        Ok(payout)
     }
 
     /// Calculate the total distributable revenue for an offering.
@@ -3611,17 +3665,20 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         total_revenue: i128,
-    ) -> i128 {
+    ) -> Result<i128, RevoraError> {
         let offering = Self::get_offering(env, issuer, namespace, token)
-            .expect("offering not found for token");
+            .ok_or(RevoraError::OfferingNotFound)?;
 
         if total_revenue == 0 {
-            return 0;
+            return Ok(0);
         }
 
-        (total_revenue * offering.revenue_share_bps as i128)
-            .checked_div(BPS_DENOMINATOR)
-            .expect("division overflow")
+        let total = total_revenue
+            .checked_mul(offering.revenue_share_bps as i128)
+            .and_then(|v| v.checked_div(BPS_DENOMINATOR))
+            .ok_or(RevoraError::InvalidAmount)?;
+        
+        Ok(total)
     }
 
     // ── Per-offering metadata storage (#8) ─────────────────────
@@ -3687,7 +3744,7 @@ impl RevoraRevenueShare {
         metadata: String,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env);
+        Self::require_not_paused(&env)?;
 
         // Verify offering exists and issuer is current
         let offering_id = OfferingId {

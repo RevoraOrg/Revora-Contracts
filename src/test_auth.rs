@@ -207,7 +207,7 @@ fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     assert!(client
-        .try_set_min_revenue_threshold(&attacker, &symbol_short!("def"), &token, &123i128)
+        .try_set_min_revenue_threshold(&attacker, &attacker, &symbol_short!("def"), &token, &123i128)
         .is_err());
     assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 0);
 }
