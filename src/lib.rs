@@ -950,17 +950,25 @@ impl RevoraRevenueShare {
         amount: i128,
         period_id: u64,
     ) -> Result<(), RevoraError> {
+        if amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
             token: token.clone(),
         };
 
-        // Verify offering exists
-        if Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
-            .is_none()
-        {
-            return Err(RevoraError::OfferingNotFound);
+        // Verify offering exists and payment asset matches offering configuration.
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.payout_asset != payment_token {
+            return Err(RevoraError::PayoutAssetMismatch);
         }
 
         // Check period not already deposited
@@ -1394,6 +1402,9 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
+        if amount < 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
 
         let event_only = Self::is_event_only(&env);
         let offering_id = OfferingId {
@@ -3797,6 +3808,15 @@ impl RevoraRevenueShare {
         // So OfferingId MUST include issuer.
 
         // Okay, I'll stick with OfferingId including issuer. Issuer transfer will be a "new" offering from the storage perspective.
+
+        let old_offering_id = OfferingId {
+            issuer: old_issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OfferingIssuer(old_offering_id));
 
         let new_offering_id = OfferingId {
             issuer: new_issuer.clone(),
