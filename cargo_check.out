@@ -1,0 +1,359 @@
+    Checking revora-contracts v0.1.0 (/home/ezekiel001/Revora-Contracts)
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8012:16
+     |
+8012 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor_a, &60); ...
+     |       ^^^^^^^^^^^^^^^^                                         --  -----------  --- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8012 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor_a, &60); // 60%
+8012 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_a, &1); // 60%
+     |
+
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8013:16
+     |
+8013 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor_b, &40); ...
+     |       ^^^^^^^^^^^^^^^^                                         --  -----------  --- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8013 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor_b, &40); // 40%
+8013 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_b, &1); // 40%
+     |
+
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8021:16
+     |
+8021 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor_a, &20); ...
+     |       ^^^^^^^^^^^^^^^^                                         --  -----------  --- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8021 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor_a, &20); // 20%
+8021 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_a, &2); // 20%
+     |
+
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8022:16
+     |
+8022 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor_b, &80); ...
+     |       ^^^^^^^^^^^^^^^^                                         --  -----------  --- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8022 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor_b, &80); // 80%
+8022 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor_b, &2); // 80%
+     |
+
+error[E0308]: mismatched types
+    --> src/test.rs:8030:47
+     |
+8030 | ..., &symbol_short!("def"), &...
+     |       ^^^^^^^^^^^^^^^^^^^^ expected `Address`, found `Symbol`
+     |
+     = note: this error originates in the macro `symbol_short` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> src/test.rs:8030:69
+     |
+8030 | ...nt.claim(&issuer, &symbol_short!("def"), &token, &...
+     |       -----                                 ^^^^^^ expected `&Symbol`, found `&Address`
+     |       |
+     |       arguments to this method are incorrect
+     |
+     = note: expected reference `&soroban_sdk::Symbol`
+                found reference `&soroban_sdk::Address`
+note: method defined here
+    --> src/lib.rs:2485:12
+     |
+2485 | ...ub fn claim(
+     |          ^^^^^
+...
+2489 | ...   namespace: Symbol,
+     |       -----------------
+
+error[E0308]: mismatched types
+    --> src/test.rs:8039:47
+     |
+8039 | ..., &symbol_short!("def"), &...
+     |       ^^^^^^^^^^^^^^^^^^^^ expected `Address`, found `Symbol`
+     |
+     = note: this error originates in the macro `symbol_short` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> src/test.rs:8039:69
+     |
+8039 | ...nt.claim(&issuer, &symbol_short!("def"), &token, &...
+     |       -----                                 ^^^^^^ expected `&Symbol`, found `&Address`
+     |       |
+     |       arguments to this method are incorrect
+     |
+     = note: expected reference `&soroban_sdk::Symbol`
+                found reference `&soroban_sdk::Address`
+note: method defined here
+    --> src/lib.rs:2485:12
+     |
+2485 | ...ub fn claim(
+     |          ^^^^^
+...
+2489 | ...   namespace: Symbol,
+     |       -----------------
+
+error[E0599]: no method named `get_unclaimed_periods` found for struct `RevoraRevenueShareClient<'a>` in the current scope
+    --> src/test.rs:8043:34
+     |
+8043 | ...nt.get_unclaimed_periods(&i...
+     |       ^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: src/lib.rs:489:1
+     |
+ 489 | #[contract]
+     | ----------- method `get_unclaimed_periods` not found for this struct
+     |
+help: there is a method `get_pending_periods` with a similar name
+     |
+8043 -         let remaining_a = client.get_unclaimed_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
+8043 +         let remaining_a = client.get_pending_periods(&issuer, &symbol_short!("def"), &token, &investor_a);
+     |
+
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8076:16
+     |
+8076 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor, &100);
+     |       ^^^^^^^^^^^^^^^^                                         --  ---------  ---- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8076 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &1, &investor, &100);
+8076 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor, &1);
+     |
+
+error[E0308]: mismatched types
+    --> src/test.rs:8081:52
+     |
+8081 | ..., &symbol_short!("def"), &...
+     |       ^^^^^^^^^^^^^^^^^^^^ expected `Address`, found `Symbol`
+     |
+     = note: this error originates in the macro `symbol_short` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> src/test.rs:8081:74
+     |
+8081 | ...nt.try_claim(&issuer, &symbol_short!("def"), &token, &...
+     |       ---------                                 ^^^^^^ expected `&Symbol`, found `&Address`
+     |       |
+     |       arguments to this method are incorrect
+     |
+     = note: expected reference `&soroban_sdk::Symbol`
+                found reference `&soroban_sdk::Address`
+note: method defined here
+    --> src/lib.rs:2485:12
+     |
+2485 | ...ub fn claim(
+     |          ^^^^^
+...
+2489 | ...   namespace: Symbol,
+     |       -----------------
+
+error[E0599]: no method named `set_timestamp` found for struct `Ledger` in the current scope
+    --> src/test.rs:8085:22
+     |
+8085 | ...().set_timestamp(en...
+     |       ^^^^^^^^^^^^^
+     |
+help: there is a method `timestamp` with a similar name, but with different arguments
+    --> /home/ezekiel001/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-20.5.0/src/ledger.rs:81:5
+     |
+  81 |   ...self) -> u64 {
+     |   ...^^^^^^^^^^^^
+     = note: the full name for the type has been written to '/home/ezekiel001/Revora-Contracts/target/debug/deps/revora_contracts-8b16e3efc2f0c0ba.long-type-18441364641719386733.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+    --> src/test.rs:8094:45
+     |
+8094 | ..., &symbol_short!("def"), &...
+     |       ^^^^^^^^^^^^^^^^^^^^ expected `Address`, found `Symbol`
+     |
+     = note: this error originates in the macro `symbol_short` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> src/test.rs:8094:67
+     |
+8094 | ...nt.claim(&issuer, &symbol_short!("def"), &token, &...
+     |       -----                                 ^^^^^^ expected `&Symbol`, found `&Address`
+     |       |
+     |       arguments to this method are incorrect
+     |
+     = note: expected reference `&soroban_sdk::Symbol`
+                found reference `&soroban_sdk::Address`
+note: method defined here
+    --> src/lib.rs:2485:12
+     |
+2485 | ...ub fn claim(
+     |          ^^^^^
+...
+2489 | ...   namespace: Symbol,
+     |       -----------------
+
+error[E0061]: this method takes 5 arguments but 6 arguments were supplied
+    --> src/test.rs:8102:16
+     |
+8102 | ...nt.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor, &100);
+     |       ^^^^^^^^^^^^^^^^                                         --  ---------  ---- unexpected argument #6 of type `&{integer}`
+     |                                                                |   |
+     |                                                                |   expected `&u32`, found `&soroban_sdk::Address`
+     |                                                                expected `&soroban_sdk::Address`, found `&{integer}`
+     |
+note: method defined here
+    --> src/lib.rs:2238:12
+     |
+2238 | ...fn set_holder_share(
+     |       ^^^^^^^^^^^^^^^^
+help: did you mean
+     |
+8102 -         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &2, &investor, &100);
+8102 +         client.set_holder_share(&issuer, &symbol_short!("def"), &token, &investor, &2);
+     |
+
+error[E0599]: no method named `set_timestamp` found for struct `Ledger` in the current scope
+    --> src/test.rs:8105:22
+     |
+8105 | ...().set_timestamp(en...
+     |       ^^^^^^^^^^^^^
+     |
+help: there is a method `timestamp` with a similar name, but with different arguments
+    --> /home/ezekiel001/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-20.5.0/src/ledger.rs:81:5
+     |
+  81 |   ...self) -> u64 {
+     |   ...^^^^^^^^^^^^
+     = note: the full name for the type has been written to '/home/ezekiel001/Revora-Contracts/target/debug/deps/revora_contracts-8b16e3efc2f0c0ba.long-type-18441364641719386733.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+    --> src/test.rs:8106:60
+     |
+8106 | ..., &symbol_short!("def"), &...
+     |       ^^^^^^^^^^^^^^^^^^^^ expected `Address`, found `Symbol`
+     |
+     = note: this error originates in the macro `symbol_short` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+    --> src/test.rs:8106:82
+     |
+8106 | ...nt.try_claim(&issuer, &symbol_short!("def"), &token, &...
+     |       ---------                                 ^^^^^^ expected `&Symbol`, found `&Address`
+     |       |
+     |       arguments to this method are incorrect
+     |
+     = note: expected reference `&soroban_sdk::Symbol`
+                found reference `&soroban_sdk::Address`
+note: method defined here
+    --> src/lib.rs:2485:12
+     |
+2485 | ...ub fn claim(
+     |          ^^^^^
+...
+2489 | ...   namespace: Symbol,
+     |       -----------------
+
+error[E0382]: use of moved value: `topics`
+    --> src/test.rs:6529:22
+     |
+6526 | ..._, topics, _) = last_event;
+     |       ------ move occurs because `topics` has type `Vec<Val>`, which does not implement the `Copy` trait
+6527 | ...opics_vec: Vec<soroban_sdk::Val> = topics;
+     |                                       ------ value moved here
+6528 | ...vent_symbol: Symbol = topics_vec.get(0).clon...
+6529 | ...opics_vec = topics;
+     |                ^^^^^^ value used here after move
+     |
+     = note: the full name for the type has been written to '/home/ezekiel001/Revora-Contracts/target/debug/deps/revora_contracts-8b16e3efc2f0c0ba.long-type-3640047221781212137.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+help: consider cloning the value if the performance cost is acceptable
+     |
+6527 |     let topics_vec: Vec<soroban_sdk::Val> = topics.clone();
+     |                                                   ++++++++
+
+error[E0382]: use of moved value: `topics`
+    --> src/test.rs:6560:22
+     |
+6557 | ..._, topics, _) = last_event;
+     |       ------ move occurs because `topics` has type `Vec<Val>`, which does not implement the `Copy` trait
+6558 | ...opics_vec: Vec<soroban_sdk::Val> = topics;
+     |                                       ------ value moved here
+6559 | ...vent_symbol: Symbol = topics_vec.get(0).clon...
+6560 | ...opics_vec = topics;
+     |                ^^^^^^ value used here after move
+     |
+     = note: the full name for the type has been written to '/home/ezekiel001/Revora-Contracts/target/debug/deps/revora_contracts-8b16e3efc2f0c0ba.long-type-3640047221781212137.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+help: consider cloning the value if the performance cost is acceptable
+     |
+6558 |     let topics_vec: Vec<soroban_sdk::Val> = topics.clone();
+     |                                                   ++++++++
+
+error[E0382]: use of moved value: `topics`
+    --> src/test.rs:6586:22
+     |
+6580 | ...tract, topics, data) = events.last(...
+     |           ------ move occurs because `topics` has type `Vec<Val>`, which does not implement the `Copy` trait
+...
+6584 | ...: Vec<soroban_sdk::Val> = topics;
+     |                              ------ value moved here
+6585 | ...ol: Symbol = topics_vec.get(0).clon...
+6586 | ... = topics;
+     |       ^^^^^^ value used here after move
+     |
+     = note: the full name for the type has been written to '/home/ezekiel001/Revora-Contracts/target/debug/deps/revora_contracts-8b16e3efc2f0c0ba.long-type-3640047221781212137.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+help: consider cloning the value if the performance cost is acceptable
+     |
+6584 |     let topics_vec: Vec<soroban_sdk::Val> = topics.clone();
+     |                                                   ++++++++
+
+Some errors have detailed explanations: E0061, E0308, E0382, E0599.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `revora-contracts` (lib test) due to 22 previous errors

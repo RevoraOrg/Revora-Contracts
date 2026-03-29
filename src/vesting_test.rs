@@ -1,17 +1,26 @@
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    Address, Env,
+    symbol_short,
+    testutils::{Address as _, Events as _, Ledger as _},
+    Address, Env, IntoVal,
 };
 
-use crate::vesting::{RevoraVesting, RevoraVestingClient};
+use crate::vesting::{RevoraVesting, RevoraVestingClient, VESTING_EVENT_SCHEMA_VERSION};
 
-fn setup(env: &Env) -> (RevoraVestingClient<'_>, Address, Address, Address) {
+fn setup(env: &Env) -> (RevoraVestingClient, Address, Address, Address) {
     let contract_id = env.register_contract(None, RevoraVesting);
     let client = RevoraVestingClient::new(env, &contract_id);
     let admin = Address::generate(env);
     let beneficiary = Address::generate(env);
     let token_id = env.register_stellar_asset_contract(admin.clone());
     (client, admin, beneficiary, token_id)
+}
+
+fn mint_tokens(env: &Env, payment_token: &Address, recipient: &Address, amount: &i128) {
+    soroban_sdk::token::StellarAssetClient::new(env, payment_token).mint(recipient, amount);
+}
+
+fn balance(env: &Env, payment_token: &Address, who: &Address) -> i128 {
+    soroban_sdk::token::Client::new(env, payment_token).balance(who)
 }
 
 #[test]

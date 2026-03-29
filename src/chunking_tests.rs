@@ -5,15 +5,15 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{symbol_short, testutils::Address as _, token, Address, Env, Vec};
 
 // Minimal helpers duplicated from src/test.rs so these chunking tests can live separately.
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
+fn make_client(env: &Env) -> RevoraRevenueShareClient {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
 
-fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address) {
+fn setup() -> (Env, RevoraRevenueShareClient, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
     (env, client, issuer)
@@ -30,7 +30,7 @@ fn mint_tokens(env: &Env, payment_token: &Address, recipient: &Address, amount: 
 }
 
 fn setup_with_offering(
-) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+) -> (Env, RevoraRevenueShareClient, Address, Address, Address, Address) {
     let (env, client, issuer) = setup();
     let token = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);

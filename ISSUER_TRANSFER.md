@@ -372,8 +372,8 @@ data: (current_issuer, proposed_new_issuer)
 ### Q: What if I propose to the wrong address?
 **A:** Call `cancel_issuer_transfer` immediately, then propose to the correct address.
 
-### Q: Are there time limits on accepting?
-**A:** No, transfers can remain pending indefinitely. However, it's best practice to complete transfers quickly.
+### Are there time limits on accepting?
+**A:** Yes, transfers expire after **24 hours** (86,400 seconds). After this window, the `accept_issuer_transfer` call will fail with `IssuerTransferExpired`. The current issuer must then re-propose the transfer if they still wish to proceed.
 
 ### Q: Can an attacker accept before the real new issuer?
 **A:** No, the contract checks that the caller is the exact proposed new issuer via `require_auth`.

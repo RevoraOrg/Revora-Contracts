@@ -3,7 +3,7 @@ use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, String as
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
+fn make_client(env: &Env) -> RevoraRevenueShareClient {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -105,6 +105,39 @@ fn freeze_missing_auth_no_mutation() {
 }
 
 #[test]
+fn freeze_offering_missing_auth_no_mutation() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (_admin, _safety) = init_admin_safety(&env, &client);
+    let (issuer, token) = setup_offering(&env, &client);
+
+    assert!(client
+        .try_freeze_offering(&Address::generate(&env), &issuer, &symbol_short!("def"), &token)
+        .is_err());
+    assert!(!client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
+}
+
+#[test]
+fn unfreeze_offering_missing_auth_no_mutation() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (admin, _safety) = init_admin_safety(&env, &client);
+    let (issuer, token) = setup_offering(&env, &client);
+
+    client.freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token);
+    assert!(client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
+
+    let attacker = Address::generate(&env);
+    assert!(client
+        .try_unfreeze_offering(&attacker, &issuer, &symbol_short!("def"), &token)
+        .is_err());
+    assert!(client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
+
+    client.unfreeze_offering(&admin, &issuer, &symbol_short!("def"), &token);
+    assert!(!client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
+}
+
+#[test]
 fn set_admin_missing_auth() {
     let env = Env::default();
     let client = make_client(&env);
@@ -133,6 +166,7 @@ fn register_offering_missing_auth_no_mutation() {
         .try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0)
         .is_err());
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
 }
 
 #[test]
