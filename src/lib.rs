@@ -1886,7 +1886,6 @@ impl RevoraRevenueShare {
                 (EVENT_REV_INIA_V2, issuer.clone(), namespace.clone(), token.clone()),
                 (payout_asset.clone(), amount, period_id, blacklist.clone()),
             );
-        }
 
             env.events().publish(
                 (EVENT_REV_INIA_V1, issuer.clone(), namespace.clone(), token.clone()),
