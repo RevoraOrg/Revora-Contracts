@@ -1,6 +1,18 @@
 #![no_std]
 #![deny(unsafe_code)]
 #![deny(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
+
+mod vesting;
+
+#[cfg(test)]
+mod test;
+#[cfg(test)]
+mod test_reconciliation;
+#[cfg(test)]
+mod test_indexer_fixtures;
+#[cfg(test)]
+mod test_security_doc_sync;
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
     BytesN, Env, IntoVal, Map, String, Symbol, Vec,
@@ -193,6 +205,23 @@ const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
 const EVENT_TYPE_REV_REP: Symbol = symbol_short!("rv_rep");
 const EVENT_TYPE_CLAIM: Symbol = symbol_short!("claim");
+const EVENT_TYPE_REV_DEP: Symbol = symbol_short!("rv_dep");
+const EVENT_TYPE_SHARE_SET: Symbol = symbol_short!("sh_set");
+const EVENT_TYPE_BL_ADD: Symbol = symbol_short!("bl_add");
+const EVENT_TYPE_BL_REM: Symbol = symbol_short!("bl_rem");
+const EVENT_TYPE_SNAP_COMMIT: Symbol = symbol_short!("sn_com");
+const EVENT_TYPE_SNAP_SHARES: Symbol = symbol_short!("sn_shr");
+const EVENT_TYPE_FEE_CFG: Symbol = symbol_short!("fee_cfg");
+const EVENT_TYPE_MIN_REV: Symbol = symbol_short!("min_rev");
+const EVENT_TYPE_ROUND: Symbol = symbol_short!("round");
+const EVENT_TYPE_CONC: Symbol = symbol_short!("conc");
+const EVENT_TYPE_DELAY: Symbol = symbol_short!("delay");
+const EVENT_TYPE_MS_INIT: Symbol = symbol_short!("ms_init");
+const EVENT_TYPE_META_SET: Symbol = symbol_short!("meta_set");
+const EVENT_TYPE_META_UPD: Symbol = symbol_short!("meta_upd");
+const EVENT_TYPE_INV_CONSTR: Symbol = symbol_short!("inv_con");
+const EVENT_TYPE_ADMIN_SET: Symbol = symbol_short!("adm_set");
+const EVENT_TYPE_PLAT_FEE: Symbol = symbol_short!("plat_fee");
 const EVENT_REPORT_WINDOW_SET: Symbol = symbol_short!("rep_win");
 const EVENT_CLAIM_WINDOW_SET: Symbol = symbol_short!("clm_win");
 const EVENT_META_SIGNER_SET: Symbol = symbol_short!("meta_key");
@@ -945,8 +974,23 @@ impl RevoraRevenueShare {
         };
         env.storage()
             .persistent()
-            .set(&DataKey::HolderShare(offering_id, holder.clone()), &share_bps);
-        env.events().publish((EVENT_SHARE_SET, issuer, namespace, token), (holder, share_bps));
+            .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
+        env.events().publish((EVENT_SHARE_SET, issuer.clone(), namespace.clone(), token.clone()), (holder.clone(), share_bps));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_SHARE_SET,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            (holder, share_bps),
+        );
         Ok(())
     }
 
@@ -1087,7 +1131,22 @@ impl RevoraRevenueShare {
         Self::emit_v2_event(
             env,
             (EVENT_REV_DEPOSIT_V2, issuer.clone(), namespace.clone(), token.clone()),
-            (payment_token, amount, period_id),
+            (payment_token.clone(), amount, period_id),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_REV_DEP,
+                    issuer: issuer.clone(),
+                    namespace: namespace.clone(),
+                    token: token.clone(),
+                    period_id,
+                },
+            ),
+            (amount, payment_token),
         );
         Ok(())
     }
@@ -1443,6 +1502,88 @@ impl RevoraRevenueShare {
     ) -> Option<Address> {
         let offering_id = OfferingId { issuer, namespace, token };
         Self::get_locked_payment_token_for_offering(&env, &offering_id).ok()
+    }
+
+    /// Set or update metadata reference for an offering.
+    ///
+    /// Only callable by the current issuer of the offering.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer. Must provide authentication.
+    /// - `namespace`: The offering namespace.
+    /// - `token`: The token representing the offering.
+    /// - `metadata`: The metadata string (e.g., IPFS CID, URL). Max 256 bytes.
+    pub fn set_offering_metadata(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        metadata: String,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if metadata.len() > 256 {
+            return Err(RevoraError::MetadataTooLarge);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists and issuer is current
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let key = DataKey::OfferingMetadata(offering_id.clone());
+        let exists = env.storage().persistent().has(&key);
+
+        env.storage().persistent().set(&key, &metadata);
+
+        let event_type = if exists { EVENT_TYPE_META_UPD } else { EVENT_TYPE_META_SET };
+        let legacy_event = if exists { EVENT_METADATA_UPDATED } else { EVENT_METADATA_SET };
+
+        env.events().publish(
+            (legacy_event, issuer.clone(), namespace.clone(), token.clone()),
+            metadata.clone(),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            metadata,
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve metadata reference for an offering.
+    pub fn get_offering_metadata(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<String> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey::OfferingMetadata(offering_id);
+        env.storage().persistent().get(&key)
     }
 
     /// Record a revenue report for an offering; updates audit summary and emits events.
@@ -2036,7 +2177,22 @@ impl RevoraRevenueShare {
             }
         }
 
-        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor));
+        env.events().publish((EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()), (caller, investor.clone()));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_BL_ADD,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            investor,
+        );
         Ok(())
     }
 
@@ -2108,7 +2264,22 @@ impl RevoraRevenueShare {
         }
         env.storage().persistent().set(&order_key, &new_order);
 
-        env.events().publish((EVENT_BL_REM, issuer, namespace, token), (caller, investor));
+        env.events().publish((EVENT_BL_REM, issuer.clone(), namespace.clone(), token.clone()), (caller, investor.clone()));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_BL_REM,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            investor,
+        );
         Ok(())
     }
 
@@ -2389,7 +2560,22 @@ impl RevoraRevenueShare {
             let key = DataKey::ConcentrationLimit(offering_id);
             env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
             env.events()
-                .publish((EVENT_CONC_LIMIT_SET, issuer, namespace, token), (max_bps, enforce));
+                .publish((EVENT_CONC_LIMIT_SET, issuer.clone(), namespace.clone(), token.clone()), (max_bps, enforce));
+
+            env.events().publish(
+                (
+                    EVENT_INDEXED_V2,
+                    EventIndexTopicV2 {
+                        version: 2,
+                        event_type: EVENT_TYPE_CONC,
+                        issuer,
+                        namespace,
+                        token,
+                        period_id: 0,
+                    },
+                ),
+                (max_bps, enforce),
+            );
         }
         Ok(())
     }
@@ -2528,7 +2714,22 @@ impl RevoraRevenueShare {
         issuer.require_auth();
         let key = DataKey::RoundingMode(offering_id);
         env.storage().persistent().set(&key, &mode);
-        env.events().publish((EVENT_ROUNDING_MODE_SET, issuer, namespace, token), mode);
+        env.events().publish((EVENT_ROUNDING_MODE_SET, issuer.clone(), namespace.clone(), token.clone()), mode.clone());
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_ROUND,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            mode,
+        );
         Ok(())
     }
 
@@ -2594,8 +2795,23 @@ impl RevoraRevenueShare {
         let previous = env.storage().persistent().get::<DataKey, InvestmentConstraintsConfig>(&key);
         env.storage().persistent().set(&key, &InvestmentConstraintsConfig { min_stake, max_stake });
         env.events().publish(
-            (EVENT_INV_CONSTRAINTS, issuer, namespace, token),
+            (EVENT_INV_CONSTRAINTS, issuer.clone(), namespace.clone(), token.clone()),
             (min_stake, max_stake, previous.is_some()),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_INV_CONSTR,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            (min_stake, max_stake),
         );
         Ok(())
     }
@@ -2656,7 +2872,22 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&key, &min_amount);
 
         env.events().publish(
-            (EVENT_MIN_REV_THRESHOLD_SET, issuer, namespace, token),
+            (EVENT_MIN_REV_THRESHOLD_SET, issuer.clone(), namespace.clone(), token.clone()),
+            (previous, min_amount),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_MIN_REV,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
             (previous, min_amount),
         );
         Ok(())
@@ -3096,7 +3327,22 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&last_ref_key, &snapshot_ref);
 
         env.events().publish(
-            (EVENT_SNAP_COMMIT, issuer, namespace, token),
+            (EVENT_SNAP_COMMIT, issuer.clone(), namespace.clone(), token.clone()),
+            (snapshot_ref, content_hash.clone(), committed_at),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_SNAP_COMMIT,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
             (snapshot_ref, content_hash, committed_at),
         );
         Ok(())
@@ -3208,7 +3454,22 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&entry_key, &entry);
 
         env.events().publish(
-            (EVENT_SNAP_SHARES_APPLIED, issuer, namespace, token),
+            (EVENT_SNAP_SHARES_APPLIED, issuer.clone(), namespace.clone(), token.clone()),
+            (snapshot_ref, start_index, batch_len, new_total_bps),
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_SNAP_SHARES,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
             (snapshot_ref, start_index, batch_len, new_total_bps),
         );
         Ok(())
@@ -3408,6 +3669,164 @@ impl RevoraRevenueShare {
             (signer, payload.holder, payload.share_bps, nonce, expiry),
         );
         Ok(())
+    }
+
+    /// Configure the global platform fee in basis points (0-5000).
+    /// Admin only. Emits `EVENT_PLATFORM_FEE_SET`.
+    pub fn set_platform_fee(env: Env, fee_bps: u32) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        env.storage().persistent().set(&DataKey::PlatformFeeBps, &fee_bps);
+        env.events().publish((EVENT_PLATFORM_FEE_SET,), fee_bps);
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_PLAT_FEE,
+                    issuer: admin,
+                    namespace: symbol_short!("platform"),
+                    token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
+                    period_id: 0,
+                },
+            ),
+            fee_bps,
+        );
+        Ok(())
+    }
+
+    /// Return the global platform fee in basis points.
+    pub fn get_platform_fee(env: Env) -> u32 {
+        env.storage().persistent().get(&DataKey::PlatformFeeBps).unwrap_or(0)
+    }
+
+    /// Configure a per-offering, per-asset fee override.
+    /// Admin only. Emits event.
+    pub fn set_offering_fee_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        asset: Address,
+        fee_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::OfferingFeeBps(offering_id, asset.clone()), &fee_bps);
+        env.events().publish((EVENT_FEE_CONFIG, issuer.clone(), namespace.clone(), token.clone()), (asset.clone(), fee_bps));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_FEE_CFG,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            (asset, fee_bps),
+        );
+        Ok(())
+    }
+
+    /// Configure a platform-level, per-asset fee override.
+    /// Admin only. Emits event.
+    pub fn set_platform_fee_per_asset(
+        env: Env,
+        asset: Address,
+        fee_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        env.storage().persistent().set(&DataKey::PlatformFeePerAsset(asset.clone()), &fee_bps);
+        env.events().publish((EVENT_FEE_CONFIG, admin.clone()), (asset.clone(), fee_bps));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_PLAT_FEE,
+                    issuer: admin,
+                    namespace: symbol_short!("platform"),
+                    token: asset.clone(),
+                    period_id: 0,
+                },
+            ),
+            fee_bps,
+        );
+
+        Ok(())
+    }
+
+    /// Return the effective fee in basis points for a given offering and asset.
+    /// Priority:
+    /// 1. Per-offering per-asset override.
+    /// 2. Platform-level per-asset override.
+    /// 3. Global platform fee.
+    pub fn get_effective_fee_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        asset: Address,
+    ) -> u32 {
+        let offering_id = OfferingId {
+            issuer,
+            namespace,
+            token,
+        };
+
+        // 1. Check for per-offering per-asset override
+        if let Some(fee) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::OfferingFeeBps(offering_id, asset.clone()))
+        {
+            return fee;
+        }
+
+        // 2. Check for platform-level per-asset override
+        if let Some(fee) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::PlatformFeePerAsset(asset))
+        {
+            return fee;
+        }
+
+        // 3. Fallback to global platform fee
+        Self::get_platform_fee(env)
     }
 
     /// Meta-transaction authorization for a revenue report payload.
@@ -4004,7 +4423,25 @@ impl RevoraRevenueShare {
         issuer.require_auth();
         let key = DataKey::ClaimDelaySecs(offering_id);
         env.storage().persistent().set(&key, &delay_secs);
-        env.events().publish((EVENT_CLAIM_DELAY_SET, issuer, namespace, token), delay_secs);
+        env.events().publish(
+            (EVENT_CLAIM_DELAY_SET, issuer.clone(), namespace.clone(), token.clone()),
+            delay_secs,
+        );
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_DELAY,
+                    issuer,
+                    namespace,
+                    token,
+                    period_id: 0,
+                },
+            ),
+            delay_secs,
+        );
         Ok(())
     }
 
@@ -4116,6 +4553,22 @@ impl RevoraRevenueShare {
             return Err(RevoraError::LimitReached);
         }
         env.storage().persistent().set(&key, &admin);
+        env.events().publish((EVENT_ADMIN_SET,), admin.clone());
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_ADMIN_SET,
+                    issuer: admin.clone(),
+                    namespace: symbol_short!("platform"),
+                    token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
+                    period_id: 0,
+                },
+            ),
+            admin,
+        );
         Ok(())
     }
 
@@ -4365,7 +4818,24 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::MultisigThreshold, &threshold);
         env.storage().persistent().set(&DataKey::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey::MultisigProposalCount, &0_u32);
+        env.storage().persistent().set(&DataKey::MultisigProposalDuration, &proposal_duration);
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
+
+        env.events().publish(
+            (
+                EVENT_INDEXED_V2,
+                EventIndexTopicV2 {
+                    version: 2,
+                    event_type: EVENT_TYPE_MS_INIT,
+                    issuer: caller,
+                    namespace: symbol_short!("platform"),
+                    token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
+                    period_id: 0,
+                },
+            ),
+            (owners.len(), threshold),
+        );
+
         Ok(())
     }
 
@@ -5136,9 +5606,145 @@ impl RevenueDepositContract {
         fixtures.push_back(EventIndexTopicV2 {
             version: 2,
             event_type: EVENT_TYPE_CLAIM,
-            issuer,
-            namespace,
-            token,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_REV_DEP,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_SHARE_SET,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_BL_ADD,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_BL_REM,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_SNAP_COMMIT,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_SNAP_SHARES,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_FEE_CFG,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_MIN_REV,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_ROUND,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_CONC,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_DELAY,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_MS_INIT,
+            issuer: issuer.clone(),
+            namespace: symbol_short!("platform"),
+            token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_META_SET,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_META_UPD,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_INV_CONSTR,
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_ADMIN_SET,
+            issuer: issuer.clone(),
+            namespace: symbol_short!("platform"),
+            token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
+            period_id: 0,
+        });
+        fixtures.push_back(EventIndexTopicV2 {
+            version: 2,
+            event_type: EVENT_TYPE_PLAT_FEE,
+            issuer: issuer.clone(),
+            namespace: symbol_short!("platform"),
+            token: Address::from_contract_id(&BytesN::from_array(&env, &[0; 32])),
             period_id: 0,
         });
         fixtures
