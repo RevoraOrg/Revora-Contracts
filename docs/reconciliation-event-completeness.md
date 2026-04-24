@@ -14,11 +14,32 @@ Prior to this feature, 8 critical configuration-level functions wrote to persist
 |---|---|---|
 | `EVENT_CONC_LIMIT_SET` | `set_concentration_limit` | `(max_bps, enforce)` |
 | `EVENT_ROUNDING_MODE_SET` | `set_rounding_mode` | `mode` |
-| `EVENT_META_SIGNER_SET` | `register_meta_signer_key` | `pub_key` |
-| `EVENT_META_DELEGATE_SET` | `set_meta_delegate` | `delegate` |
 | `EVENT_MULTISIG_INIT` | `init_multisig` | `(members, threshold)` |
 | `EVENT_ADMIN_SET` | `initialize` / `set_admin` | `admin` |
 | `EVENT_PLATFORM_FEE_SET` | `set_platform_fee` | `fee_bps` |
+| `EVENT_MIN_REV_THRESHOLD_SET` | `set_min_revenue_threshold` | `threshold` |
+| `EVENT_CLAIM_DELAY_SET` | `set_claim_delay` | `delay_seconds` |
+| `EVENT_METADATA_SET` | `set_offering_metadata` | `metadata` |
+| `EVENT_METADATA_UPDATED` | `set_offering_metadata` | `metadata` |
+
+## V2 Indexed Events (Standardized)
+
+All core state mutations now also emit a standardized `EVENT_INDEXED_V2` event with an `EventIndexTopicV2` structure for robust off-chain indexing.
+
+| Event Type (v2) | Function | Purpose |
+|---|---|---|
+| `offer` | `register_offering` | Offering registration |
+| `fee_cfg` | `set_fee_configuration` | Fee configuration changes |
+| `min_rev` | `set_min_revenue_threshold` | Minimum revenue threshold updates |
+| `round` | `set_rounding_mode` | Rounding mode updates |
+| `conc` | `set_concentration_limit` | Concentration limit updates |
+| `delay` | `set_claim_delay` | Claim delay updates |
+| `ms_init` | `init_multisig` | Multisig initialization |
+| `meta_set` | `set_offering_metadata` | Initial metadata attachment |
+| `meta_upd` | `set_offering_metadata` | Metadata updates |
+| `inv_con` | `set_investment_constraints` | Investment constraints updates |
+| `adm_set` | `set_admin` | Global admin initialization |
+| `plat_fee` | `set_platform_fee` / `set_platform_fee_per_asset` | Platform fee updates |
 
 ## Security Assumptions
 
