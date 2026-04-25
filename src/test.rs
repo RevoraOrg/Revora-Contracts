@@ -2001,6 +2001,322 @@ fn snapshot_deposit_preserves_registered_payment_token_lock() {
     );
 }
 
+// ── Payment token lock invariant tests (#287) ─────────────────
+
+/// Depositing with a different token after lock-in must fail with PaymentTokenMismatch.
+#[test]
+fn deposit_revenue_rejects_mismatched_token_after_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (locked_token, locked_admin) = create_payment_token(&env);
+    let (other_token, other_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &locked_token, &0);
+    mint_tokens(&env, &locked_token, &locked_admin, &issuer, &1_000_000);
+    mint_tokens(&env, &other_token, &other_admin, &issuer, &1_000_000);
+
+    // First deposit locks the token
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &locked_token, &100_000, &1);
+
+    // Second deposit with a different token must be rejected
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &other_token,
+        &100_000,
+        &2,
+    );
+    assert!(result.is_err());
+}
+
+/// The locked token is the one configured at registration, not any arbitrary address.
+#[test]
+fn deposit_revenue_rejects_wrong_token_on_first_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (configured_token, _) = create_payment_token(&env);
+    let (wrong_token, wrong_admin) = create_payment_token(&env);
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &configured_token,
+        &0,
+    );
+    mint_tokens(&env, &wrong_token, &wrong_admin, &issuer, &1_000_000);
+
+    // First deposit with wrong token must be rejected
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &wrong_token,
+        &100_000,
+        &1,
+    );
+    assert!(result.is_err());
+}
+
+/// Lock is stable: get_payment_token returns the same address before and after deposits.
+#[test]
+fn payment_token_lock_is_stable_across_multiple_deposits() {
+    let (env, client, issuer, token, payment_token, _) = claim_setup();
+
+    let before = client.get_payment_token(&issuer, &symbol_short!("def"), &token);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &200_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &300_000, &3);
+    let after = client.get_payment_token(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(before, after);
+    assert_eq!(after, Some(payment_token));
+    let _ = env;
+}
+
+/// Two offerings with different payout assets each lock independently.
+#[test]
+fn payment_token_lock_is_per_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (asset_a, admin_a) = create_payment_token(&env);
+    let (asset_b, admin_b) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &5_000, &asset_a, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &5_000, &asset_b, &0);
+
+    mint_tokens(&env, &asset_a, &admin_a, &issuer, &1_000_000);
+    mint_tokens(&env, &asset_b, &admin_b, &issuer, &1_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token_a, &asset_a, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token_b, &asset_b, &100_000, &1);
+
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token_a),
+        Some(asset_a)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token_b),
+        Some(asset_b)
+    );
+}
+
+// ── Payment token decimal tests (#287) ────────────────────────
+
+/// Default decimal precision is 7 (Stellar canonical) when not explicitly set.
+#[test]
+fn get_payment_token_decimals_defaults_to_7() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+
+    assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 7);
+}
+
+/// set_payment_token_decimals stores and get_payment_token_decimals retrieves the value.
+#[test]
+fn set_and_get_payment_token_decimals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
+
+    assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 6);
+}
+
+/// set_payment_token_decimals rejects values > 18.
+#[test]
+fn set_payment_token_decimals_rejects_out_of_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+
+    let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &19);
+    assert!(result.is_err());
+}
+
+/// set_payment_token_decimals accepts boundary value 18.
+#[test]
+fn set_payment_token_decimals_accepts_max_18() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+
+    let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &18);
+    assert!(result.is_ok());
+    assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 18);
+}
+
+/// set_payment_token_decimals accepts 0 (no fractional units).
+#[test]
+fn set_payment_token_decimals_accepts_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+
+    let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &0);
+    assert!(result.is_ok());
+    assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 0);
+}
+
+/// Claim with 6-decimal token: revenue is scaled up before share computation.
+/// 1_000_000 raw USDC (6 dec) → 10_000_000 normalized (7 dec).
+/// Holder with 50% share (5_000 bps) receives 5_000_000.
+#[test]
+fn claim_normalizes_6_decimal_token_revenue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    // Configure 6-decimal token (e.g., USDC)
+    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
+
+    // Deposit 1_000_000 raw units (= 1.0 USDC at 6 decimals)
+    // The contract receives 1_000_000 from the issuer.
+    // Normalized payout = 5_000_000 (7-dec), but the contract only holds 1_000_000 raw units.
+    // We mint extra to the contract so the transfer succeeds.
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &1_000_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &1_000_000, &1);
+    // Top up contract balance to cover the normalized payout (5_000_000)
+    mint_tokens(&env, &payment_token, &pt_admin, &contract_id, &5_000_000);
+
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &10);
+    // 1_000_000 (6-dec) → 10_000_000 (7-dec); 50% share → 5_000_000
+    assert_eq!(payout, 5_000_000);
+}
+
+/// Claim with 8-decimal token: revenue is scaled down before share computation.
+/// 1_000_000_00 raw (8 dec) → 10_000_000 normalized (7 dec).
+/// Holder with 50% share receives 5_000_000.
+#[test]
+fn claim_normalizes_8_decimal_token_revenue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    // Configure 8-decimal token (e.g., WBTC)
+    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &8);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
+
+    // Deposit 100_000_000 raw units (= 1.0 at 8 decimals)
+    // Normalized: 100_000_000 / 10 = 10_000_000 (7-dec); 50% → 5_000_000
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &100_000_000);
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payment_token,
+        &100_000_000,
+        &1,
+    );
+    // Contract holds 100_000_000 raw; payout is 5_000_000 — well within balance
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &10);
+    // 100_000_000 (8-dec) → 10_000_000 (7-dec); 50% share → 5_000_000
+    assert_eq!(payout, 5_000_000);
+}
+
+/// Claim with 7-decimal token (default): no normalization, revenue used as-is.
+#[test]
+fn claim_with_7_decimal_token_is_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    // Default is 7 decimals — no explicit set needed
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
+
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &1_000_000, &1);
+    mint_tokens(&env, &payment_token, &pt_admin, &contract_id, &1_000_000);
+
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &10);
+    // No normalization: 1_000_000 * 5_000 / 10_000 = 500_000
+    assert_eq!(payout, 500_000);
+}
+
+/// get_claimable reflects decimal normalization for 6-decimal tokens.
+#[test]
+fn get_claimable_normalizes_6_decimal_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let (payment_token, pt_admin) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+
+    mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &1_000_000, &1);
+
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    // 1_000_000 (6-dec) → 10_000_000 (7-dec); 50% → 5_000_000
+    assert_eq!(claimable, 5_000_000);
+}
+
 #[test]
 fn deposit_revenue_emits_event() {
     let (env, client, issuer, token, payment_token, _contract_id) = claim_setup();

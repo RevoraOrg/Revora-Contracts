@@ -3598,7 +3598,14 @@ impl RevoraRevenueShare {
             }
             let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
             let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
-            let payout = revenue * (share_bps as i128) / 10_000;
+            let decimals = Self::get_payment_token_decimals(
+                env.clone(),
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            );
+            let normalized = Self::normalize_amount(revenue, decimals);
+            let payout = normalized * (share_bps as i128) / 10_000;
             total_payout += payout;
             claimed_periods.push_back(period_id);
             last_claimed_idx = i + 1;
@@ -3876,9 +3883,16 @@ impl RevoraRevenueShare {
 
             let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
             let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap_or(0);
+            let decimals = Self::get_payment_token_decimals(
+                env.clone(),
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            );
+            let normalized = Self::normalize_amount(revenue, decimals);
             total = total.saturating_add(Self::compute_share(
                 env.clone(),
-                revenue,
+                normalized,
                 share_bps,
                 RoundingMode::Truncation,
             ));
