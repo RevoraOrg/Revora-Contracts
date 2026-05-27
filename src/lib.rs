@@ -1613,6 +1613,51 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    pub fn replace_issuer_transfer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let key = DataKey::PendingIssuerTransfer(offering_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(RevoraError::NoTransferPending);
+        }
+
+        let pending: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+        let timestamp = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
+            (issuer.clone(), pending.new_issuer.clone()),
+        );
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
+            (new_issuer.clone(), timestamp),
+        );
+        Ok(())
+    }
+
     pub fn accept_issuer_transfer(
         env: Env,
         new_issuer: Address,
