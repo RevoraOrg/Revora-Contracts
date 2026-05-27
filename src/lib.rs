@@ -1963,9 +1963,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&count_key, &(count + 1));
 
         // Direct index for O(1) get_offering (#360).
-        env.storage()
-            .persistent()
-            .set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
+        env.storage().persistent().set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
 
         let issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
