@@ -251,7 +251,7 @@ Comprehensive tests verify these invariants:
 - `claim_partial_sequence_with_delay_advances_index_correctly`: Partial sequences advance index correctly
 
 
-- **Version:** Call `get_version()` to read the current contract version (a constant, e.g., `4`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
+- **Version:** Call `get_version()` to read the current contract version (a constant, e.g., `23`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
 - **Upgrade strategy:** This codebase deploys a single WASM contract; Soroban has no EVM-style proxy upgrade, so upgrades require deploying a new contract instance. Future upgrades follow this process:
   1. Deploy a new contract (new WASM) with a higher `CONTRACT_VERSION`.
   2. Optionally run a one-time migration (e.g., admin or migration script) that reads state from the old contract and writes into the new one, or that emits migration-milestone events for indexers.

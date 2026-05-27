@@ -310,7 +310,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Offerings are immutable once registered.
 // ── Data structures ──────────────────────────────────────────
 /// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
-pub const CONTRACT_VERSION: u32 = 5;
+pub const CONTRACT_VERSION: u32 = 23;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -4094,6 +4094,11 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::ClaimDelaySecs(offering_id)).unwrap_or(0)
     }
+
+    /// Return the current contract version (#23).
+    pub fn get_version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
 }
 
 // ── Holder shares, claims, admin, governance, and utility methods ─────────────
@@ -5584,3 +5589,17 @@ impl RevoraRevenueShare {
         Ok(())
     }
 } // end impl RevoraRevenueShare (plain)
+
+#[cfg(test)]
+mod version_drift_tests {
+    use super::*;
+
+    #[test]
+    fn test_get_version_matches_constant() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        
+        assert_eq!(client.get_version(), CONTRACT_VERSION);
+    }
+}
