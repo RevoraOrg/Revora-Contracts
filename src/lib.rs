@@ -677,6 +677,7 @@ pub enum DataKey2 {
     StressDataCount(Address),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
+
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
 }
@@ -2048,8 +2049,10 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
         // O(1) direct lookup via index written at registration (#360).
-        if let Some(offering) =
-            env.storage().persistent().get::<DataKey2, Offering>(&DataKey2::OfferingRecord(offering_id))
+        if let Some(offering) = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, Offering>(&DataKey2::OfferingRecord(offering_id))
         {
             return Some(offering);
         }
