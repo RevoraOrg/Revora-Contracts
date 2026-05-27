@@ -2148,6 +2148,153 @@ fn payment_token_lock_is_per_offering() {
     );
 }
 
+// ── Payment token locking invariant suite (#375) ──────────────
+//
+// Focused tests for the invariants documented in the README:
+//   1. get_payment_token returns None before any deposit.
+//   2. First successful deposit locks the payment token.
+//   3. Subsequent deposits with a different token fail with PaymentTokenMismatch.
+//   4. A failed first deposit does NOT lock the token.
+//   5. Repeated same-token deposits succeed.
+//   6. Deposit on unknown offering fails before any locking.
+
+/// get_payment_token is None before any deposit, even after registration.
+#[test]
+fn payment_token_none_before_first_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payout, _) = create_payment_token(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
+}
+
+/// First successful deposit locks the payment token; get_payment_token returns it.
+#[test]
+fn payment_token_locked_after_first_successful_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payout, admin) = create_payment_token(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    mint_tokens(&env, &payout, &admin, &issuer, &1_000_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout, &100_000, &1);
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token),
+        Some(payout)
+    );
+}
+
+/// Second deposit with a different token returns PaymentTokenMismatch (explicit error code).
+#[test]
+fn payment_token_mismatch_returns_correct_error_code() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payout_a, admin_a) = create_payment_token(&env);
+    let (payout_b, admin_b) = create_payment_token(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_a, &0);
+    mint_tokens(&env, &payout_a, &admin_a, &issuer, &1_000_000);
+    mint_tokens(&env, &payout_b, &admin_b, &issuer, &1_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_a, &100_000, &1);
+
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_b,
+        &200_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+    // Locked token and period count unchanged
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token),
+        Some(payout_a)
+    );
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 1);
+}
+
+/// Failed first deposit (no balance → TransferFailed) does NOT lock the payment token.
+#[test]
+fn payment_token_not_locked_after_failed_first_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payout, admin) = create_payment_token(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    // No mint — transfer will fail
+    let r = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout,
+        &100_000,
+        &1,
+    );
+    assert_eq!(r, Err(Ok(RevoraError::TransferFailed)));
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 0);
+    // Retry with balance succeeds and locks
+    mint_tokens(&env, &payout, &admin, &issuer, &1_000_000);
+    assert!(client
+        .try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout, &100_000, &1)
+        .is_ok());
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token),
+        Some(payout)
+    );
+}
+
+/// Repeated deposits with the same token all succeed; lock remains stable.
+#[test]
+fn payment_token_lock_stable_across_repeated_same_token_deposits() {
+    let (env, client, issuer, token, payout, _) = claim_setup();
+    for period in 1u64..=3 {
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout, &100_000, &period);
+    }
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("def"), &token),
+        Some(payout)
+    );
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 3);
+    let _ = env;
+}
+
+/// Deposit on an unknown offering fails with OfferingNotFound before any locking.
+#[test]
+fn payment_token_not_locked_for_unknown_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let unknown = Address::generate(&env);
+    let (payout, admin) = create_payment_token(&env);
+    mint_tokens(&env, &payout, &admin, &issuer, &1_000_000);
+    let r = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &unknown,
+        &payout,
+        &100_000,
+        &1,
+    );
+    assert_eq!(r, Err(Ok(RevoraError::OfferingNotFound)));
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &unknown), None);
+}
+
 // ── Payment token decimal tests (#287) ────────────────────────
 
 /// Default decimal precision is 7 (Stellar canonical) when not explicitly set.
