@@ -154,6 +154,9 @@ pub enum RevoraError {
 
 pub mod vesting;
 
+#[cfg(test)]
+mod test_duplicates;
+
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
