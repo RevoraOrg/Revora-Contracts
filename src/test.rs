@@ -1488,6 +1488,143 @@ fn concentration_near_threshold_boundary() {
 }
 
 // ---------------------------------------------------------------------------
+// Auth-first ordering: set_concentration_limit (#auth-order)
+// ---------------------------------------------------------------------------
+
+// set_concentration_limit must authenticate the issuer BEFORE reading any
+// offering state. Without auth-first, an unauthenticated caller could probe
+// whether an offering exists by observing the error code difference between
+// "auth failed" and "offering not found".
+
+#[test]
+fn set_concentration_limit_requires_auth_before_state_read() {
+    // No mock_all_auths — auth is NOT mocked, so require_auth() will panic/fail.
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    // Register the offering with mocked auth so it exists in storage.
+    env.mock_all_auths();
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // Now clear mocked auths — subsequent calls require real auth.
+    let env2 = Env::default();
+    let client2 = make_client(&env2);
+    // No offering registered in env2, no auth mocked.
+    // The call must fail due to auth, not due to offering absence.
+    let result = client2.try_set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    assert!(result.is_err(), "unauthenticated call must be rejected");
+}
+
+#[test]
+fn set_concentration_limit_auth_required_even_in_event_only_mode() {
+    // Verifies the critical fix: auth must be checked even when is_event_only() is true.
+    // Previously, require_auth() was inside the `if !is_event_only` branch, meaning
+    // event-only mode silently skipped authorization entirely.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    // Initialize in event-only mode.
+    client.initialize(&admin, &None, &Some(true));
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // With mock_all_auths the call succeeds (auth is satisfied).
+    let result = client.try_set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    // In event-only mode the function returns Ok but does not write storage.
+    assert!(result.is_ok(), "authenticated call in event-only mode must return Ok");
+    // Confirm no config was stored (event-only skips persistent writes).
+    let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
+    assert!(config.is_none(), "event-only mode must not persist concentration config");
+}
+
+#[test]
+fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
+    // Confirms the identity check (current_issuer != issuer) still fires after auth.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // attacker tries to set the limit on issuer's offering.
+    let result = client.try_set_concentration_limit(
+        &attacker,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// Auth-first ordering: set_rounding_mode (#auth-order)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_rounding_mode_requires_auth_before_state_read() {
+    // No mock_all_auths — require_auth() will fail.
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // No offering registered, no auth mocked — must fail on auth, not on offering lookup.
+    let result = client.try_set_rounding_mode(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &RoundingMode::RoundHalfUp,
+    );
+    assert!(result.is_err(), "unauthenticated call must be rejected");
+}
+
+#[test]
+fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    let result = client.try_set_rounding_mode(
+        &attacker,
+        &symbol_short!("def"),
+        &token,
+        &RoundingMode::RoundHalfUp,
+    );
+    assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
 // On-chain audit log summary (#34)
 // ---------------------------------------------------------------------------
 
@@ -10416,3 +10553,181 @@ fn share_bps_update_to_zero_removes_payout() {
     let result = client.try_claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
     assert_eq!(result, Err(Ok(RevoraError::NoPendingClaims)));
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #370: get_offerings_page Pagination Stability Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_offerings_page_pagination_25_offerings() {
+    // Issue #370: Register 25 offerings and test pagination with different limits
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer1 = Address::generate(&env);
+    let ns = symbol_short!("test");
+
+    // Register 25 offerings for issuer1
+    let mut tokens = Vec::new(&env);
+    for i in 0..25 {
+        let token = Address::generate(&env);
+        tokens.push_back(token.clone());
+        client.register_offering(&issuer1, &ns, &token, &(1000 + i * 100), &token, &0);
+    }
+
+    // Test 1: Page through with limit=10
+    let (page1, cursor1) = client.get_offerings_page(&issuer1, &ns, &0, &10);
+    assert_eq!(page1.len(), 10, "First page should have 10 items");
+    assert_eq!(cursor1, Some(10), "Cursor should be 10");
+
+    let (page2, cursor2) = client.get_offerings_page(&issuer1, &ns, &10, &10);
+    assert_eq!(page2.len(), 10, "Second page should have 10 items");
+    assert_eq!(cursor2, Some(20), "Cursor should be 20");
+
+    let (page3, cursor3) = client.get_offerings_page(&issuer1, &ns, &20, &10);
+    assert_eq!(page3.len(), 5, "Third page should have 5 items");
+    assert_eq!(cursor3, None, "Cursor should be None on last page");
+
+    // Test 2: Page through with limit=100 (should clamp to 20)
+    let (page_large, cursor_large) = client.get_offerings_page(&issuer1, &ns, &0, &100);
+    assert_eq!(page_large.len(), 20, "Limit 100 should be clamped to 20");
+    assert_eq!(cursor_large, Some(20), "Cursor should be 20");
+
+    // Verify we can continue from cursor
+    let (page_rest, cursor_rest) = client.get_offerings_page(&issuer1, &ns, &20, &20);
+    assert_eq!(page_rest.len(), 5, "Second page should have 5 remaining items");
+    assert_eq!(cursor_rest, None, "No more pages");
+}
+
+#[test]
+fn test_offerings_page_edge_cases() {
+    // Issue #370: Test edge cases - start == count, start > count, limit 0, limit > cap
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("test");
+
+    // Register 10 offerings
+    for i in 0..10 {
+        let token = Address::generate(&env);
+        client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    }
+
+    // Edge case 1: start == count (10 offerings, start at 10)
+    let (page_at_end, cursor_at_end) = client.get_offerings_page(&issuer, &ns, &10, &20);
+    assert_eq!(page_at_end.len(), 0, "Should return empty vector when start == count");
+    assert_eq!(cursor_at_end, None, "Should return None when start == count");
+
+    // Edge case 2: start > count (10 offerings, start at 15)
+    let (page_beyond, cursor_beyond) = client.get_offerings_page(&issuer, &ns, &15, &20);
+    assert_eq!(page_beyond.len(), 0, "Should return empty vector when start > count");
+    assert_eq!(cursor_beyond, None, "Should return None when start > count");
+
+    // Edge case 3: limit = 0 (should default to MAX_PAGE_LIMIT = 20)
+    let (page_zero, cursor_zero) = client.get_offerings_page(&issuer, &ns, &0, &0);
+    assert_eq!(page_zero.len(), 10, "Limit 0 should use default MAX_PAGE_LIMIT");
+    assert_eq!(cursor_zero, None, "All items fit in one page with default limit");
+
+    // Edge case 4: limit > MAX_PAGE_LIMIT
+    let (page_capped, cursor_capped) = client.get_offerings_page(&issuer, &ns, &0, &50);
+    assert_eq!(page_capped.len(), 10, "Limit > 20 should be capped to MAX_PAGE_LIMIT");
+}
+
+#[test]
+fn test_offerings_page_ordering_deterministic() {
+    // Issue #370: Verify offerings are ordered by registration index (creation order)
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("test");
+
+    // Register offerings in specific order
+    let t0 = Address::generate(&env);
+    let t1 = Address::generate(&env);
+    let t2 = Address::generate(&env);
+    let t3 = Address::generate(&env);
+
+    client.register_offering(&issuer, &ns, &t0, &100, &t0, &0);
+    client.register_offering(&issuer, &ns, &t1, &200, &t1, &0);
+    client.register_offering(&issuer, &ns, &t2, &300, &t2, &0);
+    client.register_offering(&issuer, &ns, &t3, &400, &t3, &0);
+
+    // Retrieve all pages and verify ordering
+    let (page1, cursor1) = client.get_offerings_page(&issuer, &ns, &0, &2);
+    assert_eq!(page1.len(), 2, "First page should have 2 items");
+    assert_eq!(page1.get(0).unwrap().token, t0, "First offering should be t0");
+    assert_eq!(page1.get(1).unwrap().token, t1, "Second offering should be t1");
+
+    let (page2, cursor2) = client.get_offerings_page(&issuer, &ns, &2, &2);
+    assert_eq!(page2.len(), 2, "Second page should have 2 items");
+    assert_eq!(page2.get(0).unwrap().token, t2, "Third offering should be t2");
+    assert_eq!(page2.get(1).unwrap().token, t3, "Fourth offering should be t3");
+
+    // Verify cursor progression
+    assert_eq!(cursor1, Some(2), "First page cursor should be 2");
+    assert_eq!(cursor2, None, "Last page cursor should be None");
+}
+
+#[test]
+fn test_offerings_page_after_issuer_transfer() {
+    // Issue #370: Test pagination behavior after accept_issuer_transfer
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer1 = Address::generate(&env);
+    let issuer2 = Address::generate(&env);
+    let ns = symbol_short!("test");
+
+    // Security: seed the issuer registry so accept_issuer_transfer can find pending transfers.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
+        env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer1);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::IssuerRegistered(issuer1.clone()), &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::NamespaceCount(issuer1.clone()), &1_u32);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::NamespaceItem(issuer1.clone(), 0), &ns);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::NamespaceRegistered(issuer1.clone(), ns.clone()), &true);
+    });
+
+    // Register offerings for issuer1
+    let t1 = Address::generate(&env);
+    let t2 = Address::generate(&env);
+    let t3 = Address::generate(&env);
+
+    client.register_offering(&issuer1, &ns, &t1, &100, &t1, &0);
+    client.register_offering(&issuer1, &ns, &t2, &200, &t2, &0);
+    client.register_offering(&issuer1, &ns, &t3, &300, &t3, &0);
+
+    // Verify issuer1 has 3 offerings
+    let (page1_before, _) = client.get_offerings_page(&issuer1, &ns, &0, &20);
+    assert_eq!(page1_before.len(), 3, "Issuer1 should have 3 offerings");
+
+    // Verify issuer2 has 0 offerings initially
+    let (page2_before, _) = client.get_offerings_page(&issuer2, &ns, &0, &20);
+    assert_eq!(page2_before.len(), 0, "Issuer2 should have 0 offerings initially");
+
+    // Transfer t2 from issuer1 to issuer2
+    client.propose_issuer_transfer(&issuer1, &ns, &t2, &issuer2);
+    client.accept_issuer_transfer(&issuer2, &ns, &t2);
+
+    // Verify issuer1 now has 2 offerings (t2 copied, not moved)
+    let (page1_after, _) = client.get_offerings_page(&issuer1, &ns, &0, &20);
+    assert_eq!(page1_after.len(), 3, "Issuer1 should still have 3 offerings (copy operation)");
+
+    // Verify issuer2 now has 1 offering
+    let (page2_after, _) = client.get_offerings_page(&issuer2, &ns, &0, &20);
+    assert_eq!(page2_after.len(), 1, "Issuer2 should have 1 offering after transfer");
+    assert_eq!(page2_after.get(0).unwrap().token, t2, "Issuer2's offering should be t2");
+}
+
