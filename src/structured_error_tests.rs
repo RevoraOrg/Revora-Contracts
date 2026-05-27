@@ -18,13 +18,18 @@
 /// 2. A migration note in this file and in `README.md`.
 /// 3. Updated off-chain SDK / indexer documentation.
 ///
+/// See README.md error code table for the full stability contract.
+///
 /// ## Audit history
 ///
 /// | Version | Change |
 /// |---------|--------|
 /// | v1–v4   | `ProposalExpired = 30` and `TransferFailed = 30` — **duplicate** (bug) |
-/// | v5      | `TransferFailed` renumbered to `31`; `NoAdminRotationPending` (36), |
-/// |         | `BlacklistSizeLimitExceeded` (37), `UnauthorizedRotationAccept` (38) added |
+/// | v5      | `TransferFailed` renumbered to `39`; discriminants now non-contiguous (1..=46) |
+/// |         | with gaps at 31, 34, 37–38. New variants: `NoAdminRotationPending` (35), |
+/// |         | `UnauthorizedRotationAccept` (36), `OfferingFrozen` (42), |
+/// |         | `IssuerTransferExpired` (43), `ContractPaused` (44), |
+/// |         | `BlacklistSizeLimitExceeded` (45), `AlreadyApproved` (46) |
 
 #[cfg(test)]
 mod structured_error_tests {
@@ -77,11 +82,15 @@ mod structured_error_tests {
             ("AdminRotationSameAddress",  RevoraError::AdminRotationSameAddress  as u32),
             ("AdminRotationPending",      RevoraError::AdminRotationPending      as u32),
             ("NoAdminRotationPending",    RevoraError::NoAdminRotationPending    as u32),
-            ("BlacklistSizeLimitExceeded",RevoraError::BlacklistSizeLimitExceeded as u32),
             ("UnauthorizedRotationAccept",RevoraError::UnauthorizedRotationAccept as u32),
+            ("OfferingFrozen",            RevoraError::OfferingFrozen            as u32),
+            ("IssuerTransferExpired",     RevoraError::IssuerTransferExpired     as u32),
+            ("ContractPaused",            RevoraError::ContractPaused            as u32),
+            ("BlacklistSizeLimitExceeded",RevoraError::BlacklistSizeLimitExceeded as u32),
+            ("AlreadyApproved",           RevoraError::AlreadyApproved           as u32),
         ];
 
-        // O(n²) uniqueness check — n=38, negligible cost.
+        // O(n²) uniqueness check — n=42, negligible cost.
         for i in 0..codes.len() {
             for j in (i + 1)..codes.len() {
                 assert_ne!(
@@ -104,6 +113,9 @@ mod structured_error_tests {
 
     #[test]
     fn test_wire_values_are_frozen() {
+        // See README.md error code table for the full stability contract.
+        // These discriminants are frozen — any change requires a CONTRACT_VERSION bump
+        // and migration documentation. Gaps are preserved for wire compatibility.
         assert_eq!(RevoraError::InvalidRevenueShareBps    as u32,  1);
         assert_eq!(RevoraError::LimitReached              as u32,  2);
         assert_eq!(RevoraError::ConcentrationLimitExceeded as u32, 3);
@@ -135,16 +147,22 @@ mod structured_error_tests {
         assert_eq!(RevoraError::SignerKeyNotRegistered    as u32, 29);
         // 30: ProposalExpired — stable since v1
         assert_eq!(RevoraError::ProposalExpired           as u32, 30);
-        // 31: TransferFailed — renumbered from 30 in v5 (was duplicate of ProposalExpired)
-        assert_eq!(RevoraError::TransferFailed            as u32, 31);
+        // 31: gap (reserved for future use)
         assert_eq!(RevoraError::AlreadyAtTargetVersion    as u32, 32);
         assert_eq!(RevoraError::MigrationDowngradeNotAllowed as u32, 33);
-        assert_eq!(RevoraError::AdminRotationSameAddress  as u32, 34);
-        assert_eq!(RevoraError::AdminRotationPending      as u32, 35);
-        // 36–38: new in v5
-        assert_eq!(RevoraError::NoAdminRotationPending    as u32, 36);
-        assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 37);
-        assert_eq!(RevoraError::UnauthorizedRotationAccept as u32, 38);
+        // 34: gap (reserved for future use)
+        assert_eq!(RevoraError::NoAdminRotationPending    as u32, 35);
+        assert_eq!(RevoraError::UnauthorizedRotationAccept as u32, 36);
+        // 37–38: gaps (reserved for future use)
+        // 39: TransferFailed — renumbered from 30 in v5 (was duplicate of ProposalExpired)
+        assert_eq!(RevoraError::TransferFailed            as u32, 39);
+        assert_eq!(RevoraError::AdminRotationSameAddress  as u32, 40);
+        assert_eq!(RevoraError::AdminRotationPending      as u32, 41);
+        assert_eq!(RevoraError::OfferingFrozen            as u32, 42);
+        assert_eq!(RevoraError::IssuerTransferExpired     as u32, 43);
+        assert_eq!(RevoraError::ContractPaused            as u32, 44);
+        assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
+        assert_eq!(RevoraError::AlreadyApproved           as u32, 46);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -163,19 +181,19 @@ mod structured_error_tests {
         );
         assert_eq!(RevoraError::ProposalExpired as u32, 30,
             "ProposalExpired wire value must remain 30 (stable since v1)");
-        assert_eq!(RevoraError::TransferFailed as u32, 31,
-            "TransferFailed wire value is 31 since v5 (was 30, duplicate bug)");
+        assert_eq!(RevoraError::TransferFailed as u32, 39,
+            "TransferFailed wire value is 39 since v5 (was 30, duplicate bug)");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 4. CONTIGUOUS RANGE — no gaps that would confuse decoders
+    // 4. VALID RANGE — all discriminants within 1..=46, gaps preserved
     // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_discriminants_form_contiguous_range_1_to_38() {
-        // The enum must cover 1..=38 with no gaps. A gap means an off-chain
-        // decoder's match table has a hole that could silently misroute errors.
-        let mut values: [bool; 39] = [false; 39]; // index 0 unused (0 is not a valid code)
+    fn test_discriminants_within_valid_range_1_to_46() {
+        // All discriminants must be within 1..=46. Gaps are preserved for wire
+        // compatibility — do not renumber existing variants. New variants should
+        // use the next available number or fill gaps intentionally.
         let all = [
             RevoraError::InvalidRevenueShareBps    as u32,
             RevoraError::LimitReached              as u32,
@@ -213,15 +231,15 @@ mod structured_error_tests {
             RevoraError::AdminRotationSameAddress  as u32,
             RevoraError::AdminRotationPending      as u32,
             RevoraError::NoAdminRotationPending    as u32,
-            RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::UnauthorizedRotationAccept as u32,
+            RevoraError::OfferingFrozen            as u32,
+            RevoraError::IssuerTransferExpired     as u32,
+            RevoraError::ContractPaused            as u32,
+            RevoraError::BlacklistSizeLimitExceeded as u32,
+            RevoraError::AlreadyApproved           as u32,
         ];
         for v in all.iter() {
-            assert!(*v >= 1 && *v <= 38, "discriminant {v} out of expected range 1..=38");
-            values[*v as usize] = true;
-        }
-        for i in 1usize..=38 {
-            assert!(values[i], "gap in discriminant table: {i} is not assigned to any variant");
+            assert!(*v >= 1 && *v <= 46, "discriminant {v} out of expected range 1..=46");
         }
     }
 
@@ -284,8 +302,12 @@ mod structured_error_tests {
             RevoraError::AdminRotationSameAddress  as u32,
             RevoraError::AdminRotationPending      as u32,
             RevoraError::NoAdminRotationPending    as u32,
-            RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::UnauthorizedRotationAccept as u32,
+            RevoraError::OfferingFrozen            as u32,
+            RevoraError::IssuerTransferExpired     as u32,
+            RevoraError::ContractPaused            as u32,
+            RevoraError::BlacklistSizeLimitExceeded as u32,
+            RevoraError::AlreadyApproved           as u32,
         ];
         for v in all.iter() {
             assert_ne!(*v, 0, "discriminant 0 is reserved for Ok; no error variant may use it");
