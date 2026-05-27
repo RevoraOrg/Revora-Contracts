@@ -87,6 +87,34 @@ client.cancel_issuer_transfer(&token);
 - `OfferingNotFound` - Token doesn't have a registered offering
 - `ContractFrozen` - Contract is frozen by admin
 
+### Optional: Replace Pending Transfer (Current Issuer)
+
+The current issuer can replace an active pending transfer with a new proposed issuer in one atomic operation.
+
+```rust
+// Current issuer updates the pending transfer target and refreshes expiry
+client.replace_issuer_transfer(&token, &new_issuer);
+```
+
+**What happens:**
+- Contract verifies caller is the current issuer (via `require_auth`)
+- Validates an existing pending transfer exists
+- Overwrites `PendingIssuerTransfer(token)` with a fresh `new_issuer` and new timestamp
+- Emits `iss_canc` for the old pending proposal
+- Emits `iss_prop` for the new pending proposal
+- This preserves a single canonical pending transfer and restarts the expiry window
+
+**Why this is useful:**
+- Avoids a two-step cancel + propose workflow
+- Keeps off-chain indexers in sync by emitting both cancel and propose events
+- Ensures the old issuer remains the only authority to modify the pending transfer
+
+**Possible errors:**
+- `NoTransferPending` - No transfer is pending
+- `OfferingNotFound` - Token doesn't have a registered offering
+- `NotAuthorized` - Caller is not the current issuer
+- `ContractFrozen` - Contract is frozen by admin
+
 ## Query Functions
 
 ### Check Pending Transfer
