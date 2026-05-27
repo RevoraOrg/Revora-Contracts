@@ -9401,6 +9401,157 @@ mod regression {
         let r = client.try_set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
         assert!(r.is_ok());
     }
+
+    /// Regression Test: set_concentration_limit silent no-op in event_only mode
+    ///
+    /// **Related Issue:** #354
+    ///
+    /// **Original Bug:**
+    /// `set_concentration_limit` placed `issuer.require_auth()`, the storage write, and the event
+    /// emission all inside `if !Self::is_event_only(&env)`. In event-only deployments the function
+    /// returned `Ok(())` without storing the config or emitting any event, making the call a
+    /// completely silent no-op. Callers had no way to detect the failure, and subsequent
+    /// `report_revenue` enforcement silently did nothing.
+    ///
+    /// **Expected Behavior:**
+    /// Auth is always required. In event-only mode the config is not persisted (consistent with
+    /// the rest of the event-only contract pattern) but the event IS emitted so callers can
+    /// observe the call. In normal mode both storage and event happen as before.
+    ///
+    /// **Fix Applied:**
+    /// Moved `issuer.require_auth()` outside the `if !event_only` block and moved the
+    /// `emit_v2_event` call outside as well, keeping only the storage write inside the guard.
+    #[test]
+    fn regression_issue_354_set_concentration_limit_event_only_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &None, &Some(true));
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        // In event-only mode register_offering emits but does not persist
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+
+        let before = env.events().all().len();
+        let result = client.try_set_concentration_limit(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &5_000,
+            &true,
+        );
+        // Must succeed (not a silent no-op)
+        assert!(result.is_ok());
+        // Event must be emitted even in event-only mode
+        assert!(env.events().all().len() > before, "expected conc_lim event in event-only mode");
+    }
+
+    #[test]
+    fn regression_issue_354_set_concentration_limit_event_only_does_not_persist() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &None, &Some(true));
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5_000, &true);
+
+        // In event-only mode config must NOT be persisted
+        let stored = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
+        assert!(stored.is_none(), "config must not be stored in event-only mode");
+    }
+
+    #[test]
+    fn regression_issue_354_set_concentration_limit_normal_mode_persists_and_emits() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        // Normal mode (event_only = false)
+        client.initialize(&admin, &None, &Some(false));
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+
+        let before = env.events().all().len();
+        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &3_000, &false);
+
+        // Config persisted
+        let stored = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
+        assert!(stored.is_some());
+        let cfg = stored.unwrap();
+        assert_eq!(cfg.max_bps, 3_000);
+        assert!(!cfg.enforce);
+
+        // Event emitted
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn regression_issue_354_set_concentration_limit_enforce_true_max_bps_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &None, &Some(false));
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &0, &true);
+
+        let cfg = client
+            .get_concentration_limit(&issuer, &symbol_short!("def"), &token)
+            .unwrap();
+        assert_eq!(cfg.max_bps, 0);
+        assert!(cfg.enforce);
+    }
+
+    #[test]
+    fn regression_issue_354_set_concentration_limit_max_bps_10000() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &None, &Some(false));
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+        let result =
+            client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10_000, &true);
+        assert!(result.is_ok());
+        let cfg = client
+            .get_concentration_limit(&issuer, &symbol_short!("def"), &token)
+            .unwrap();
+        assert_eq!(cfg.max_bps, 10_000);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

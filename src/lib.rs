@@ -3145,16 +3145,19 @@ impl RevoraRevenueShare {
 
         Self::require_not_frozen(&env)?;
 
+        issuer.require_auth();
+
         if !Self::is_event_only(&env) {
-            issuer.require_auth();
             let key = DataKey::ConcentrationLimit(offering_id);
             env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
-            Self::emit_v2_event(
-                &env,
-                (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
-                (max_bps, enforce),
-            );
         }
+
+        Self::emit_v2_event(
+            &env,
+            (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
+            (max_bps, enforce),
+        );
+
         Ok(())
     }
 
