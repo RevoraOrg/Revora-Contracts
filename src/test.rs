@@ -5186,6 +5186,52 @@ fn issuer_transfer_cancel_then_can_propose_again() {
     );
 }
 
+#[test]
+fn issuer_transfer_replace_active_transfer() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    let before = legacy_events(&env).len();
+
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+
+    assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), Some(new_issuer_2));
+    assert_eq!(legacy_events(&env).len(), before + 2);
+}
+
+#[test]
+fn issuer_transfer_replace_with_same_target_resets_expiry() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let key = DataKey::PendingIssuerTransfer(OfferingId {
+        issuer: issuer.clone(),
+        namespace: symbol_short!("def"),
+        token: token.clone(),
+    });
+    let pending_before: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 10);
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, new_issuer.clone());
+
+    let pending_after: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+    assert_eq!(pending_after.new_issuer, new_issuer);
+    assert!(pending_after.timestamp > pending_before.timestamp);
+}
+
+#[test]
+fn issuer_transfer_replace_without_pending_transfer_fails() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let result = client.try_replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    assert!(result.is_err());
+}
+
 // ── Security and abuse prevention tests ──────────────────────
 
 #[test]
