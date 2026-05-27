@@ -5584,3 +5584,213 @@ impl RevoraRevenueShare {
         Ok(())
     }
 } // end impl RevoraRevenueShare (plain)
+
+
+#[cfg(test)]
+mod issue_370_373_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
+
+    fn client() -> (Env, Address, RevoraRevenueShareClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &id);
+        (env, id, client)
+    }
+
+    fn assert_bounds(result: i128, amount: i128) {
+        let lo = core::cmp::min(0_i128, amount);
+        let hi = core::cmp::max(0_i128, amount);
+        assert!(
+            result >= lo && result <= hi,
+            "result {result} out of bounds [{lo}, {hi}] for amount={amount}"
+        );
+    }
+
+    #[test]
+    fn issue_370_get_offerings_page_limit_cursor_and_order_are_stable() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "def");
+
+        let mut tokens = Vec::new(&env);
+        for i in 0..25_u32 {
+            let token = Address::generate(&env);
+            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0);
+            tokens.push_back(token);
+        }
+
+        assert_eq!(client.get_offering_count(&issuer, &namespace), 25);
+
+        let (page_1, cursor_1) = client.get_offerings_page(&issuer, &namespace, &0, &10);
+        assert_eq!(page_1.len(), 10);
+        assert_eq!(cursor_1, Some(10));
+        for i in 0..10 {
+            assert_eq!(page_1.get(i).unwrap().token, tokens.get(i).unwrap());
+        }
+
+        let (page_2, cursor_2) = client.get_offerings_page(&issuer, &namespace, &10, &10);
+        assert_eq!(page_2.len(), 10);
+        assert_eq!(cursor_2, Some(20));
+        for i in 0..10 {
+            assert_eq!(page_2.get(i).unwrap().token, tokens.get(i + 10).unwrap());
+        }
+
+        let (page_3, cursor_3) = client.get_offerings_page(&issuer, &namespace, &20, &10);
+        assert_eq!(page_3.len(), 5);
+        assert_eq!(cursor_3, None);
+        for i in 0..5 {
+            assert_eq!(page_3.get(i).unwrap().token, tokens.get(i + 20).unwrap());
+        }
+
+        let (page_clamped, cursor_clamped) = client.get_offerings_page(&issuer, &namespace, &0, &100);
+        assert_eq!(page_clamped.len(), 20);
+        assert_eq!(cursor_clamped, Some(20));
+        for i in 0..20 {
+            assert_eq!(page_clamped.get(i).unwrap().token, tokens.get(i).unwrap());
+        }
+
+        let (empty_at_count, cursor_at_count) =
+            client.get_offerings_page(&issuer, &namespace, &25, &10);
+        assert_eq!(empty_at_count.len(), 0);
+        assert_eq!(cursor_at_count, None);
+
+        let (empty_beyond, cursor_beyond) =
+            client.get_offerings_page(&issuer, &namespace, &99, &10);
+        assert_eq!(empty_beyond.len(), 0);
+        assert_eq!(cursor_beyond, None);
+
+        let (page_limit_zero, cursor_limit_zero) =
+            client.get_offerings_page(&issuer, &namespace, &0, &0);
+        assert_eq!(page_limit_zero.len(), 20);
+        assert_eq!(cursor_limit_zero, Some(20));
+    }
+
+    #[test]
+    fn issue_370_get_offerings_page_stable_across_accept_issuer_transfer() {
+        let (env, contract_id, client) = client();
+        let old_issuer = Address::generate(&env);
+        let new_issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "def");
+
+        // Seed issuer+namespace registry entries so pending transfer lookup can scan old issuer.
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
+            env.storage().persistent().set(&DataKey2::IssuerItem(0), &old_issuer);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceItem(old_issuer.clone(), 0), &namespace);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceRegistered(old_issuer.clone(), namespace.clone()), &true);
+        });
+
+        let new_issuer_token_0 = Address::generate(&env);
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_issuer_token_0,
+            &1_100,
+            &new_issuer_token_0,
+            &0,
+        );
+        let new_issuer_token_1 = Address::generate(&env);
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_issuer_token_1,
+            &1_200,
+            &new_issuer_token_1,
+            &0,
+        );
+
+        let mut old_tokens = Vec::new(&env);
+        for i in 0..25_u32 {
+            let token = Address::generate(&env);
+            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0);
+            old_tokens.push_back(token);
+        }
+
+        let transfer_token = old_tokens.get(7).unwrap();
+        client.propose_issuer_transfer(&old_issuer, &namespace, &transfer_token, &new_issuer);
+        assert_eq!(
+            client.get_pending_issuer_transfer(&old_issuer, &namespace, &transfer_token),
+            Some(new_issuer.clone())
+        );
+        client.accept_issuer_transfer(&new_issuer, &namespace, &transfer_token);
+
+        assert_eq!(client.get_offering_count(&old_issuer, &namespace), 25);
+        let (old_page, old_cursor) = client.get_offerings_page(&old_issuer, &namespace, &0, &100);
+        assert_eq!(old_page.len(), 20);
+        assert_eq!(old_cursor, Some(20));
+        for i in 0..20 {
+            assert_eq!(old_page.get(i).unwrap().token, old_tokens.get(i).unwrap());
+        }
+
+        let (old_tail, old_tail_cursor) =
+            client.get_offerings_page(&old_issuer, &namespace, &20, &10);
+        assert_eq!(old_tail.len(), 5);
+        assert_eq!(old_tail_cursor, None);
+        for i in 0..5 {
+            assert_eq!(old_tail.get(i).unwrap().token, old_tokens.get(i + 20).unwrap());
+        }
+
+        assert_eq!(client.get_offering_count(&new_issuer, &namespace), 3);
+        let (new_page_1, new_cursor_1) = client.get_offerings_page(&new_issuer, &namespace, &0, &2);
+        assert_eq!(new_page_1.len(), 2);
+        assert_eq!(new_cursor_1, Some(2));
+        assert_eq!(new_page_1.get(0).unwrap().token, new_issuer_token_0);
+        assert_eq!(new_page_1.get(1).unwrap().token, new_issuer_token_1);
+
+        let (new_page_2, new_cursor_2) = client.get_offerings_page(&new_issuer, &namespace, &2, &2);
+        assert_eq!(new_page_2.len(), 1);
+        assert_eq!(new_cursor_2, None);
+        assert_eq!(new_page_2.get(0).unwrap().token, transfer_token);
+
+        let (new_empty, new_empty_cursor) = client.get_offerings_page(&new_issuer, &namespace, &3, &2);
+        assert_eq!(new_empty.len(), 0);
+        assert_eq!(new_empty_cursor, None);
+    }
+
+    #[test]
+    fn issue_373_compute_share_round_half_up_negative_midpoint_and_extremes() {
+        let (_env, _contract_id, client) = client();
+
+        assert_eq!(client.compute_share(&0, &5_000, &RoundingMode::RoundHalfUp), 0);
+        assert_eq!(client.compute_share(&123_456, &0, &RoundingMode::RoundHalfUp), 0);
+
+        assert_eq!(client.compute_share(&15_000, &5_000, &RoundingMode::Truncation), 7_500);
+        assert_eq!(client.compute_share(&15_000, &5_000, &RoundingMode::RoundHalfUp), 7_500);
+
+        assert_eq!(client.compute_share(&-15_001, &5_000, &RoundingMode::Truncation), -7_500);
+        assert_eq!(client.compute_share(&-15_001, &5_000, &RoundingMode::RoundHalfUp), -7_501);
+
+        let bps_values = [1_u32, 5_000, 9_999, 10_000, 10_001];
+        for bps in bps_values {
+            let pos = client.compute_share(&i128::MAX, &bps, &RoundingMode::RoundHalfUp);
+            let neg = client.compute_share(&i128::MIN, &bps, &RoundingMode::RoundHalfUp);
+            assert_bounds(pos, i128::MAX);
+            assert_bounds(neg, i128::MIN);
+            if bps == 10_001 {
+                assert_eq!(pos, 0);
+                assert_eq!(neg, 0);
+            }
+        }
+
+        assert_eq!(
+            client.compute_share(&i128::MAX, &10_000, &RoundingMode::RoundHalfUp),
+            i128::MAX
+        );
+        assert_eq!(
+            client.compute_share(&i128::MIN, &10_000, &RoundingMode::RoundHalfUp),
+            i128::MIN
+        );
+    }
+}
