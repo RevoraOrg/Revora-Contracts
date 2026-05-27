@@ -32,7 +32,7 @@
 /// |         | `BlacklistSizeLimitExceeded` (45), `AlreadyApproved` (46) |
 
 #[cfg(test)]
-mod structured_error_tests {
+mod mod tests {
     use crate::{RevoraError, CONTRACT_VERSION};
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -257,10 +257,7 @@ mod structured_error_tests {
     fn test_contract_version_is_at_least_5() {
         // The duplicate-discriminant fix ships in v5. If this fails, the version
         // constant was not bumped alongside the enum change.
-        assert!(
-            CONTRACT_VERSION >= 5,
-            "CONTRACT_VERSION must be ≥ 5 after the TransferFailed renumber (was {CONTRACT_VERSION})"
-        );
+       const { assert!(CONTRACT_VERSION >= 5, "CONTRACT_VERSION must be >= 5 after the TransferFailed renumber"); }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
