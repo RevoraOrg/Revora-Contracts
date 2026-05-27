@@ -677,6 +677,9 @@ pub enum DataKey2 {
     StressDataCount(Address),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
+
+    /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
+    OfferingRecord(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1613,6 +1616,51 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    pub fn replace_issuer_transfer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let key = DataKey::PendingIssuerTransfer(offering_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(RevoraError::NoTransferPending);
+        }
+
+        let pending: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+        let timestamp = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
+            (issuer.clone(), pending.new_issuer.clone()),
+        );
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
+            (new_issuer.clone(), timestamp),
+        );
+        Ok(())
+    }
+
     pub fn accept_issuer_transfer(
         env: Env,
         new_issuer: Address,
@@ -1691,6 +1739,11 @@ impl RevoraRevenueShare {
         let item_key = DataKey::OfferItem(tenant_id.clone(), count);
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
+
+        // Update direct index for the new issuer's offering_id (#360).
+        env.storage()
+            .persistent()
+            .set(&DataKey2::OfferingRecord(new_offering_id.clone()), &offering);
 
         // Update issuer lookups for the old and new offering IDs.
         env.storage()
@@ -1954,6 +2007,9 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+        // Direct index for O(1) get_offering (#360).
+        env.storage().persistent().set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
+
         let issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
 
@@ -2012,7 +2068,9 @@ impl RevoraRevenueShare {
     /// - `None` otherwise.
     /// Fetch a single offering by issuer, namespace, and token.
     ///
-    /// This method scans the registered offerings in the namespace to find the one matching the given token.
+    /// This method first attempts an O(1) direct lookup via the `OfferingRecord` index written
+    /// at registration (#360). Falls back to an O(n) scan for legacy offerings registered before
+    /// the index was introduced.
     ///
     /// ### Parameters
     /// - `issuer`: The address that registered the offering.
@@ -2028,6 +2086,20 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<Offering> {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // O(1) direct lookup via index written at registration (#360).
+        if let Some(offering) = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, Offering>(&DataKey2::OfferingRecord(offering_id))
+        {
+            return Some(offering);
+        }
+        // Fallback: O(n) scan for legacy offerings registered before the index was added.
         let count = Self::get_offering_count(env.clone(), issuer.clone(), namespace.clone());
         let tenant_id = TenantId { issuer, namespace };
         for i in 0..count {
@@ -3145,16 +3217,19 @@ impl RevoraRevenueShare {
 
         Self::require_not_frozen(&env)?;
 
+        issuer.require_auth();
+
         if !Self::is_event_only(&env) {
-            issuer.require_auth();
             let key = DataKey::ConcentrationLimit(offering_id);
             env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
-            Self::emit_v2_event(
-                &env,
-                (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
-                (max_bps, enforce),
-            );
         }
+
+        Self::emit_v2_event(
+            &env,
+            (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
+            (max_bps, enforce),
+        );
+
         Ok(())
     }
 
@@ -5584,3 +5659,7 @@ impl RevoraRevenueShare {
         Ok(())
     }
 } // end impl RevoraRevenueShare (plain)
+
+// Include structured error discriminant stability tests
+#[cfg(test)]
+mod structured_error_tests;

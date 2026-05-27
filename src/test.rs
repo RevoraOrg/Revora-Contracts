@@ -5333,6 +5333,52 @@ fn issuer_transfer_cancel_then_can_propose_again() {
     );
 }
 
+#[test]
+fn issuer_transfer_replace_active_transfer() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    let before = legacy_events(&env).len();
+
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+
+    assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), Some(new_issuer_2));
+    assert_eq!(legacy_events(&env).len(), before + 2);
+}
+
+#[test]
+fn issuer_transfer_replace_with_same_target_resets_expiry() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let key = DataKey::PendingIssuerTransfer(OfferingId {
+        issuer: issuer.clone(),
+        namespace: symbol_short!("def"),
+        token: token.clone(),
+    });
+    let pending_before: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 10);
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, new_issuer.clone());
+
+    let pending_after: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+    assert_eq!(pending_after.new_issuer, new_issuer);
+    assert!(pending_after.timestamp > pending_before.timestamp);
+}
+
+#[test]
+fn issuer_transfer_replace_without_pending_transfer_fails() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let result = client.try_replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    assert!(result.is_err());
+}
+
 // ── Security and abuse prevention tests ──────────────────────
 
 #[test]
@@ -9547,6 +9593,133 @@ mod regression {
         let (client, issuer, token, _payout_asset) = setup_with_offering(&env);
         let r = client.try_set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
         assert!(r.is_ok());
+    }
+
+    /// Regression Test: get_offering O(1) direct index
+    ///
+    /// **Related Issue:** #360
+    ///
+    /// **Original Bug:**
+    /// `get_offering` scanned every `OfferItem` entry for an issuer/namespace to find the
+    /// matching token — O(n) cost that grows with the number of offerings. This is called
+    /// on every hot path (`report_revenue`, `accept_issuer_transfer`, etc.).
+    ///
+    /// **Expected Behavior:**
+    /// After registration a `DataKey2::OfferingRecord` entry is written so `get_offering`
+    /// can resolve in O(1). The O(n) scan is retained as a fallback for legacy data.
+    ///
+    /// **Fix Applied:**
+    /// Added `DataKey2::OfferingRecord(OfferingId)` written at `register_offering` and
+    /// updated at `accept_issuer_transfer`. `get_offering` reads the direct key first.
+    #[test]
+    fn regression_issue_360_get_offering_direct_lookup() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout = Address::generate(&env);
+
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &500, &payout, &0);
+
+        let result = client.get_offering(&issuer, &symbol_short!("def"), &token);
+        assert!(result.is_some());
+        let o = result.unwrap();
+        assert_eq!(o.token, token);
+        assert_eq!(o.issuer, issuer);
+        assert_eq!(o.revenue_share_bps, 500);
+    }
+
+    #[test]
+    fn regression_issue_360_get_offering_many_offerings_still_finds_correct() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let issuer = Address::generate(&env);
+        let payout = Address::generate(&env);
+
+        // Register 10 offerings; target is the last one
+        let mut target_token = Address::generate(&env);
+        for i in 0..10u32 {
+            let t = Address::generate(&env);
+            client.register_offering(&issuer, &symbol_short!("def"), &t, &(i * 100), &payout, &0);
+            if i == 9 {
+                target_token = t;
+            }
+        }
+
+        let result = client.get_offering(&issuer, &symbol_short!("def"), &target_token);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().revenue_share_bps, 900);
+    }
+
+    #[test]
+    fn regression_issue_360_get_offering_after_issuer_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let old_issuer = Address::generate(&env);
+        let new_issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout = Address::generate(&env);
+
+        client.register_offering(
+            &old_issuer,
+            &symbol_short!("def"),
+            &token,
+            &300,
+            &payout,
+            &0,
+        );
+        client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
+        client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+        // New issuer can look up the offering directly
+        let result = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().token, token);
+    }
+
+    #[test]
+    fn regression_issue_360_get_offering_unknown_returns_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let result = client.get_offering(&issuer, &symbol_short!("def"), &token);
+        assert!(result.is_none());
+    }
+}
+
+        client.register_offering(
+            &old_issuer,
+            &symbol_short!("def"),
+            &token,
+            &300,
+            &payout,
+            &0,
+        );
+        client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
+        client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+        // New issuer can look up the offering directly
+        let result = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().token, token);
+    }
+
+    #[test]
+    fn regression_issue_360_get_offering_unknown_returns_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = make_client(&env);
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let result = client.get_offering(&issuer, &symbol_short!("def"), &token);
+        assert!(result.is_none());
     }
 }
 
