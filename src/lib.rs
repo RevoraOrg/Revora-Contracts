@@ -688,6 +688,12 @@ const MAX_PAGE_LIMIT: u32 = 20;
 /// against on-chain storage by adding an unlimited number of entries.
 const MAX_BLACKLIST_SIZE: u32 = 200;
 
+/// Maximum number of addresses allowed in a single batch blacklist operation.
+/// Chosen to balance gas efficiency with predictable execution costs.
+/// Rationale: 50 addresses keeps worst-case gas usage well within Soroban limits
+/// while providing meaningful efficiency gains over single-address operations.
+const MAX_BATCH_SIZE: u32 = 50;
+
 /// Maximum platform fee in basis points (50%).
 const MAX_PLATFORM_FEE_BPS: u32 = 5_000;
 
@@ -1613,6 +1619,127 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Migrate all per-offering configuration from old OfferingId to new OfferingId.
+    ///
+    /// This helper function is called during issuer transfer to preserve all operational
+    /// settings and security guardrails. It migrates:
+    /// - ConcentrationLimit: max holder concentration and enforcement flag
+    /// - RoundingMode: share calculation rounding behavior
+    /// - MinRevenueThreshold: minimum revenue for distribution
+    /// - SupplyCap: maximum total revenue deposit limit
+    ///
+    /// Config values are copied verbatim without transformation. Missing config is
+    /// handled gracefully (no error if config not set for old offering).
+    fn migrate_offering_config(
+        env: &Env,
+        old_offering_id: &OfferingId,
+        new_offering_id: &OfferingId,
+    ) {
+        // Migrate ConcentrationLimit
+        let conc_limit_key_old = DataKey::ConcentrationLimit(old_offering_id.clone());
+        if let Some(conc_limit) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ConcentrationLimitConfig>(&conc_limit_key_old)
+        {
+            let conc_limit_key_new = DataKey::ConcentrationLimit(new_offering_id.clone());
+            env.storage().persistent().set(&conc_limit_key_new, &conc_limit);
+        }
+
+        // Migrate RoundingMode
+        let rounding_key_old = DataKey::RoundingMode(old_offering_id.clone());
+        if let Some(rounding_mode) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, RoundingMode>(&rounding_key_old)
+        {
+            let rounding_key_new = DataKey::RoundingMode(new_offering_id.clone());
+            env.storage().persistent().set(&rounding_key_new, &rounding_mode);
+        }
+
+        // Migrate MinRevenueThreshold
+        let min_rev_key_old = DataKey::MinRevenueThreshold(old_offering_id.clone());
+        if let Some(min_rev) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, i128>(&min_rev_key_old)
+        {
+            let min_rev_key_new = DataKey::MinRevenueThreshold(new_offering_id.clone());
+            env.storage().persistent().set(&min_rev_key_new, &min_rev);
+        }
+
+        // Migrate SupplyCap
+        let supply_cap_key_old = DataKey::SupplyCap(old_offering_id.clone());
+        if let Some(supply_cap) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, i128>(&supply_cap_key_old)
+        {
+            let supply_cap_key_new = DataKey::SupplyCap(new_offering_id.clone());
+            env.storage().persistent().set(&supply_cap_key_new, &supply_cap);
+        }
+    }
+
+    /// Remove old config keys after migration to prevent orphaned state.
+    ///
+    /// This helper function cleans up all per-offering configuration keys under the
+    /// old OfferingId after they have been migrated to the new OfferingId. This prevents
+    /// confusion about which issuer's config is active and avoids orphaned storage entries.
+    fn cleanup_old_config_keys(env: &Env, old_offering_id: &OfferingId) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ConcentrationLimit(old_offering_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RoundingMode(old_offering_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MinRevenueThreshold(old_offering_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::SupplyCap(old_offering_id.clone()));
+    }
+
+    /// Accept a pending issuer transfer and migrate all per-offering configuration.
+    ///
+    /// When an offering is transferred to a new issuer, this function:
+    /// 1. Validates the transfer (auth, expiry, frozen/paused state)
+    /// 2. Copies the offering record to the new issuer's tenant list
+    /// 3. Migrates all per-offering configuration to the new OfferingId:
+    ///    - ConcentrationLimit: max holder concentration and enforcement flag
+    ///    - RoundingMode: share calculation rounding behavior
+    ///    - MinRevenueThreshold: minimum revenue for distribution
+    ///    - SupplyCap: maximum total revenue deposit limit
+    /// 4. Cleans up old config keys to prevent orphaned state
+    /// 5. Updates issuer lookups for both old and new OfferingId
+    ///
+    /// All operations occur atomically within a single transaction. If any step fails,
+    /// no changes are persisted.
+    ///
+    /// ### Parameters
+    /// - `new_issuer`: The address accepting the transfer (must have auth)
+    /// - `namespace`: The namespace of the offering being transferred
+    /// - `token`: The token address of the offering being transferred
+    ///
+    /// ### Returns
+    /// - `Ok(())` on successful transfer
+    /// - `Err(RevoraError::ContractFrozen)` if contract is frozen
+    /// - `Err(RevoraError::ContractPaused)` if contract is paused
+    /// - `Err(RevoraError::NoTransferPending)` if no pending transfer exists
+    /// - `Err(RevoraError::IssuerTransferExpired)` if transfer has expired
+    /// - `Err(RevoraError::LimitReached)` if new issuer already has this offering
+    ///
+    /// ### Example
+    /// ```ignore
+    /// // Issuer A proposes transfer to Issuer B
+    /// contract.propose_issuer_transfer(&issuer_a, &namespace, &token, &issuer_b);
+    ///
+    /// // Issuer B accepts the transfer
+    /// contract.accept_issuer_transfer(&issuer_b, &namespace, &token);
+    ///
+    /// // All config is now accessible under issuer_b
+    /// let config = contract.get_concentration_limit(&issuer_b, &namespace, &token);
+    /// ```
     pub fn accept_issuer_transfer(
         env: Env,
         new_issuer: Address,
@@ -1691,6 +1818,12 @@ impl RevoraRevenueShare {
         let item_key = DataKey::OfferItem(tenant_id.clone(), count);
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
+
+        // Migrate all per-offering configuration from old to new OfferingId
+        Self::migrate_offering_config(&env, &offering_id, &new_offering_id);
+        
+        // Cleanup old config keys to prevent orphaned state
+        Self::cleanup_old_config_keys(&env, &offering_id);
 
         // Update issuer lookups for the old and new offering IDs.
         env.storage()
@@ -2733,6 +2866,136 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Add multiple investors to the per-offering blacklist in a single transaction.
+    ///
+    /// Enables efficient bulk compliance updates by processing up to MAX_BATCH_SIZE (50)
+    /// addresses atomically. The operation is idempotent: addresses already blacklisted
+    /// are skipped without error. Events are emitted only for addresses that result in
+    /// actual state changes.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must be the current issuer or admin.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `investors`: Vector of addresses to blacklist (max 50).
+    ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering or the contract admin.
+    /// - All-or-nothing semantics: if any validation fails, no addresses are added.
+    /// - Batch size is capped at MAX_BATCH_SIZE to keep gas costs predictable.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::ContractPaused)` if the contract is paused.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering does not exist.
+    /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer or admin.
+    /// - `Err(RevoraError::LimitReached)` if batch size exceeds MAX_BATCH_SIZE.
+    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if adding the batch would exceed MAX_BLACKLIST_SIZE.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blacklist_add_many(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investors: Vec<Address>,
+    ) -> Result<(), RevoraError> {
+        // Task 2.1: Authorization checks
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+
+        // Task 2.2: Batch size validation
+        if investors.len() > MAX_BATCH_SIZE {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Handle empty batch case (idempotent no-op)
+        if investors.is_empty() {
+            return Ok(());
+        }
+
+        // Task 2.3: Offering existence check and authorization
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Task 2.3: Load storage
+        let key = DataKey::Blacklist(offering_id.clone());
+        let mut map: Map<Address, bool> =
+            env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+        let order_key = DataKey::BlacklistOrder(offering_id.clone());
+        let mut order: Vec<Address> =
+            env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
+
+        // Task 2.4: Deduplication logic
+        let mut seen = Map::new(&env);
+        let mut unique_investors = Vec::new(&env);
+        for i in 0..investors.len() {
+            let investor = investors.get(i).unwrap();
+            if !seen.contains_key(investor.clone()) {
+                seen.set(investor.clone(), true);
+                unique_investors.push_back(investor);
+            }
+        }
+
+        // Task 2.5: Capacity validation
+        let current_size = map.len();
+        let mut new_count = 0u32;
+        for i in 0..unique_investors.len() {
+            let investor = unique_investors.get(i).unwrap();
+            if !map.contains_key(investor.clone()) {
+                new_count += 1;
+            }
+        }
+
+        if current_size + new_count > MAX_BLACKLIST_SIZE {
+            return Err(RevoraError::BlacklistSizeLimitExceeded);
+        }
+
+        // Task 2.6: Batch add logic with storage updates
+        for i in 0..unique_investors.len() {
+            let investor = unique_investors.get(i).unwrap();
+            let was_present = map.get(investor.clone()).unwrap_or(false);
+            
+            if !was_present {
+                // Add to map and order vec
+                if !Self::is_event_only(&env) {
+                    map.set(investor.clone(), true);
+                    order.push_back(investor.clone());
+                }
+                
+                // Emit event for actual state change
+                env.events().publish(
+                    (EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()),
+                    (caller.clone(), investor),
+                );
+            }
+            // If already blacklisted, skip without error or event (idempotent)
+        }
+
+        // Save updated storage
+        if !Self::is_event_only(&env) {
+            env.storage().persistent().set(&key, &map);
+            env.storage().persistent().set(&order_key, &order);
+        }
+
+        Ok(())
+    }
+
     /// Remove an investor from the per-offering blacklist.
     ///
     /// Re-enables the address to claim revenue for the specified token.
@@ -2802,6 +3065,125 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&order_key, &new_order);
 
         env.events().publish((EVENT_BL_REM, issuer, namespace, token), (caller, investor));
+        Ok(())
+    }
+
+    /// Remove multiple investors from the per-offering blacklist in a single transaction.
+    ///
+    /// Enables efficient bulk compliance updates by processing up to MAX_BATCH_SIZE (50)
+    /// addresses atomically. The operation is idempotent: addresses not currently blacklisted
+    /// are skipped without error. Events are emitted only for addresses that result in
+    /// actual state changes.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must be the current issuer or admin.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `investors`: Vector of addresses to remove from blacklist (max 50).
+    ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering or the contract admin.
+    /// - All-or-nothing semantics: if any validation fails, no addresses are removed.
+    /// - Batch size is capped at MAX_BATCH_SIZE to keep gas costs predictable.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::ContractPaused)` if the contract is paused.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering does not exist.
+    /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer or admin.
+    /// - `Err(RevoraError::LimitReached)` if batch size exceeds MAX_BATCH_SIZE.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blacklist_remove_many(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investors: Vec<Address>,
+    ) -> Result<(), RevoraError> {
+        // Task 3.1: Authorization checks
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+
+        // Task 3.2: Batch size validation
+        if investors.len() > MAX_BATCH_SIZE {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Handle empty batch case (idempotent no-op)
+        if investors.is_empty() {
+            return Ok(());
+        }
+
+        // Task 3.3: Offering existence check and authorization
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Task 3.3: Load storage
+        let key = DataKey::Blacklist(offering_id.clone());
+        let mut map: Map<Address, bool> =
+            env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+
+        // Task 3.4: Deduplication logic
+        let mut seen = Map::new(&env);
+        let mut unique_investors = Vec::new(&env);
+        for i in 0..investors.len() {
+            let investor = investors.get(i).unwrap();
+            if !seen.contains_key(investor.clone()) {
+                seen.set(investor.clone(), true);
+                unique_investors.push_back(investor);
+            }
+        }
+
+        // Task 3.5: Batch remove logic
+        for i in 0..unique_investors.len() {
+            let investor = unique_investors.get(i).unwrap();
+            let was_present = map.get(investor.clone()).unwrap_or(false);
+            
+            if was_present {
+                // Remove from map
+                map.remove(investor.clone());
+                
+                // Emit event for actual state change
+                env.events().publish(
+                    (EVENT_BL_REM, issuer.clone(), namespace.clone(), token.clone()),
+                    (caller.clone(), investor),
+                );
+            }
+            // If not blacklisted, skip without error or event (idempotent)
+        }
+
+        // Task 3.5: Rebuild order vec to maintain consistency
+        let order_key = DataKey::BlacklistOrder(offering_id.clone());
+        let old_order: Vec<Address> =
+            env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
+        let mut new_order = Vec::new(&env);
+        for i in 0..old_order.len() {
+            let addr = old_order.get(i).unwrap();
+            if map.get(addr.clone()).unwrap_or(false) {
+                new_order.push_back(addr);
+            }
+        }
+
+        // Save updated storage
+        env.storage().persistent().set(&key, &map);
+        env.storage().persistent().set(&order_key, &new_order);
+
         Ok(())
     }
 
