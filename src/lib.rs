@@ -1863,28 +1863,22 @@ impl RevoraRevenueShare {
     ///
     /// Once registered, an offering's parameters are immutable.
     ///
-    /// ### Parameters
-    /// - `issuer`: The address with authority to manage this offering. Must provide authentication.
-    /// - `token`: The token representing the offering.
-    /// - `revenue_share_bps`: Total revenue share for all holders in basis points (0-10000).
-    ///
-    /// ### Returns
-    /// - `Ok(())` on success.
-    /// - `Err(RevoraError::InvalidRevenueShareBps)` if `revenue_share_bps` exceeds 10000.
-    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
-    ///
-    /// Returns `Err(RevoraError::InvalidRevenueShareBps)` if revenue_share_bps > 10000.
-    /// In testnet mode, bps validation is skipped to allow flexible testing.
-    ///
-    /// Register a new revenue-share offering.
-    ///
     /// # Arguments
-    /// * `issuer` - The address of the offering issuer.
+    /// * `issuer` - The address of the offering issuer. Must provide authentication.
     /// * `namespace` - A symbol identifying the namespace for this offering.
     /// * `token` - The address of the token being offered.
-    /// * `revenue_share_bps` - The revenue share percentage in basis points (0-10,000).
+    /// * `revenue_share_bps` - The revenue share percentage in basis points (0–10,000).
+    ///   Values above 10,000 are rejected unless testnet mode is enabled (admin-only,
+    ///   never enable on mainnet — see `TESTNET_MODE.md`).
     /// * `payout_asset` - The asset in which revenue will be paid out.
-    /// * `supply_cap` - Optional cap on the total amount of revenue that can be deposited.
+    /// * `supply_cap` - Optional cap on the total amount of revenue that can be deposited (0 = no cap).
+    ///
+    /// # Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::InvalidRevenueShareBps)` if `revenue_share_bps` exceeds 10,000
+    ///   and testnet mode is disabled (the default).
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::ContractPaused)` if the contract is paused.
     ///
     /// # Events
     /// Emits `EVENT_OFFER_REG_V2` and `EVENT_INDEXED_V2`.
@@ -1908,8 +1902,10 @@ impl RevoraRevenueShare {
             return Err(err);
         }
 
-        // Skip bps validation in testnet mode
-        let testnet_mode = false;
+        // Skip bps validation in testnet mode (reads the real flag from storage).
+        // In production mode (default) revenue_share_bps is always capped at 10 000 (100%).
+        // Testnet mode is admin-only and must never be enabled on mainnet — see TESTNET_MODE.md.
+        let testnet_mode = Self::is_testnet_mode(env.clone());
         if !testnet_mode && revenue_share_bps > 10_000 {
             return Err(RevoraError::InvalidRevenueShareBps);
         }
@@ -3112,6 +3108,12 @@ impl RevoraRevenueShare {
     /// - `Ok(())` on success.
     /// - `Err(RevoraError::LimitReached)` if the offering is not found.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    ///
+    /// ### Auth ordering
+    /// `issuer.require_auth()` is called immediately after the frozen/paused guards so that
+    /// unauthenticated callers cannot probe offering existence or trigger any side effects.
+    /// The identity check (`current_issuer != issuer`) follows auth, consistent with all other
+    /// issuer-gated setters in this contract.
     pub fn set_concentration_limit(
         env: Env,
         issuer: Address,
@@ -3124,6 +3126,11 @@ impl RevoraRevenueShare {
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
             return Err(RevoraError::ContractPaused);
         }
+
+        // Auth-first: authenticate before any state reads or side effects.
+        // This prevents unauthenticated callers from probing offering existence
+        // and ensures event-only mode never silently skips authorization.
+        issuer.require_auth();
 
         if max_bps > 10_000 {
             return Err(RevoraError::InvalidShareBps);
@@ -3143,10 +3150,7 @@ impl RevoraRevenueShare {
             return Err(RevoraError::LimitReached);
         }
 
-        Self::require_not_frozen(&env)?;
-
         if !Self::is_event_only(&env) {
-            issuer.require_auth();
             let key = DataKey::ConcentrationLimit(offering_id);
             env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
             Self::emit_v2_event(
@@ -3271,6 +3275,10 @@ impl RevoraRevenueShare {
     }
 
     /// Set rounding mode for an offering. Default is truncation.
+    ///
+    /// ### Auth ordering
+    /// `issuer.require_auth()` is called immediately after the frozen guard so that
+    /// unauthenticated callers cannot probe offering existence or trigger side effects.
     pub fn set_rounding_mode(
         env: Env,
         issuer: Address,
@@ -3279,6 +3287,10 @@ impl RevoraRevenueShare {
         mode: RoundingMode,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+
+        // Auth-first: authenticate before any state reads.
+        issuer.require_auth();
+
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
@@ -3291,8 +3303,6 @@ impl RevoraRevenueShare {
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_not_frozen(&env)?;
-        issuer.require_auth();
         let key = DataKey::RoundingMode(offering_id);
         env.storage().persistent().set(&key, &mode);
         Self::emit_v2_event(&env, (EVENT_ROUNDING_MODE_SET, issuer, namespace, token), mode);
@@ -3315,6 +3325,9 @@ impl RevoraRevenueShare {
 
     /// Set min and max stake per investor for an offering. Issuer/admin only. Constraints are read by off-chain systems for enforcement.
     /// Validates amounts using the Negative Amount Validation Matrix (#163).
+    ///
+    /// ### Auth ordering
+    /// `issuer.require_auth()` is called immediately after the frozen guard, before any state reads.
     pub fn set_investment_constraints(
         env: Env,
         issuer: Address,
@@ -3324,6 +3337,10 @@ impl RevoraRevenueShare {
         max_stake: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+
+        // Auth-first: authenticate before any state reads.
+        issuer.require_auth();
+
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
@@ -3335,8 +3352,6 @@ impl RevoraRevenueShare {
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_not_frozen(&env)?;
-        issuer.require_auth();
 
         // Negative Amount Validation Matrix: InvestmentMinStake requires >= 0 (#163)
         if let Err((err, _)) = AmountValidationMatrix::validate(
@@ -3386,6 +3401,9 @@ impl RevoraRevenueShare {
     /// Only the offering issuer may set this. Emits event when configured or changed.
     /// Pass 0 to disable the threshold.
     /// Validates amount using the Negative Amount Validation Matrix (#163).
+    ///
+    /// ### Auth ordering
+    /// `issuer.require_auth()` is called immediately after the frozen guard, before any state reads.
     pub fn set_min_revenue_threshold(
         env: Env,
         issuer: Address,
@@ -3394,6 +3412,9 @@ impl RevoraRevenueShare {
         min_amount: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+
+        // Auth-first: authenticate before any state reads.
+        issuer.require_auth();
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -3407,9 +3428,6 @@ impl RevoraRevenueShare {
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-
-        Self::require_not_frozen(&env)?;
-        issuer.require_auth();
 
         // Negative Amount Validation Matrix: MinRevenueThreshold requires >= 0 (#163)
         if let Err((err, _)) = AmountValidationMatrix::validate(

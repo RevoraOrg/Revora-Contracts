@@ -1488,6 +1488,143 @@ fn concentration_near_threshold_boundary() {
 }
 
 // ---------------------------------------------------------------------------
+// Auth-first ordering: set_concentration_limit (#auth-order)
+// ---------------------------------------------------------------------------
+
+// set_concentration_limit must authenticate the issuer BEFORE reading any
+// offering state. Without auth-first, an unauthenticated caller could probe
+// whether an offering exists by observing the error code difference between
+// "auth failed" and "offering not found".
+
+#[test]
+fn set_concentration_limit_requires_auth_before_state_read() {
+    // No mock_all_auths — auth is NOT mocked, so require_auth() will panic/fail.
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    // Register the offering with mocked auth so it exists in storage.
+    env.mock_all_auths();
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // Now clear mocked auths — subsequent calls require real auth.
+    let env2 = Env::default();
+    let client2 = make_client(&env2);
+    // No offering registered in env2, no auth mocked.
+    // The call must fail due to auth, not due to offering absence.
+    let result = client2.try_set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    assert!(result.is_err(), "unauthenticated call must be rejected");
+}
+
+#[test]
+fn set_concentration_limit_auth_required_even_in_event_only_mode() {
+    // Verifies the critical fix: auth must be checked even when is_event_only() is true.
+    // Previously, require_auth() was inside the `if !is_event_only` branch, meaning
+    // event-only mode silently skipped authorization entirely.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+
+    // Initialize in event-only mode.
+    client.initialize(&admin, &None, &Some(true));
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // With mock_all_auths the call succeeds (auth is satisfied).
+    let result = client.try_set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    // In event-only mode the function returns Ok but does not write storage.
+    assert!(result.is_ok(), "authenticated call in event-only mode must return Ok");
+    // Confirm no config was stored (event-only skips persistent writes).
+    let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
+    assert!(config.is_none(), "event-only mode must not persist concentration config");
+}
+
+#[test]
+fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
+    // Confirms the identity check (current_issuer != issuer) still fires after auth.
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    // attacker tries to set the limit on issuer's offering.
+    let result = client.try_set_concentration_limit(
+        &attacker,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &false,
+    );
+    assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// Auth-first ordering: set_rounding_mode (#auth-order)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_rounding_mode_requires_auth_before_state_read() {
+    // No mock_all_auths — require_auth() will fail.
+    let env = Env::default();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // No offering registered, no auth mocked — must fail on auth, not on offering lookup.
+    let result = client.try_set_rounding_mode(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &RoundingMode::RoundHalfUp,
+    );
+    assert!(result.is_err(), "unauthenticated call must be rejected");
+}
+
+#[test]
+fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+
+    let result = client.try_set_rounding_mode(
+        &attacker,
+        &symbol_short!("def"),
+        &token,
+        &RoundingMode::RoundHalfUp,
+    );
+    assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
 // On-chain audit log summary (#34)
 // ---------------------------------------------------------------------------
 

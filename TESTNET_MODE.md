@@ -248,7 +248,7 @@ DataKey::TestnetMode -> bool
 - **Storage key**: `src/lib.rs` - `DataKey::TestnetMode`
 - **Event symbol**: `src/lib.rs` - `EVENT_TESTNET_MODE`
 - **Functions**: `src/lib.rs` - `set_testnet_mode()`, `is_testnet_mode()`
-- **Modified flows**: `register_offering()`, `report_revenue()`
+- **Modified flows**: `register_offering()` (reads `Self::is_testnet_mode(env.clone())` to gate BPS validation), `report_revenue()` (reads same flag to gate concentration enforcement)
 - **Tests**: `src/test.rs` - Testnet mode section
 
 ## Limitations
