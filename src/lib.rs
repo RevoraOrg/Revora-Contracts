@@ -5599,7 +5599,7 @@ mod version_drift_tests {
         let env = Env::default();
         let contract_id = env.register_contract(None, RevoraRevenueShare);
         let client = RevoraRevenueShareClient::new(&env, &contract_id);
-        
+
         assert_eq!(client.get_version(), CONTRACT_VERSION);
     }
 }
