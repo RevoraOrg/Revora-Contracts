@@ -677,6 +677,8 @@ pub enum DataKey2 {
     StressDataCount(Address),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
+    /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
+    OfferingRecord(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1692,6 +1694,11 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+        // Update direct index for the new issuer's offering_id (#360).
+        env.storage()
+            .persistent()
+            .set(&DataKey2::OfferingRecord(new_offering_id.clone()), &offering);
+
         // Update issuer lookups for the old and new offering IDs.
         env.storage()
             .persistent()
@@ -1954,6 +1961,11 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+        // Direct index for O(1) get_offering (#360).
+        env.storage()
+            .persistent()
+            .set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
+
         let issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
 
@@ -2012,7 +2024,9 @@ impl RevoraRevenueShare {
     /// - `None` otherwise.
     /// Fetch a single offering by issuer, namespace, and token.
     ///
-    /// This method scans the registered offerings in the namespace to find the one matching the given token.
+    /// This method first attempts an O(1) direct lookup via the `OfferingRecord` index written
+    /// at registration (#360). Falls back to an O(n) scan for legacy offerings registered before
+    /// the index was introduced.
     ///
     /// ### Parameters
     /// - `issuer`: The address that registered the offering.
@@ -2028,6 +2042,18 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<Offering> {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // O(1) direct lookup via index written at registration (#360).
+        if let Some(offering) =
+            env.storage().persistent().get::<DataKey2, Offering>(&DataKey2::OfferingRecord(offering_id))
+        {
+            return Some(offering);
+        }
+        // Fallback: O(n) scan for legacy offerings registered before the index was added.
         let count = Self::get_offering_count(env.clone(), issuer.clone(), namespace.clone());
         let tenant_id = TenantId { issuer, namespace };
         for i in 0..count {
