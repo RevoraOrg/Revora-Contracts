@@ -35,7 +35,7 @@
 
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
 
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -309,6 +309,45 @@ fn milestone_concentration_warning_event_emitted() {
     assert!(
         events_contain(&env, symbol_short!("conc_wrn")),
         "conc_wrn event must be emitted when concentration exceeds limit"
+    );
+}
+
+/// When concentration is exactly one bps over the limit, `report_revenue` is rejected.
+#[test]
+fn milestone_concentration_one_bps_over_limit_rejected() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, token, payout) = setup_offering(&env, &client);
+    let ns = symbol_short!("def");
+
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.report_concentration(&issuer, &ns, &token, &5_001u32);
+
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
+    assert_eq!(result, Err(Ok(RevoraError::ConcentrationLimitExceeded)));
+}
+
+/// When in testnet mode, concentration enforcement is bypassed even if over limit.
+#[test]
+fn milestone_concentration_testnet_mode_bypasses_enforcement() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, token, payout) = setup_offering(&env, &client);
+    let ns = symbol_short!("def");
+
+    // Enable testnet mode (requires admin auth)
+    client.set_testnet_mode(&true);
+
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.report_concentration(&issuer, &ns, &token, &6_000u32);
+
+    // Should succeed despite being over limit
+    client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
+
+    assert_eq!(
+        client.get_audit_summary(&issuer, &ns, &token).unwrap().report_count,
+        1u64,
+        "testnet mode must bypass concentration enforcement"
     );
 }
 

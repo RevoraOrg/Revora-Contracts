@@ -192,13 +192,6 @@ pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
 
 /// Strategy for any single valid operation (uniform distribution across all variants).
 pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
-/// Strategy for a single `ReportConcentration` operation.
-pub fn arb_report_concentration() -> impl Strategy<Value = TestOperation> {
-    arb_valid_bps().prop_map(|concentration_bps| TestOperation::ReportConcentration { concentration_bps })
-}
-
-/// Strategy for any single valid operation (uniform distribution).
-pub fn arb_any_operation() -> impl Strategy<Value = TestOperation> {
     prop_oneof![
         arb_register_offering(),
         arb_report_revenue(),
@@ -209,8 +202,23 @@ pub fn arb_any_operation() -> impl Strategy<Value = TestOperation> {
         arb_set_concentration_limit(),
         arb_report_concentration(),
         Just(TestOperation::Freeze),
-        arb_claim_delay_secs().prop_map(|d| TestOperation::SetClaimDelay { delay_secs: d }),
+        arb_claim_delay_secs().prop_map(|d| TestOperation::SetClaimDelay {
+            issuer: Address::generate(&Env::default()), // placeholder - proptest-helper addresses are updated in sequences
+            namespace: Symbol::new(&Env::default(), "def"),
+            token: Address::generate(&Env::default()),
+            delay_secs: d
+        }),
     ]
+}
+
+/// Strategy for a single `ReportConcentration` operation.
+pub fn arb_report_concentration() -> impl Strategy<Value = TestOperation> {
+    arb_valid_bps().prop_map(|concentration_bps| TestOperation::ReportConcentration { concentration_bps })
+}
+
+/// Strategy for any single valid operation (uniform distribution).
+pub fn arb_any_operation() -> impl Strategy<Value = TestOperation> {
+    any_test_operation()
 }
 
 /// Strategy for a sequence of `len` valid operations.
