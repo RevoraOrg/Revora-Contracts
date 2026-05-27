@@ -154,6 +154,9 @@ pub enum RevoraError {
 
 pub mod vesting;
 
+#[cfg(test)]
+mod test_duplicates;
+
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
 const EVENT_BL_ADD: Symbol = symbol_short!("bl_add");
@@ -310,7 +313,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Offerings are immutable once registered.
 // ── Data structures ──────────────────────────────────────────
 /// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
-pub const CONTRACT_VERSION: u32 = 5;
+pub const CONTRACT_VERSION: u32 = 23;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -677,6 +680,9 @@ pub enum DataKey2 {
     StressDataCount(Address),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
+
+    /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
+    OfferingRecord(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1613,6 +1619,51 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    pub fn replace_issuer_transfer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let key = DataKey::PendingIssuerTransfer(offering_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(RevoraError::NoTransferPending);
+        }
+
+        let pending: PendingTransfer = env.storage().persistent().get(&key).unwrap();
+        let timestamp = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
+            (issuer.clone(), pending.new_issuer.clone()),
+        );
+        env.events().publish(
+            (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
+            (new_issuer.clone(), timestamp),
+        );
+        Ok(())
+    }
+
     pub fn accept_issuer_transfer(
         env: Env,
         new_issuer: Address,
@@ -1691,6 +1742,11 @@ impl RevoraRevenueShare {
         let item_key = DataKey::OfferItem(tenant_id.clone(), count);
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
+
+        // Update direct index for the new issuer's offering_id (#360).
+        env.storage()
+            .persistent()
+            .set(&DataKey2::OfferingRecord(new_offering_id.clone()), &offering);
 
         // Update issuer lookups for the old and new offering IDs.
         env.storage()
@@ -1950,6 +2006,9 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&item_key, &offering);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+        // Direct index for O(1) get_offering (#360).
+        env.storage().persistent().set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
+
         let issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
 
@@ -2008,7 +2067,9 @@ impl RevoraRevenueShare {
     /// - `None` otherwise.
     /// Fetch a single offering by issuer, namespace, and token.
     ///
-    /// This method scans the registered offerings in the namespace to find the one matching the given token.
+    /// This method first attempts an O(1) direct lookup via the `OfferingRecord` index written
+    /// at registration (#360). Falls back to an O(n) scan for legacy offerings registered before
+    /// the index was introduced.
     ///
     /// ### Parameters
     /// - `issuer`: The address that registered the offering.
@@ -2024,6 +2085,20 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
     ) -> Option<Offering> {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // O(1) direct lookup via index written at registration (#360).
+        if let Some(offering) = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, Offering>(&DataKey2::OfferingRecord(offering_id))
+        {
+            return Some(offering);
+        }
+        // Fallback: O(n) scan for legacy offerings registered before the index was added.
         let count = Self::get_offering_count(env.clone(), issuer.clone(), namespace.clone());
         let tenant_id = TenantId { issuer, namespace };
         for i in 0..count {
@@ -3153,12 +3228,14 @@ impl RevoraRevenueShare {
         if !Self::is_event_only(&env) {
             let key = DataKey::ConcentrationLimit(offering_id);
             env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
-            Self::emit_v2_event(
-                &env,
-                (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
-                (max_bps, enforce),
-            );
         }
+
+        Self::emit_v2_event(
+            &env,
+            (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
+            (max_bps, enforce),
+        );
+
         Ok(())
     }
 
@@ -4111,6 +4188,11 @@ impl RevoraRevenueShare {
     pub fn get_claim_delay(env: Env, issuer: Address, namespace: Symbol, token: Address) -> u64 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::ClaimDelaySecs(offering_id)).unwrap_or(0)
+    }
+
+    /// Return the current contract version (#23).
+    pub fn get_version(_env: Env) -> u32 {
+        CONTRACT_VERSION
     }
 }
 
@@ -5602,3 +5684,180 @@ impl RevoraRevenueShare {
         Ok(())
     }
 } // end impl RevoraRevenueShare (plain)
+
+#[cfg(test)]
+mod issue_370_373_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
+
+    fn client() -> (Env, Address, RevoraRevenueShareClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &id);
+        (env, id, client)
+    }
+
+    fn assert_bounds(result: i128, amount: i128) {
+        let lo = core::cmp::min(0_i128, amount);
+        let hi = core::cmp::max(0_i128, amount);
+        assert!(
+            result >= lo && result <= hi,
+            "result {result} out of bounds [{lo}, {hi}] for amount={amount}"
+        );
+    }
+
+    #[test]
+    fn issue_370_get_offerings_page_limit_cursor_and_order_are_stable() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "def");
+
+        let mut tokens = Vec::new(&env);
+        for i in 0..25_u32 {
+            let token = Address::generate(&env);
+            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0);
+            tokens.push_back(token);
+        }
+
+        assert_eq!(client.get_offering_count(&issuer, &namespace), 25);
+
+        let (page_1, cursor_1) = client.get_offerings_page(&issuer, &namespace, &0, &10);
+        assert_eq!(page_1.len(), 10);
+        assert_eq!(cursor_1, Some(10));
+        for i in 0..10 {
+            assert_eq!(page_1.get(i).unwrap().token, tokens.get(i).unwrap());
+        }
+
+        let (page_2, cursor_2) = client.get_offerings_page(&issuer, &namespace, &10, &10);
+        assert_eq!(page_2.len(), 10);
+        assert_eq!(cursor_2, Some(20));
+        for i in 0..10 {
+            assert_eq!(page_2.get(i).unwrap().token, tokens.get(i + 10).unwrap());
+        }
+
+        let (page_3, cursor_3) = client.get_offerings_page(&issuer, &namespace, &20, &10);
+        assert_eq!(page_3.len(), 5);
+        assert_eq!(cursor_3, None);
+        for i in 0..5 {
+            assert_eq!(page_3.get(i).unwrap().token, tokens.get(i + 20).unwrap());
+        }
+
+        let (page_clamped, cursor_clamped) = client.get_offerings_page(&issuer, &namespace, &0, &100);
+        assert_eq!(page_clamped.len(), 20);
+        assert_eq!(cursor_clamped, Some(20));
+
+        let (empty_at_count, cursor_at_count) =
+            client.get_offerings_page(&issuer, &namespace, &25, &10);
+        assert_eq!(empty_at_count.len(), 0);
+        assert_eq!(cursor_at_count, None);
+
+        let (empty_beyond, cursor_beyond) =
+            client.get_offerings_page(&issuer, &namespace, &99, &10);
+        assert_eq!(empty_beyond.len(), 0);
+        assert_eq!(cursor_beyond, None);
+
+        let (page_limit_zero, cursor_limit_zero) =
+            client.get_offerings_page(&issuer, &namespace, &0, &0);
+        assert_eq!(page_limit_zero.len(), 20);
+        assert_eq!(cursor_limit_zero, Some(20));
+    }
+
+    #[test]
+    fn issue_370_get_offerings_page_stable_across_accept_issuer_transfer() {
+        let (env, contract_id, client) = client();
+        let old_issuer = Address::generate(&env);
+        let new_issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "def");
+
+        // Security: seed issuer registry so pending transfer lookup scans the old issuer.
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
+            env.storage().persistent().set(&DataKey2::IssuerItem(0), &old_issuer);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceItem(old_issuer.clone(), 0), &namespace);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::NamespaceRegistered(old_issuer.clone(), namespace.clone()), &true);
+        });
+
+        let new_token_0 = Address::generate(&env);
+        let new_token_1 = Address::generate(&env);
+        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0);
+        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0);
+
+        let mut old_tokens = Vec::new(&env);
+        for i in 0..25_u32 {
+            let token = Address::generate(&env);
+            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0);
+            old_tokens.push_back(token);
+        }
+
+        let transfer_token = old_tokens.get(7).unwrap();
+        client.propose_issuer_transfer(&old_issuer, &namespace, &transfer_token, &new_issuer);
+        client.accept_issuer_transfer(&new_issuer, &namespace, &transfer_token);
+
+        assert_eq!(client.get_offering_count(&old_issuer, &namespace), 25);
+        let (old_page, old_cursor) = client.get_offerings_page(&old_issuer, &namespace, &0, &100);
+        assert_eq!(old_page.len(), 20);
+        assert_eq!(old_cursor, Some(20));
+        for i in 0..20 {
+            assert_eq!(old_page.get(i).unwrap().token, old_tokens.get(i).unwrap());
+        }
+
+        let (old_tail, old_tail_cursor) =
+            client.get_offerings_page(&old_issuer, &namespace, &20, &10);
+        assert_eq!(old_tail.len(), 5);
+        assert_eq!(old_tail_cursor, None);
+
+        assert_eq!(client.get_offering_count(&new_issuer, &namespace), 3);
+        let (new_page_1, new_cursor_1) = client.get_offerings_page(&new_issuer, &namespace, &0, &2);
+        assert_eq!(new_page_1.len(), 2);
+        assert_eq!(new_cursor_1, Some(2));
+        assert_eq!(new_page_1.get(0).unwrap().token, new_token_0);
+        assert_eq!(new_page_1.get(1).unwrap().token, new_token_1);
+
+        let (new_page_2, new_cursor_2) = client.get_offerings_page(&new_issuer, &namespace, &2, &2);
+        assert_eq!(new_page_2.len(), 1);
+        assert_eq!(new_cursor_2, None);
+        assert_eq!(new_page_2.get(0).unwrap().token, transfer_token);
+    }
+
+    #[test]
+    fn issue_373_compute_share_round_half_up_negative_midpoint_and_extremes() {
+        let (_env, _contract_id, client) = client();
+
+        assert_eq!(client.compute_share(&0, &5_000, &RoundingMode::RoundHalfUp), 0);
+        assert_eq!(client.compute_share(&123_456, &0, &RoundingMode::RoundHalfUp), 0);
+        assert_eq!(client.compute_share(&15_000, &5_000, &RoundingMode::RoundHalfUp), 7_500);
+        assert_eq!(client.compute_share(&-15_001, &5_000, &RoundingMode::Truncation), -7_500);
+        assert_eq!(client.compute_share(&-15_001, &5_000, &RoundingMode::RoundHalfUp), -7_501);
+
+        for bps in [1_u32, 5_000, 9_999, 10_000, 10_001] {
+            let pos = client.compute_share(&i128::MAX, &bps, &RoundingMode::RoundHalfUp);
+            let neg = client.compute_share(&i128::MIN, &bps, &RoundingMode::RoundHalfUp);
+            assert_bounds(pos, i128::MAX);
+            assert_bounds(neg, i128::MIN);
+            if bps == 10_001 {
+                assert_eq!(pos, 0);
+                assert_eq!(neg, 0);
+            }
+        }
+
+        assert_eq!(
+            client.compute_share(&i128::MAX, &10_000, &RoundingMode::RoundHalfUp),
+            i128::MAX
+        );
+        assert_eq!(
+            client.compute_share(&i128::MIN, &10_000, &RoundingMode::RoundHalfUp),
+            i128::MIN
+        );
+    }
+}

@@ -426,3 +426,107 @@ fn rounding_boundary_negative_half() {
     assert_eq!(c.compute_share(&-3, &5_000, &RoundingMode::Truncation), -1);
     assert_eq!(c.compute_share(&-3, &5_000, &RoundingMode::RoundHalfUp), -2);
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #373: compute_share RoundHalfUp & Extreme i128 Value Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn compute_share_roundhalfup_negative_amount_edge_cases() {
+    // Issue #373: Test RoundHalfUp specifically with negative amounts and half-unit boundaries
+    let (_env, c) = client();
+
+    // Test exact half-unit with negative amounts
+    // For negative amounts, "rounding away from zero" means more negative
+    
+    // amount = -15000, bps = 5000 → exact -7500 (no rounding needed)
+    assert_eq!(c.compute_share(&-15000, &5000, &RoundingMode::RoundHalfUp), -7500);
+    
+    // amount = -15001, bps = 5000 → -7500.5 → should round to -7501 (away from zero)
+    let result = c.compute_share(&-15001, &5000, &RoundingMode::RoundHalfUp);
+    assert_eq!(result, -7501, "Negative half should round away from zero");
+    assert_bounds(result, -15001, "Negative amount with RoundHalfUp");
+
+    // Verify RoundHalfUp >= Truncation for negative amounts (more negative)
+    let trunc = c.compute_share(&-15001, &5000, &RoundingMode::Truncation);
+    let round = c.compute_share(&-15001, &5000, &RoundingMode::RoundHalfUp);
+    assert!(round <= trunc, "For negatives, RoundHalfUp should be <= Truncation (more negative)");
+}
+
+#[test]
+fn compute_share_i128_max_with_various_bps() {
+    // Issue #373: Test i128::MAX with different bps values
+    let (_env, c) = client();
+
+    // Test with bps = 1 (0.01%)
+    let result_1 = c.compute_share(&i128::MAX, &1, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_1, i128::MAX, "i128::MAX with bps=1");
+    assert!(result_1 > 0);
+
+    // Test with bps = 5000 (50%)
+    let result_5000 = c.compute_share(&i128::MAX, &5000, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_5000, i128::MAX, "i128::MAX with bps=5000");
+    assert!(result_5000 >= i128::MAX / 2);
+
+    // Test with bps = 9999 (99.99%)
+    let result_9999 = c.compute_share(&i128::MAX, &9999, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_9999, i128::MAX, "i128::MAX with bps=9999");
+    assert!(result_9999 > i128::MAX / 2);
+
+    // Test with bps = 10000 (100%) - should return exact amount
+    let result_10000 = c.compute_share(&i128::MAX, &10000, &RoundingMode::RoundHalfUp);
+    assert_eq!(result_10000, i128::MAX, "i128::MAX with bps=10000 should return MAX");
+
+    // Test with bps = 10001 (> cap) - should return 0
+    let result_over = c.compute_share(&i128::MAX, &10001, &RoundingMode::RoundHalfUp);
+    assert_eq!(result_over, 0, "bps > 10000 should return 0");
+}
+
+#[test]
+fn compute_share_i128_min_with_various_bps() {
+    // Issue #373: Test i128::MIN with different bps values
+    let (_env, c) = client();
+
+    // Test with bps = 1 (0.01%)
+    let result_1 = c.compute_share(&i128::MIN, &1, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_1, i128::MIN, "i128::MIN with bps=1");
+    assert!(result_1 < 0);
+
+    // Test with bps = 5000 (50%)
+    let result_5000 = c.compute_share(&i128::MIN, &5000, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_5000, i128::MIN, "i128::MIN with bps=5000");
+    assert!(result_5000 <= i128::MIN / 2);
+
+    // Test with bps = 9999 (99.99%)
+    let result_9999 = c.compute_share(&i128::MIN, &9999, &RoundingMode::RoundHalfUp);
+    assert_bounds(result_9999, i128::MIN, "i128::MIN with bps=9999");
+    assert!(result_9999 < i128::MIN / 2);
+
+    // Test with bps = 10000 (100%) - should return exact amount
+    let result_10000 = c.compute_share(&i128::MIN, &10000, &RoundingMode::RoundHalfUp);
+    assert_eq!(result_10000, i128::MIN, "i128::MIN with bps=10000 should return MIN");
+
+    // Test with bps = 10001 (> cap) - should return 0
+    let result_over = c.compute_share(&i128::MIN, &10001, &RoundingMode::RoundHalfUp);
+    assert_eq!(result_over, 0, "bps > 10000 should return 0");
+}
+
+#[test]
+fn compute_share_extreme_negative_roundhalfup_midpoint() {
+    // Issue #373: Test RoundHalfUp midpoint rounding with extreme negative amounts
+    let (_env, c) = client();
+
+    // Test: amount = i128::MIN + 10001, bps = 5000
+    // This should be close to (i128::MIN) / 2, testing the negative-half branch
+    let amount = i128::MIN + 10001;
+    let result = c.compute_share(&amount, &5000, &RoundingMode::RoundHalfUp);
+    assert_bounds(result, amount, "Extreme negative with bps=5000");
+    
+    // Verify RoundHalfUp vs Truncation behavior
+    let trunc = c.compute_share(&amount, &5000, &RoundingMode::Truncation);
+    let round = c.compute_share(&amount, &5000, &RoundingMode::RoundHalfUp);
+    // For negative: RoundHalfUp should be <= Truncation (more negative when rounding)
+    assert!(round <= trunc);
+}
+
