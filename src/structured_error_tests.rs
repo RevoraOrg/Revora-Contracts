@@ -88,6 +88,7 @@ mod tests {
             ("ContractPaused", RevoraError::ContractPaused as u32),
             ("BlacklistSizeLimitExceeded", RevoraError::BlacklistSizeLimitExceeded as u32),
             ("AlreadyApproved", RevoraError::AlreadyApproved as u32),
+            ("MissingReportForOverride", RevoraError::MissingReportForOverride as u32),
         ];
 
         // O(n²) uniqueness check — n=42, negligible cost.
@@ -163,6 +164,7 @@ mod tests {
         assert_eq!(RevoraError::ContractPaused as u32, 44);
         assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
         assert_eq!(RevoraError::AlreadyApproved as u32, 46);
+        assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

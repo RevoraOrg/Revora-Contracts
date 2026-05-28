@@ -150,6 +150,13 @@ pub enum RevoraError {
     BlacklistSizeLimitExceeded = 45,
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
+
+    /// override_existing=true was requested but no persisted report exists for the given period_id.
+    /// This prevents falling through to initial-report handling when the period cursor has no
+    /// prior persisted entry.
+    ///
+    /// Wire value: next available stable discriminant.
+    MissingReportForOverride = 47,
 }
 
 pub mod vesting;
@@ -2400,6 +2407,10 @@ impl RevoraRevenueShare {
                     );
                 }
                 None => {
+                    if override_existing {
+                        return Err(RevoraError::MissingReportForOverride);
+                    }
+                    // preserve existing initial-report behavior when override_existing=false
                     Self::require_next_period_id(&env, last_report_period_key.clone(), period_id)?;
                     if threshold > 0 && amount < threshold {
                         env.events().publish(
@@ -2930,14 +2941,14 @@ impl RevoraRevenueShare {
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
             let was_present = map.get(investor.clone()).unwrap_or(false);
-            
+
             if !was_present {
                 // Add to map and order vec
                 if !Self::is_event_only(&env) {
                     map.set(investor.clone(), true);
                     order.push_back(investor.clone());
                 }
-                
+
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()),
@@ -3114,11 +3125,11 @@ impl RevoraRevenueShare {
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
             let was_present = map.get(investor.clone()).unwrap_or(false);
-            
+
             if was_present {
                 // Remove from map
                 map.remove(investor.clone());
-                
+
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_REM, issuer.clone(), namespace.clone(), token.clone()),
@@ -6021,7 +6032,8 @@ mod issue_370_373_tests {
             assert_eq!(page_3.get(i).unwrap().token, tokens.get(i + 20).unwrap());
         }
 
-        let (page_clamped, cursor_clamped) = client.get_offerings_page(&issuer, &namespace, &0, &100);
+        let (page_clamped, cursor_clamped) =
+            client.get_offerings_page(&issuer, &namespace, &0, &100);
         assert_eq!(page_clamped.len(), 20);
         assert_eq!(cursor_clamped, Some(20));
 
@@ -6052,12 +6064,8 @@ mod issue_370_373_tests {
         env.as_contract(&contract_id, || {
             env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
             env.storage().persistent().set(&DataKey2::IssuerItem(0), &old_issuer);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
+            env.storage().persistent().set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
+            env.storage().persistent().set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
             env.storage()
                 .persistent()
                 .set(&DataKey2::NamespaceItem(old_issuer.clone(), 0), &namespace);
