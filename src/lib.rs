@@ -156,6 +156,8 @@ pub mod vesting;
 
 #[cfg(test)]
 mod test_duplicates;
+#[cfg(test)]
+mod test_min_revenue_threshold_boundary;
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
