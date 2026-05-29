@@ -150,6 +150,13 @@ pub enum RevoraError {
     BlacklistSizeLimitExceeded = 45,
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
+
+    /// override_existing=true was requested but no persisted report exists for the given period_id.
+    /// This prevents falling through to initial-report handling when the period cursor has no
+    /// prior persisted entry.
+    ///
+    /// Wire value: next available stable discriminant.
+    MissingReportForOverride = 47,
 }
 
 pub mod vesting;
@@ -649,6 +656,8 @@ pub enum DataKey {
     SupplyCap(OfferingId),
     /// Per-offering investment constraints (#97).
     InvestmentConstraints(OfferingId),
+    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
+    BlacklistSizeLimit(OfferingId),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -2402,6 +2411,10 @@ impl RevoraRevenueShare {
                     );
                 }
                 None => {
+                    if override_existing {
+                        return Err(RevoraError::MissingReportForOverride);
+                    }
+                    // preserve existing initial-report behavior when override_existing=false
                     Self::require_next_period_id(&env, last_report_period_key.clone(), period_id)?;
                     if threshold > 0 && amount < threshold {
                         env.events().publish(
@@ -2809,7 +2822,8 @@ impl RevoraRevenueShare {
             let was_present = map.get(investor.clone()).unwrap_or(false);
             if !was_present {
                 // Guard: reject if the blacklist is already at capacity.
-                if map.len() >= MAX_BLACKLIST_SIZE {
+                let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
+                if map.len() >= limit {
                     return Err(RevoraError::BlacklistSizeLimitExceeded);
                 }
                 map.set(investor.clone(), true);
@@ -2846,6 +2860,7 @@ impl RevoraRevenueShare {
     /// - `caller` must be the current issuer of the offering or the contract admin.
     /// - All-or-nothing semantics: if any validation fails, no addresses are added.
     /// - Batch size is capped at MAX_BATCH_SIZE to keep gas costs predictable.
+    /// - Blacklist size is capped per-offering (configurable via set_blacklist_size_limit, default MAX_BLACKLIST_SIZE).
     ///
     /// ### Returns
     /// - `Ok(())` on success.
@@ -2854,7 +2869,7 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::OfferingNotFound)` if the offering does not exist.
     /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer or admin.
     /// - `Err(RevoraError::LimitReached)` if batch size exceeds MAX_BATCH_SIZE.
-    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if adding the batch would exceed MAX_BLACKLIST_SIZE.
+    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if adding the batch would exceed the per-offering limit.
     #[allow(clippy::too_many_arguments)]
     pub fn blacklist_add_many(
         env: Env,
@@ -2915,6 +2930,7 @@ impl RevoraRevenueShare {
         }
 
         // Task 2.5: Capacity validation
+        let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
         let current_size = map.len();
         let mut new_count = 0u32;
         for i in 0..unique_investors.len() {
@@ -2924,7 +2940,7 @@ impl RevoraRevenueShare {
             }
         }
 
-        if current_size + new_count > MAX_BLACKLIST_SIZE {
+        if current_size + new_count > limit {
             return Err(RevoraError::BlacklistSizeLimitExceeded);
         }
 
@@ -2932,14 +2948,14 @@ impl RevoraRevenueShare {
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
             let was_present = map.get(investor.clone()).unwrap_or(false);
-            
+
             if !was_present {
                 // Add to map and order vec
                 if !Self::is_event_only(&env) {
                     map.set(investor.clone(), true);
                     order.push_back(investor.clone());
                 }
-                
+
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()),
@@ -3116,11 +3132,11 @@ impl RevoraRevenueShare {
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
             let was_present = map.get(investor.clone()).unwrap_or(false);
-            
+
             if was_present {
                 // Remove from map
                 map.remove(investor.clone());
-                
+
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_REM, issuer.clone(), namespace.clone(), token.clone()),
@@ -3221,7 +3237,8 @@ impl RevoraRevenueShare {
     /// Return the current number of blacklisted addresses for an offering.
     ///
     /// This is a cheap O(1) read of the underlying map length and can be used
-    /// by off-chain tooling to monitor proximity to `MAX_BLACKLIST_SIZE` (200)
+    /// by off-chain tooling to monitor proximity to the per-offering blacklist limit
+    /// (default MAX_BLACKLIST_SIZE = 200, configurable via set_blacklist_size_limit)
     /// before attempting an add.
     ///
     /// Returns 0 when no blacklist exists yet for the offering.
@@ -3233,6 +3250,86 @@ impl RevoraRevenueShare {
             .get::<DataKey, Map<Address, bool>>(&key)
             .map(|m| m.len())
             .unwrap_or(0)
+    }
+
+    /// Get the effective blacklist size limit for a per-offering.
+    ///
+    /// Returns the per-offering limit if set, otherwise defaults to MAX_BLACKLIST_SIZE.
+    /// This is a private helper used by blacklist_add and blacklist_add_many.
+    ///
+    /// ### Parameters
+    /// - `env`: The Soroban environment.
+    /// - `offering_id`: The offering identifier.
+    ///
+    /// ### Returns
+    /// The maximum allowed blacklist size for the offering.
+    fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
+        let key = DataKey::BlacklistSizeLimit(offering_id.clone());
+        env.storage()
+            .persistent()
+            .get::<DataKey, u32>(&key)
+            .unwrap_or(MAX_BLACKLIST_SIZE)
+    }
+
+    /// Set the per-offering blacklist size limit.
+    ///
+    /// Allows the issuer to configure a maximum number of addresses that can be
+    /// blacklisted for a specific offering. This limit affects both `blacklist_add`
+    /// and `blacklist_add_many` operations. If not set, the default is MAX_BLACKLIST_SIZE (200).
+    ///
+    /// ### Parameters
+    /// - `env`: The Soroban environment.
+    /// - `caller`: The address making the request. Must be the current issuer.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `max_size`: The new maximum blacklist size (must be > 0).
+    ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering.
+    /// - Caller must be authorized (require_auth).
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::OfferingNotFound)` if the offering does not exist.
+    /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer.
+    /// - `Err(RevoraError::LimitReached)` if max_size is 0.
+    pub fn set_blacklist_size_limit(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        max_size: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        // Verify the offering exists and caller is the issuer
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        if caller != current_issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Validate: max_size must be at least 1
+        if max_size == 0 {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let key = DataKey::BlacklistSizeLimit(offering_id);
+        env.storage().persistent().set(&key, &max_size);
+
+        Ok(())
     }
 
     // ── Whitelist management ──────────────────────────────────
@@ -6023,7 +6120,8 @@ mod issue_370_373_tests {
             assert_eq!(page_3.get(i).unwrap().token, tokens.get(i + 20).unwrap());
         }
 
-        let (page_clamped, cursor_clamped) = client.get_offerings_page(&issuer, &namespace, &0, &100);
+        let (page_clamped, cursor_clamped) =
+            client.get_offerings_page(&issuer, &namespace, &0, &100);
         assert_eq!(page_clamped.len(), 20);
         assert_eq!(cursor_clamped, Some(20));
 
@@ -6054,12 +6152,8 @@ mod issue_370_373_tests {
         env.as_contract(&contract_id, || {
             env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
             env.storage().persistent().set(&DataKey2::IssuerItem(0), &old_issuer);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
+            env.storage().persistent().set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
+            env.storage().persistent().set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
             env.storage()
                 .persistent()
                 .set(&DataKey2::NamespaceItem(old_issuer.clone(), 0), &namespace);
