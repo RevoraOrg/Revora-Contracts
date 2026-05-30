@@ -3824,7 +3824,8 @@ impl RevoraRevenueShare {
         AmountValidationMatrix::validate_stake_range(min_stake, max_stake)?;
 
         let key = DataKey2::InvestmentConstraints(offering_id);
-        let previous = env.storage().persistent().get::<DataKey2, InvestmentConstraintsConfig>(&key);
+        let previous =
+            env.storage().persistent().get::<DataKey2, InvestmentConstraintsConfig>(&key);
         env.storage().persistent().set(&key, &InvestmentConstraintsConfig { min_stake, max_stake });
         Self::emit_v2_event(
             &env,
