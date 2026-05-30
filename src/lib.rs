@@ -3265,10 +3265,7 @@ impl RevoraRevenueShare {
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
         let key = DataKey::BlacklistSizeLimit(offering_id.clone());
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&key)
-            .unwrap_or(MAX_BLACKLIST_SIZE)
+        env.storage().persistent().get::<DataKey, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
     /// Set the per-offering blacklist size limit.
