@@ -639,25 +639,12 @@ pub enum DataKey {
     /// Last migrated storage version for upgrade hooks.
     DeployedVersion,
 
-    /// Metadata reference for an offering.
-    OfferingMetadata(OfferingId),
     /// Platform fee in basis points.
     PlatformFeeBps,
     /// Per-offering per-asset fee override (#98).
     OfferingFeeBps(OfferingId, Address),
     /// Platform level per-asset fee (#98).
     PlatformFeePerAsset(Address),
-
-    /// Per-offering minimum revenue threshold (#25).
-    MinRevenueThreshold(OfferingId),
-    /// Total deposited revenue for an offering (#39).
-    DepositedRevenue(OfferingId),
-    /// Per-offering supply cap (#96). 0 = no cap.
-    SupplyCap(OfferingId),
-    /// Per-offering investment constraints (#97).
-    InvestmentConstraints(OfferingId),
-    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
-    BlacklistSizeLimit(OfferingId),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -694,6 +681,19 @@ pub enum DataKey2 {
 
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
+
+    /// Metadata reference for an offering.
+    OfferingMetadata(OfferingId),
+    /// Per-offering minimum revenue threshold (#25).
+    MinRevenueThreshold(OfferingId),
+    /// Total deposited revenue for an offering (#39).
+    DepositedRevenue(OfferingId),
+    /// Per-offering supply cap (#96). 0 = no cap.
+    SupplyCap(OfferingId),
+    /// Per-offering investment constraints (#97).
+    InvestmentConstraints(OfferingId),
+    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
+    BlacklistSizeLimit(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1217,10 +1217,10 @@ impl RevoraRevenueShare {
         Self::require_next_period_id(env, last_period_key.clone(), period_id)?;
 
         // Supply cap check (#96): reject if deposit would exceed cap
-        let cap_key = DataKey::SupplyCap(offering_id.clone());
+        let cap_key = DataKey2::SupplyCap(offering_id.clone());
         let cap: i128 = env.storage().persistent().get(&cap_key).unwrap_or(0);
         if cap > 0 {
-            let deposited_key = DataKey::DepositedRevenue(offering_id.clone());
+            let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
             let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
             let new_total = deposited.saturating_add(amount);
             if new_total > cap {
@@ -1267,7 +1267,7 @@ impl RevoraRevenueShare {
         Self::commit_period_id(env, last_period_key, period_id);
 
         // Update cumulative deposited revenue and emit cap-reached event if applicable (#96)
-        let deposited_key = DataKey::DepositedRevenue(offering_id.clone());
+        let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
         let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
         let new_deposited = deposited.saturating_add(amount);
         env.storage().persistent().set(&deposited_key, &new_deposited);
@@ -1292,7 +1292,7 @@ impl RevoraRevenueShare {
     /// Return the supply cap for an offering (0 = no cap). (#96)
     pub fn get_supply_cap(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
-        env.storage().persistent().get(&DataKey::SupplyCap(offering_id)).unwrap_or(0)
+        env.storage().persistent().get(&DataKey2::SupplyCap(offering_id)).unwrap_or(0)
     }
 
     // ── Fee BPS Configuration (#98) ──────────────────────────────────────────
@@ -1455,7 +1455,7 @@ impl RevoraRevenueShare {
     fn get_min_revenue_threshold_for_offering(env: &Env, offering_id: &OfferingId) -> i128 {
         env.storage()
             .persistent()
-            .get(&DataKey::MinRevenueThreshold(offering_id.clone()))
+            .get(&DataKey2::MinRevenueThreshold(offering_id.clone()))
             .unwrap_or(0)
     }
 
@@ -2036,7 +2036,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
 
         if supply_cap > 0 {
-            let cap_key = DataKey::SupplyCap(offering_id.clone());
+            let cap_key = DataKey2::SupplyCap(offering_id.clone());
             env.storage().persistent().set(&cap_key, &supply_cap);
         }
 
@@ -3264,8 +3264,8 @@ impl RevoraRevenueShare {
     /// ### Returns
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
-        let key = DataKey::BlacklistSizeLimit(offering_id.clone());
-        env.storage().persistent().get::<DataKey, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
+        let key = DataKey2::BlacklistSizeLimit(offering_id.clone());
+        env.storage().persistent().get::<DataKey2, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
     /// Set the per-offering blacklist size limit.
@@ -3323,7 +3323,7 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        let key = DataKey::BlacklistSizeLimit(offering_id);
+        let key = DataKey2::BlacklistSizeLimit(offering_id);
         env.storage().persistent().set(&key, &max_size);
 
         Ok(())
@@ -3823,8 +3823,8 @@ impl RevoraRevenueShare {
         // Validate range: max_stake >= min_stake when max_stake > 0
         AmountValidationMatrix::validate_stake_range(min_stake, max_stake)?;
 
-        let key = DataKey::InvestmentConstraints(offering_id);
-        let previous = env.storage().persistent().get::<DataKey, InvestmentConstraintsConfig>(&key);
+        let key = DataKey2::InvestmentConstraints(offering_id);
+        let previous = env.storage().persistent().get::<DataKey2, InvestmentConstraintsConfig>(&key);
         env.storage().persistent().set(&key, &InvestmentConstraintsConfig { min_stake, max_stake });
         Self::emit_v2_event(
             &env,
@@ -3842,7 +3842,7 @@ impl RevoraRevenueShare {
         token: Address,
     ) -> Option<InvestmentConstraintsConfig> {
         let offering_id = OfferingId { issuer, namespace, token };
-        let key = DataKey::InvestmentConstraints(offering_id);
+        let key = DataKey2::InvestmentConstraints(offering_id);
         env.storage().persistent().get(&key)
     }
 
@@ -3888,7 +3888,7 @@ impl RevoraRevenueShare {
             return Err(err);
         }
 
-        let key = DataKey::MinRevenueThreshold(offering_id);
+        let key = DataKey2::MinRevenueThreshold(offering_id);
         let previous: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &min_amount);
 
@@ -3908,7 +3908,7 @@ impl RevoraRevenueShare {
         token: Address,
     ) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
-        let key = DataKey::MinRevenueThreshold(offering_id);
+        let key = DataKey2::MinRevenueThreshold(offering_id);
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
@@ -5495,7 +5495,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&time_key, &deposit_time);
 
         // Update cumulative deposited revenue
-        let deposited_key = DataKey::DepositedRevenue(offering_id.clone());
+        let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
         let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
         let new_deposited = deposited.saturating_add(amount);
         env.storage().persistent().set(&deposited_key, &new_deposited);
