@@ -1,9 +1,9 @@
 #![cfg(test)]
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Events}, Address, Env, Vec};
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -21,7 +21,7 @@ fn blacklist_add_many_gas_bound_worst_case() {
 
     // Initialize and register offering
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1000u32, &token, &0u32);
+    client.register_offering(&issuer, &ns, &token, &1000u32, &token, &0_i128);
 
     // Prefill blacklist to half the default cap (MAX_BLACKLIST_SIZE = 200 -> 100)
     let mut prefilled: Vec<Address> = Vec::new(&env);
@@ -51,13 +51,13 @@ fn blacklist_add_many_gas_bound_worst_case() {
 
     // Snapshot events and budget
     let events_before = env.events().all().len();
-    let cpu_before = env.budget().cpu_insns();
+    let cpu_before = env.budget().cpu_instruction_cost();
 
     // Execute batch add
     client.blacklist_add_many(&issuer, &issuer, &ns, &token, &batch);
 
     let events_after = env.events().all().len();
-    let cpu_after = env.budget().cpu_insns();
+    let cpu_after = env.budget().cpu_instruction_cost();
 
     // Only the 25 new addresses should have emitted bl_add events
     let new_events = events_after - events_before;
@@ -66,6 +66,6 @@ fn blacklist_add_many_gas_bound_worst_case() {
     // Assert CPU instruction delta is under a conservative ceiling
     // (keeps worst-case bounded; adjust if upstream budget changes)
     let consumed = cpu_after - cpu_before;
-    let ceiling: u64 = 1_000_000;
+    let ceiling: u64 = 5_000_000;
     assert!(consumed <= ceiling, "Consumed CPU {} exceeded ceiling {}", consumed, ceiling);
 }

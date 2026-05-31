@@ -326,7 +326,7 @@ fn claim_transfer_fail_then_retry_succeeds() {
     // Retry — should now succeed
     let r2 = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
     assert!(r2.is_ok(), "retry after fixing token should succeed, got {r2:?}");
-    assert_eq!(r2.unwrap(), 100_000, "holder should receive full payout on retry");
+    assert_eq!(r2.unwrap().unwrap(), 100_000, "holder should receive full payout on retry");
 
     // Pending periods now empty
     let pending =
@@ -468,7 +468,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Claim on offering B succeeds (normal token)
     let r_b = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token_b, &50);
     assert!(r_b.is_ok(), "sibling offering claim must succeed, got {r_b:?}");
-    assert_eq!(r_b.unwrap(), 100_000);
+    assert_eq!(r_b.unwrap().unwrap(), 100_000);
 
     // Offering A: period 1 still pending
     let pending_a =
