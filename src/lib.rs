@@ -1844,7 +1844,7 @@ impl RevoraRevenueShare {
             Self::find_pending_transfer_for_new_issuer(&env, &namespace, &token, &new_issuer)
                 .ok_or(RevoraError::NoTransferPending)?;
 
-        let _pending: PendingTransfer = env
+        let pending: PendingTransfer = env
             .storage()
             .persistent()
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
@@ -1861,7 +1861,7 @@ impl RevoraRevenueShare {
                 offering_id.namespace,
                 offering_id.token,
             ),
-            (old_issuer, new_issuer),
+            (old_issuer, pending.new_issuer),
         );
         Ok(())
     }
