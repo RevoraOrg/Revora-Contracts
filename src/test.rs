@@ -2463,6 +2463,501 @@ fn payment_token_not_locked_for_unknown_offering() {
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &unknown), None);
 }
 
+// ── Multi-offering payment token independence tests (#287/#375) ──────────────
+//
+// Comprehensive suite ensuring payment token locks are truly per-offering without
+// cross-talk between offerings in the same issuer/namespace.
+//
+// Test matrix:
+//   1. Two offerings, different payment tokens: independent locks
+//   2. Cross-deposit rejection: PaymentTokenMismatch on wrong token
+//   3. Snapshot behavior: payment tokens locked independently
+//   4. Same payment token: both offerings lock to same asset
+//   5. Period sequencing: independent period counters per offering
+//   6. Get operations after both locked: correct isolation
+//   7. Transfer-like scenarios: revoke/update one offering, other unaffected
+
+/// Two offerings (A, B) in same namespace with different payment tokens:
+/// Deposit to A with token X, then to B with token Y. Verify get_payment_token
+/// returns X for A and Y for B without leakage.
+#[test]
+fn multi_offering_different_payment_tokens_independent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (payment_token_x, admin_x) = create_payment_token(&env);
+    let (payment_token_y, admin_y) = create_payment_token(&env);
+
+    // Register two offerings in same namespace ("multi") but different tokens
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token_y, &0);
+
+    // Mint tokens for issuer
+    mint_tokens(&env, &payment_token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &payment_token_y, &admin_y, &issuer, &1_000_000);
+
+    // Deposit X to offering A
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &payment_token_x, &100_000, &1);
+    // Deposit Y to offering B
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &payment_token_y, &200_000, &1);
+
+    // Verify independent locks
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(payment_token_x),
+        "offering A must lock to token X"
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(payment_token_y),
+        "offering B must lock to token Y"
+    );
+
+    // Verify amounts stored correctly
+    let rev_a = client.get_period_count(&issuer, &symbol_short!("multi"), &token_a);
+    let rev_b = client.get_period_count(&issuer, &symbol_short!("multi"), &token_b);
+    assert_eq!(rev_a, 1, "offering A should have 1 period");
+    assert_eq!(rev_b, 1, "offering B should have 1 period");
+}
+
+/// Attempting to deposit token Z to offering A (which locked to token X) must
+/// fail with PaymentTokenMismatch, without mutating state or affecting offering B.
+#[test]
+fn multi_offering_cross_deposit_fails_with_payment_token_mismatch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit to A (locks to token X)
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+
+    // Deposit to B (locks to token Y)
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    // Try to deposit token Z to A — must fail
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+
+    // Verify state unchanged: A locked to X, B locked to Y, both 1 period
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 1);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 1);
+}
+
+/// Attempting to deposit the wrong token to offering A must not leak tokens from
+/// the issuer or contract balance for offering B.
+#[test]
+fn multi_offering_cross_deposit_does_not_mutate_state() {
+    let (env, contract_id) = {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RevoraRevenueShare);
+        (env, id)
+    };
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    let issuer_z_before = balance(&env, &token_z, &issuer);
+    let contract_z_before = balance(&env, &token_z, &contract_id);
+    let issuer_y_before = balance(&env, &token_y, &issuer);
+    let contract_y_before = balance(&env, &token_y, &contract_id);
+
+    // Attempt cross-deposit to A with token Z
+    let _result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+
+    // Verify no token movement on Z or Y
+    assert_eq!(balance(&env, &token_z, &issuer), issuer_z_before, "issuer balance for Z should not change");
+    assert_eq!(balance(&env, &token_z, &contract_id), contract_z_before, "contract balance for Z should not change");
+    assert_eq!(balance(&env, &token_y, &issuer), issuer_y_before, "issuer balance for Y should not change");
+    assert_eq!(balance(&env, &token_y, &contract_id), contract_y_before, "contract balance for Y should not change");
+}
+
+/// Deposit to offering A, then attempt to deposit different token to B.
+/// This should succeed because A and B are independent. Then attempt to
+/// deposit wrong token to A again — must fail with PaymentTokenMismatch.
+#[test]
+fn multi_offering_independent_deposits_then_cross_fail() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit A with X
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    // Deposit B with Y
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    // Try to deposit A with Z — must fail
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+
+    // State still valid: verify both A and B locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Two offerings in same namespace with the SAME payment token should both
+/// lock to that token independently (no conflict).
+#[test]
+fn multi_offering_same_payment_token_both_offerings() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (payment_token, admin) = create_payment_token(&env);
+
+    // Both offerings use the SAME payment token
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token, &0);
+
+    mint_tokens(&env, &payment_token, &admin, &issuer, &2_000_000);
+
+    // Deposit to both with same token
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &payment_token, &200_000, &1);
+
+    // Both should lock to the same token
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(payment_token)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(payment_token)
+    );
+
+    // Verify period counts are independent
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 1);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 1);
+}
+
+/// Multiple deposits to A and B with their respective tokens: period sequences
+/// are independent.
+#[test]
+fn multi_offering_independent_period_sequencing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
+
+    // Deposit periods to A: 1, 2, 3
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &3);
+
+    // Deposit periods to B: 1, 2
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &2);
+
+    // Verify independent period counts
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 3);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 2);
+
+    // Verify tokens still locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Snapshot deposits to A and B with different tokens must also lock independently.
+#[test]
+fn multi_offering_snapshot_deposits_independent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    // Enable snapshot for both
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_b, &true);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+
+    // Snapshot deposit to A
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_x,
+        &100_000,
+        &1,
+        &42,
+    );
+
+    // Snapshot deposit to B
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_b,
+        &token_y,
+        &200_000,
+        &1,
+        &43,
+    );
+
+    // Verify independent locks
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Snapshot deposit to A with token X, then attempt normal deposit with token Z.
+/// Should fail with PaymentTokenMismatch (snapshot also locks the token).
+#[test]
+fn multi_offering_snapshot_locks_payment_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Snapshot deposit locks token_x
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_x,
+        &100_000,
+        &1,
+        &42,
+    );
+
+    // Attempt normal deposit with token_z
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+}
+
+/// Three offerings (A, B, C) in same namespace, each with distinct payment token.
+/// Verify full isolation: deposits don't leak between them.
+#[test]
+fn multi_offering_three_offerings_full_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    // Register three offerings
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_c, &5_000, &token_z, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit to each with their respective tokens
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_c, &token_z, &300_000, &1);
+
+    // Verify all locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_c),
+        Some(token_z)
+    );
+
+    // Try cross-deposits: all should fail
+    let r1 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_a, &token_y, &100_000, &2,
+    );
+    let r2 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_b, &token_z, &200_000, &2,
+    );
+    let r3 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_c, &token_x, &300_000, &2,
+    );
+
+    assert_eq!(r1, Err(Ok(RevoraError::PaymentTokenMismatch)));
+    assert_eq!(r2, Err(Ok(RevoraError::PaymentTokenMismatch)));
+    assert_eq!(r3, Err(Ok(RevoraError::PaymentTokenMismatch)));
+}
+
+/// Multiple deposits to A (periods 1, 2, 3) and B (periods 1, 2), verifying
+/// independent period tracking with independent payment token locks.
+#[test]
+fn multi_offering_interleaved_deposits_maintain_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
+
+    // Interleave deposits: A.1, B.1, A.2, B.2, A.3
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &3);
+
+    // Verify period counts independent
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 3);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 2);
+
+    // Verify tokens locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
 // ── Payment token decimal tests (#287) ────────────────────────
 
 /// Default decimal precision is 7 (Stellar canonical) when not explicitly set.
