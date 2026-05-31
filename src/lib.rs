@@ -1844,7 +1844,7 @@ impl RevoraRevenueShare {
             Self::find_pending_transfer_for_new_issuer(&env, &namespace, &token, &new_issuer)
                 .ok_or(RevoraError::NoTransferPending)?;
 
-        let pending: PendingTransfer = env
+        let _pending: PendingTransfer = env
             .storage()
             .persistent()
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
@@ -1857,11 +1857,11 @@ impl RevoraRevenueShare {
         env.events().publish(
             (
                 EVENT_ISSUER_TRANSFER_REJECTED,
-                offering_id.issuer.clone(),
-                offering_id.namespace.clone(),
-                offering_id.token.clone(),
+                offering_id.issuer,
+                offering_id.namespace,
+                offering_id.token,
             ),
-            (old_issuer, new_issuer.clone()),
+            (old_issuer, new_issuer),
         );
         Ok(())
     }
@@ -3302,10 +3302,7 @@ impl RevoraRevenueShare {
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
         let key = DataKey::BlacklistSizeLimit(offering_id.clone());
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&key)
-            .unwrap_or(MAX_BLACKLIST_SIZE)
+        env.storage().persistent().get::<DataKey, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
     /// Set the per-offering blacklist size limit.
