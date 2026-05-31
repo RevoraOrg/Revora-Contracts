@@ -314,8 +314,12 @@ const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
 const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
 const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
-/// Issuer transfer expiry: 7 days in seconds.
+/// Issuer transfer expiry: 7 days in seconds (default).
 const ISSUER_TRANSFER_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+/// Minimum configurable issuer transfer expiry: 1 hour.
+const MIN_ISSUER_TRANSFER_EXPIRY_SECS: u64 = 60 * 60;
+/// Maximum configurable issuer transfer expiry: 30 days.
+const MAX_ISSUER_TRANSFER_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
 const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 // v1 versioned event symbols (legacy)
@@ -405,6 +409,8 @@ pub struct AuditReconciliationResult {
 pub struct PendingTransfer {
     pub new_issuer: Address,
     pub timestamp: u64,
+    /// Effective expiry in seconds. 0 means use ISSUER_TRANSFER_EXPIRY_SECS default.
+    pub expiry_secs: u64,
 }
 
 /// Cross-offering aggregated metrics (#39).
@@ -658,8 +664,6 @@ pub enum DataKey {
     SupplyCap(OfferingId),
     /// Per-offering investment constraints (#97).
     InvestmentConstraints(OfferingId),
-    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
-    BlacklistSizeLimit(OfferingId),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -696,6 +700,8 @@ pub enum DataKey2 {
 
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
+    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
+    BlacklistSizeLimit(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1612,6 +1618,33 @@ impl RevoraRevenueShare {
         token: Address,
         new_issuer: Address,
     ) -> Result<(), RevoraError> {
+        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, 0)
+    }
+
+    /// Propose an issuer transfer with a custom expiry window.
+    ///
+    /// `expiry_secs` is clamped to `[MIN_ISSUER_TRANSFER_EXPIRY_SECS, MAX_ISSUER_TRANSFER_EXPIRY_SECS]`.
+    /// Pass `0` to use the default `ISSUER_TRANSFER_EXPIRY_SECS` (7 days).
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_transfer_with_expiry(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+        expiry_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, expiry_secs)
+    }
+
+    fn do_propose_issuer_transfer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+        expiry_secs: u64,
+    ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
@@ -1633,10 +1666,20 @@ impl RevoraRevenueShare {
             return Err(RevoraError::IssuerTransferPending);
         }
 
+        // Clamp expiry: 0 means default; non-zero is clamped to [MIN, MAX].
+        let effective_expiry = if expiry_secs == 0 {
+            0
+        } else {
+            expiry_secs
+                .max(MIN_ISSUER_TRANSFER_EXPIRY_SECS)
+                .min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
+        };
+
         let timestamp = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+        env.storage().persistent().set(
+            &key,
+            &PendingTransfer { new_issuer: new_issuer.clone(), timestamp, expiry_secs: effective_expiry },
+        );
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
             (new_issuer.clone(), timestamp),
@@ -1676,7 +1719,7 @@ impl RevoraRevenueShare {
         let timestamp = env.ledger().timestamp();
         env.storage()
             .persistent()
-            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp, expiry_secs: 0 });
 
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
@@ -1710,7 +1753,12 @@ impl RevoraRevenueShare {
             .ok_or(RevoraError::NoTransferPending)?;
 
         let current_timestamp = env.ledger().timestamp();
-        if current_timestamp > pending.timestamp.saturating_add(ISSUER_TRANSFER_EXPIRY_SECS) {
+        let effective_expiry = if pending.expiry_secs == 0 {
+            ISSUER_TRANSFER_EXPIRY_SECS
+        } else {
+            pending.expiry_secs
+        };
+        if current_timestamp > pending.timestamp.saturating_add(effective_expiry) {
             return Err(RevoraError::IssuerTransferExpired);
         }
 
@@ -3266,10 +3314,10 @@ impl RevoraRevenueShare {
     /// ### Returns
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
-        let key = DataKey::BlacklistSizeLimit(offering_id.clone());
+        let key = DataKey2::BlacklistSizeLimit(offering_id.clone());
         env.storage()
             .persistent()
-            .get::<DataKey, u32>(&key)
+            .get::<DataKey2, u32>(&key)
             .unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
@@ -3328,7 +3376,7 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        let key = DataKey::BlacklistSizeLimit(offering_id);
+        let key = DataKey2::BlacklistSizeLimit(offering_id);
         env.storage().persistent().set(&key, &max_size);
 
         Ok(())

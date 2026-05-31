@@ -5547,6 +5547,146 @@ fn issuer_transfer_replace_without_pending_transfer_fails() {
     assert!(result.is_err());
 }
 
+// ── Configurable expiry tests (#362) ─────────────────────────
+
+#[test]
+fn issuer_transfer_default_expiry_used_when_expiry_secs_zero() {
+    // propose_issuer_transfer (expiry_secs=0) → accept within 7 days → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance time to just before the 7-day default expiry
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days - 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within default 7-day window");
+}
+
+#[test]
+fn issuer_transfer_default_expiry_rejects_after_seven_days() {
+    // propose_issuer_transfer (expiry_secs=0) → accept after 7 days → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after default 7-day expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_within_window() {
+    // propose_transfer_with_expiry(2h) → accept at 1h → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60); // +1h
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within custom 2h window");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_rejected_after_window() {
+    // propose_transfer_with_expiry(2h) → accept at 2h+1s → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after custom 2h expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_at_exact_boundary() {
+    // propose_transfer_with_expiry(2h) → accept at exactly 2h → succeeds (inclusive)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept at exact expiry boundary (timestamp == expiry)");
+}
+
+#[test]
+fn issuer_transfer_expiry_below_min_clamped_to_min() {
+    // expiry_secs below 1h minimum → clamped to 1h
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let below_min = 60u64; // 1 minute — below 1h minimum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &below_min,
+    );
+
+    // Should still be valid at 30 minutes (clamped to 1h minimum)
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 60);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "clamped-to-min expiry should still be valid at 30min");
+}
+
+#[test]
+fn issuer_transfer_expiry_above_max_clamped_to_max() {
+    // expiry_secs above 30-day maximum → clamped to 30 days
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let above_max = 999u64 * 24 * 60 * 60; // 999 days — above 30-day maximum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &above_max,
+    );
+
+    // At 31 days (past 30-day max), should be expired
+    let thirty_days_plus_one = 30u64 * 24 * 60 * 60 + 1;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + thirty_days_plus_one);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "clamped-to-max expiry should expire after 30 days");
+}
+
 // ── Security and abuse prevention tests ──────────────────────
 
 #[test]
