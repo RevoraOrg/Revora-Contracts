@@ -1850,11 +1850,6 @@ impl RevoraRevenueShare {
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
             .ok_or(RevoraError::NoTransferPending)?;
 
-        let current_timestamp = env.ledger().timestamp();
-        if current_timestamp > pending.timestamp.saturating_add(ISSUER_TRANSFER_EXPIRY_SECS) {
-            return Err(RevoraError::IssuerTransferExpired);
-        }
-
         let old_issuer = offering_id.issuer.clone();
 
         env.storage().persistent().remove(&DataKey::PendingIssuerTransfer(offering_id.clone()));
