@@ -5702,6 +5702,82 @@ fn issuer_transfer_blocked_when_frozen() {
     assert!(result.is_err());
 }
 
+#[test]
+fn issuer_transfer_reject_clears_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), None);
+}
+
+#[test]
+fn issuer_transfer_reject_emits_event() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    let before = legacy_events(&env).len();
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let after = legacy_events(&env).len();
+    assert_eq!(after, before + 1);
+}
+
+#[test]
+fn issuer_transfer_wrong_address_cannot_reject() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let wrong_address = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let result = client.try_reject_issuer_transfer(&wrong_address, &symbol_short!("def"), &token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn issuer_transfer_reject_fails_when_no_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let result = client.try_reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn issuer_transfer_reject_then_can_propose_again() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    client.reject_issuer_transfer(&new_issuer_1, &symbol_short!("def"), &token);
+
+    // Should be able to propose to different address
+    let result =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+    assert!(result.is_ok());
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer_2)
+    );
+}
+
+#[test]
+#[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
+fn issuer_transfer_reject_requires_auth() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let new_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // No mock_all_auths - should panic
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+}
+
 // ===========================================================================
 // Multisig admin pattern tests
 // ===========================================================================

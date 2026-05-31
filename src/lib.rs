@@ -249,6 +249,7 @@ const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 const EVENT_ISSUER_TRANSFER_PROPOSED: Symbol = symbol_short!("iss_prop");
 const EVENT_ISSUER_TRANSFER_ACCEPTED: Symbol = symbol_short!("iss_acc");
 const EVENT_ISSUER_TRANSFER_CANCELLED: Symbol = symbol_short!("iss_canc");
+const EVENT_ISSUER_TRANSFER_REJECTED: Symbol = symbol_short!("iss_rej");
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
@@ -1825,6 +1826,42 @@ impl RevoraRevenueShare {
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
             (issuer, pending.new_issuer),
+        );
+        Ok(())
+    }
+
+    pub fn reject_issuer_transfer(
+        env: Env,
+        new_issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        new_issuer.require_auth();
+
+        let offering_id =
+            Self::find_pending_transfer_for_new_issuer(&env, &namespace, &token, &new_issuer)
+                .ok_or(RevoraError::NoTransferPending)?;
+
+        let pending: PendingTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
+            .ok_or(RevoraError::NoTransferPending)?;
+
+        let old_issuer = offering_id.issuer.clone();
+
+        env.storage().persistent().remove(&DataKey::PendingIssuerTransfer(offering_id.clone()));
+
+        env.events().publish(
+            (
+                EVENT_ISSUER_TRANSFER_REJECTED,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (old_issuer, new_issuer.clone()),
         );
         Ok(())
     }
