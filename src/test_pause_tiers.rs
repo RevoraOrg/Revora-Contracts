@@ -24,11 +24,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    token, Address, Env,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, token, Address, Env};
 
 use crate::{PauseState, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -55,15 +51,7 @@ fn setup(env: &Env) -> (RevoraRevenueShareClient, Address, Address) {
 /// Returns `(client, admin, safety, issuer, offering_token, payment_token, holder)`.
 fn setup_with_offering(
     env: &Env,
-) -> (
-    RevoraRevenueShareClient,
-    Address,
-    Address,
-    Address,
-    Address,
-    Address,
-    Address,
-) {
+) -> (RevoraRevenueShareClient, Address, Address, Address, Address, Address, Address) {
     env.mock_all_auths();
     let client = make_client(env);
     let admin = Address::generate(env);
@@ -73,7 +61,7 @@ fn setup_with_offering(
     let issuer = Address::generate(env);
     let offering_token = Address::generate(env);
     let payment_admin = Address::generate(env);
-    let payment_token = env.register_stellar_asset_contract(payment_admin.clone());
+    let payment_token = env.register_stellar_asset_contract_v2(payment_admin.clone());
     let holder = Address::generate(env);
 
     client.register_offering(
@@ -81,29 +69,23 @@ fn setup_with_offering(
         &symbol_short!("def"),
         &offering_token,
         &10_000,
-        &payment_token,
+        &payment_token.address(),
         &0,
     );
-    client.set_holder_share(
-        &issuer,
-        &symbol_short!("def"),
-        &offering_token,
-        &holder,
-        &10_000,
-    );
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
     // Mint to issuer and deposit period 1
-    token::StellarAssetClient::new(env, &payment_token).mint(&issuer, &500_000);
+    token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &500_000);
     client.deposit_revenue(
         &issuer,
         &symbol_short!("def"),
         &offering_token,
-        &payment_token,
+        &payment_token.address(),
         &100_000,
         &1,
     );
 
-    (client, admin, safety, issuer, offering_token, payment_token, holder)
+    (client, admin, safety, issuer, offering_token, payment_token.address(), holder)
 }
 
 // ── Section A: get_pause_state / is_paused ───────────────────────────────────
@@ -206,10 +188,9 @@ fn soft_pause_claim_succeeds() {
     client.pause_admin(&admin);
     assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
 
-    let result =
-        client.try_claim(&holder, &_issuer, &symbol_short!("def"), &offering_token, &50);
+    let result = client.try_claim(&holder, &_issuer, &symbol_short!("def"), &offering_token, &50);
     assert!(result.is_ok(), "claim must succeed under SoftPaused, got {result:?}");
-    assert_eq!(result.unwrap(), 100_000, "holder should receive full payout");
+    assert_eq!(result.unwrap().unwrap(), 100_000, "holder should receive full payout");
 }
 
 /// Under SoftPaused, `deposit_revenue` is blocked with ContractPaused.
@@ -247,14 +228,8 @@ fn soft_pause_register_offering_blocked() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    let result = client.try_register_offering(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &1_000,
-        &token,
-        &0,
-    );
+    let result =
+        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -289,8 +264,7 @@ fn hard_pause_claim_blocked() {
     client.hard_pause_admin(&admin);
     assert_eq!(client.get_pause_state(), PauseState::HardPaused);
 
-    let result =
-        client.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
+    let result = client.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
     assert_eq!(
         result,
         Err(Ok(RevoraError::ContractPaused)),
@@ -329,14 +303,8 @@ fn hard_pause_register_offering_blocked() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    let result = client.try_register_offering(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &1_000,
-        &token,
-        &0,
-    );
+    let result =
+        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -452,7 +420,7 @@ fn de_escalation_hard_to_soft_allows_claim() {
     // Claim is now allowed again
     let r2 = client.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
     assert!(r2.is_ok(), "claim must succeed after de-escalation to SoftPaused, got {r2:?}");
-    assert_eq!(r2.unwrap(), 100_000);
+    assert_eq!(r2.unwrap().unwrap(), 100_000);
 }
 
 // ── Section F: Idempotency ────────────────────────────────────────────────────
