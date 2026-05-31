@@ -584,6 +584,8 @@ pub enum DataKey {
     PeriodCount(OfferingId),
     /// Holder's share in basis points for (offering_id, holder).
     HolderShare(OfferingId, Address),
+    /// Per-offering running total of all persisted holder shares (basis points).
+    HolderShareTotal(OfferingId),
     /// Next period index to claim for (offering_id, holder).
     LastClaimedIdx(OfferingId, Address),
     /// Payment token address for an offering.
@@ -1138,19 +1140,34 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
+
+        // Maintain a running total of persisted holder shares for this offering.
+        let total_key = DataKey::HolderShareTotal(offering_id.clone());
+        let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+
+        let old_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
+
+        let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
+        if new_total > 10_000 {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        // Persist updated holder share and running total.
         env.storage()
             .persistent()
-            .set(&DataKey::HolderShare(offering_id, holder.clone()), &share_bps);
+            .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
+        env.storage().persistent().set(&total_key, &new_total);
+
         env.events().publish(
             (EVENT_SHARE_SET, issuer.clone(), namespace.clone(), token.clone()),
             (holder.clone(), share_bps),
         );
-        // Versioned v2 event: [2, holder, share_bps] â€” always emitted (#RC26Q2-C31)
-        Self::emit_v2_event(
-            env,
-            (EVENT_SHARE_SET_V2, issuer, namespace, token),
-            (holder, share_bps),
-        );
+        // Versioned v2 event: [2, holder, share_bps] — always emitted (#RC26Q2-C31)
+        Self::emit_v2_event(env, (EVENT_SHARE_SET_V2, issuer, namespace, token), (holder, share_bps));
         Ok(())
     }
 
@@ -4519,6 +4536,11 @@ impl RevoraRevenueShare {
         }
 
         let mut added_bps: u32 = 0;
+
+        // Maintain per-offering running total and validate aggregate cap.
+        let total_key = DataKey::HolderShareTotal(offering_id.clone());
+        let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+
         for i in 0..batch_len {
             let (holder, share_bps) = holders.get(i).unwrap();
             let slot = start_index.saturating_add(i);
@@ -4529,12 +4551,25 @@ impl RevoraRevenueShare {
                 &(holder.clone(), share_bps),
             );
 
+            // Compute delta against previously persisted holder share.
+            let old_share: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+
+            let new_total = current_total.saturating_sub(old_share).saturating_add(*share_bps);
+            if new_total > 10_000 {
+                return Err(RevoraError::InvalidShareBps);
+            }
+
             // Update live holder share so claim() works immediately.
             env.storage()
                 .persistent()
-                .set(&DataKey::HolderShare(offering_id.clone(), holder), &share_bps);
+                .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
 
-            added_bps = added_bps.saturating_add(share_bps);
+            current_total = new_total;
+            added_bps = added_bps.saturating_add(*share_bps);
         }
 
         // Update snapshot metadata.
@@ -4543,6 +4578,9 @@ impl RevoraRevenueShare {
         entry.holder_count = new_holder_count;
         entry.total_bps = new_total_bps;
         env.storage().persistent().set(&entry_key, &entry);
+
+        // Persist updated per-offering running total.
+        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id.clone()), &current_total);
 
         env.events().publish(
             (EVENT_SNAP_SHARES_APPLIED, issuer, namespace, token),
@@ -4599,10 +4637,7 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
-        if share_bps > 10_000 {
-            return Err(RevoraError::InvalidShareBps);
-        }
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace, token };
+        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
         Self::get_current_issuer(
             &env,
             issuer.clone(),
@@ -4610,8 +4645,10 @@ impl RevoraRevenueShare {
             offering_id.token.clone(),
         )
         .ok_or(RevoraError::OfferingNotFound)?;
-        env.storage().persistent().set(&DataKey::HolderShare(offering_id, holder), &share_bps);
-        Ok(())
+
+        // Delegate to internal writer which maintains the aggregate running total
+        // and enforces the per-offering sum invariant (≤ 10_000 bps).
+        Self::set_holder_share_internal(&env, issuer, namespace, token, holder, share_bps)
     }
 
     /// Get a holder's revenue share in basis points for an offering.

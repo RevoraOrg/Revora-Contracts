@@ -3401,6 +3401,23 @@ fn get_holder_share_returns_zero_for_unknown() {
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &unknown), 0);
 }
 
+#[test]
+fn set_holder_share_rejects_aggregate_over_10000() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    // First holder within cap
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &6_000);
+
+    // Second holder would push aggregate to 11_000 -> must be rejected
+    let result = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &5_000);
+    assert!(result.is_err(), "aggregate > 10_000 should be rejected");
+
+    // Ensure original holder's value still persisted
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a), 6_000);
+}
+
 // ── claim tests (core multi-period aggregation) ───────────────
 
 #[test]
