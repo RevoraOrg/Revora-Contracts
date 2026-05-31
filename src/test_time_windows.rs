@@ -51,6 +51,14 @@
 //! | start == end | OK (zero-width, single-second window) |
 //! | start > end | LimitReached |
 //!
+//! ### Report/Claim Window Interaction
+//! | Report window | Claim window | report_revenue | claim |
+//! |---------------|--------------|----------------|-------|
+//! | open | open | OK | OK |
+//! | open | closed | OK | ClaimWindowClosed |
+//! | closed | open | ReportingWindowClosed | OK |
+//! | closed | closed | ReportingWindowClosed | ClaimWindowClosed |
+//!
 //! ## Security / Risk Notes
 //!
 //! - **Reconfiguration race**: An issuer can change a window while a holder's claim
@@ -146,6 +154,30 @@ fn deposit_period(
     client
         .deposit_revenue(issuer, &symbol_short!("ns"), token, payment_token, &amount, &period_id)
         ;
+}
+
+fn assert_report_window_round_trip(
+    client: &RevoraRevenueShareClient,
+    issuer: &Address,
+    token: &Address,
+    start: u64,
+    end: u64,
+) {
+    let w = client.get_report_window(issuer, &symbol_short!("ns"), token).unwrap();
+    assert_eq!(w.start_timestamp, start);
+    assert_eq!(w.end_timestamp, end);
+}
+
+fn assert_claim_window_round_trip(
+    client: &RevoraRevenueShareClient,
+    issuer: &Address,
+    token: &Address,
+    start: u64,
+    end: u64,
+) {
+    let w = client.get_claim_window(issuer, &symbol_short!("ns"), token).unwrap();
+    assert_eq!(w.start_timestamp, start);
+    assert_eq!(w.end_timestamp, end);
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -703,6 +735,143 @@ fn deposit_revenue_ignores_report_and_claim_windows() {
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#[derive(Copy, Clone)]
+enum WindowState {
+    Open,
+    Closed,
+}
+
+/// The report and claim windows are independent persistent settings.
+///
+/// Security invariant: a closed claim window must not block reporting, and a
+/// closed report window must not block claiming. Each entrypoint may fail only
+/// with its own typed window error when its own window is closed.
+#[test]
+fn report_and_claim_windows_are_independent_across_open_closed_matrix() {
+    let cases = [
+        (WindowState::Open, WindowState::Open, true, true),
+        (WindowState::Open, WindowState::Closed, true, false),
+        (WindowState::Closed, WindowState::Open, false, true),
+        (WindowState::Closed, WindowState::Closed, false, false),
+    ];
+
+    for (idx, (report_state, claim_state, report_should_open, claim_should_open)) in cases.iter().copied().enumerate() {
+        let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
+
+        set_time(&env, 1_000);
+        deposit_period(&env, &client, &issuer, &token, &payment_token, 100 + idx as u64, 100_000);
+
+        match report_state {
+            WindowState::Open => {
+                client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_500, &2_000);
+                assert_report_window_round_trip(&client, &issuer, &token, 1_500, 2_000);
+            }
+            WindowState::Closed => {
+                client.set_report_window(&issuer, &symbol_short!("ns"), &token, &2_500, &3_000);
+                assert_report_window_round_trip(&client, &issuer, &token, 2_500, 3_000);
+            }
+        }
+
+        match claim_state {
+            WindowState::Open => {
+                client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_500, &2_000);
+                assert_claim_window_round_trip(&client, &issuer, &token, 1_500, 2_000);
+            }
+            WindowState::Closed => {
+                client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &2_500, &3_000);
+                assert_claim_window_round_trip(&client, &issuer, &token, 2_500, 3_000);
+            }
+        }
+
+        set_time(&env, 1_750);
+
+        let report_result = client.try_report_revenue(
+            &issuer, &symbol_short!("ns"), &token, &payment_token, &1_000, &(1_000 + idx as u64), &false,
+        );
+        if report_should_open {
+            assert!(
+                report_result.is_ok(),
+                "report_revenue must ignore claim-window state in case {idx}, got {report_result:?}"
+            );
+        } else {
+            assert_eq!(
+                report_result,
+                Err(Ok(RevoraError::ReportingWindowClosed)),
+                "report_revenue must return only its own typed window error in case {idx}"
+            );
+        }
+
+        let claim_result = client.try_claim(&holder, &issuer, &symbol_short!("ns"), &token, &50);
+        if claim_should_open {
+            assert_eq!(claim_result, Ok(Ok(100_000)), "claim must ignore report-window state in case {idx}");
+        } else {
+            assert_eq!(
+                claim_result,
+                Err(Ok(RevoraError::ClaimWindowClosed)),
+                "claim must return only its own typed window error in case {idx}"
+            );
+        }
+    }
+}
+
+/// With both windows unset, both entrypoints remain open and the getters
+/// explicitly report no persistent window.
+#[test]
+fn report_and_claim_windows_unset_are_independently_always_open() {
+    let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
+
+    assert!(client.get_report_window(&issuer, &symbol_short!("ns"), &token).is_none());
+    assert!(client.get_claim_window(&issuer, &symbol_short!("ns"), &token).is_none());
+
+    set_time(&env, 1_000);
+    deposit_period(&env, &client, &issuer, &token, &payment_token, 1, 100_000);
+
+    set_time(&env, 42_000);
+    let report_result = client.try_report_revenue(
+        &issuer, &symbol_short!("ns"), &token, &payment_token, &1_000, &2, &false,
+    );
+    assert!(
+        report_result.is_ok(),
+        "unset claim window must not block report_revenue, got {report_result:?}"
+    );
+
+    let claim_result = client.try_claim(&holder, &issuer, &symbol_short!("ns"), &token, &50);
+    assert_eq!(claim_result, Ok(Ok(100_000)), "unset report window must not block claim");
+}
+
+/// Zero-width windows are valid single-second windows for both gates.
+#[test]
+fn report_and_claim_zero_width_windows_overlap_only_at_exact_second() {
+    let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
+
+    set_time(&env, 1_000);
+    deposit_period(&env, &client, &issuer, &token, &payment_token, 1, 100_000);
+
+    client.set_report_window(&issuer, &symbol_short!("ns"), &token, &2_000, &2_000);
+    client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &2_000, &2_000);
+    assert_report_window_round_trip(&client, &issuer, &token, 2_000, 2_000);
+    assert_claim_window_round_trip(&client, &issuer, &token, 2_000, 2_000);
+
+    set_time(&env, 1_999);
+    let report_before = client.try_report_revenue(
+        &issuer, &symbol_short!("ns"), &token, &payment_token, &1_000, &2, &false,
+    );
+    assert_eq!(report_before, Err(Ok(RevoraError::ReportingWindowClosed)));
+    let claim_before = client.try_claim(&holder, &issuer, &symbol_short!("ns"), &token, &50);
+    assert_eq!(claim_before, Err(Ok(RevoraError::ClaimWindowClosed)));
+
+    set_time(&env, 2_000);
+    let report_at = client.try_report_revenue(
+        &issuer, &symbol_short!("ns"), &token, &payment_token, &1_000, &2, &false,
+    );
+    assert!(
+        report_at.is_ok(),
+        "report_revenue must accept the exact zero-width timestamp, got {report_at:?}"
+    );
+    let claim_at = client.try_claim(&holder, &issuer, &symbol_short!("ns"), &token, &50);
+    assert_eq!(claim_at, Ok(Ok(100_000)));
+}
+
 // SECTION 5 â€” Claim delay is orthogonal to claim window
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -966,8 +1135,6 @@ fn set_report_window_overwrites_previous() {
     assert_eq!(w.start_timestamp, 3_000);
     assert_eq!(w.end_timestamp, 4_000);
 }
-
-
 
 
 
