@@ -2270,10 +2270,12 @@ impl RevoraRevenueShare {
             }
         }
 
+        // Use bounded read for event snapshots to avoid unbounded payloads
+        // Cap at MAX_PAGE_LIMIT (20) to prevent gas spikes from large blacklists
         let blacklist = if event_only {
             Vec::new(&env)
         } else {
-            Self::get_blacklist(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            Self::get_blacklist_page(env.clone(), issuer.clone(), namespace.clone(), token.clone(), 0, MAX_PAGE_LIMIT).0
         };
 
         let mut actual_override = false;
@@ -3184,6 +3186,16 @@ impl RevoraRevenueShare {
 
     /// Return all blacklisted addresses for an offering.
     /// Ordering: by insertion order, deterministic and stable across calls (#38).
+    ///
+    /// ## Legacy/Bounded Warning
+    ///
+    /// This method returns the entire blacklist in a single call, which can exceed gas limits
+    /// for large lists. It is retained for backward compatibility but should be avoided in
+    /// production code. Use `get_blacklist_page` instead for pagination with deterministic cursors.
+    ///
+    /// The blacklist size is bounded by MAX_BLACKLIST_SIZE (200) per offering, so this method
+    /// will never return more than 200 addresses. However, for off-chain tooling and event
+    /// processing, the paginated form is preferred to avoid gas spikes.
     pub fn get_blacklist(
         env: Env,
         issuer: Address,
@@ -3199,7 +3211,31 @@ impl RevoraRevenueShare {
     }
 
     /// Return a page of blacklisted addresses for an offering.
-    /// Limit capped at MAX_PAGE_LIMIT (20).
+    ///
+    /// ## Pagination Behavior
+    ///
+    /// - `start`: Zero-based cursor position in the insertion-ordered blacklist
+    /// - `limit`: Maximum number of addresses to return (capped at MAX_PAGE_LIMIT = 20)
+    /// - Returns: (page of addresses, next_cursor)
+    ///   - `next_cursor = Some(n)` indicates more data is available at position `n`
+    ///   - `next_cursor = None` indicates end of list
+    ///
+    /// The cursor is deterministic and stable: it corresponds to the index in the
+    /// insertion-ordered blacklist. Pagination preserves insertion order (#38).
+    ///
+    /// ## Usage Pattern
+    ///
+    /// ```ignore
+    /// let mut cursor = 0;
+    /// loop {
+    ///     let (page, next) = get_blacklist_page(env, issuer, ns, token, cursor, 20);
+    ///     // process page...
+    ///     match next {
+    ///         Some(n) => cursor = n,
+    ///         None => break,
+    ///     }
+    /// }
+    /// ```
     pub fn get_blacklist_page(
         env: Env,
         issuer: Address,
@@ -3923,6 +3959,17 @@ impl RevoraRevenueShare {
     /// Guarantees:
     /// - Overflow-resistant arithmetic without panic.
     /// - Result is clamped to [min(0, amount), max(0, amount)] to avoid over-distribution.
+    ///
+    /// ## Decomposition Bound
+    ///
+    /// The function decomposes `amount` as `amount = q * 10_000 + r` where:
+    /// - `q = amount / 10_000` (quotient)
+    /// - `r = amount % 10_000` (remainder, bounded to `|r| < 10_000`)
+    ///
+    /// This ensures:
+    /// - `|r * bps| < 10_000 * 10_000 = 10^8` (well within i128 range)
+    /// - The remainder product uses `checked_mul` with saturating fallback for defense-in-depth
+    /// - Even if the bound assumption is violated by refactors, saturation prevents overflow
     pub fn compute_share(
         _env: Env,
         amount: i128,
@@ -3939,6 +3986,7 @@ impl RevoraRevenueShare {
         // Decompose `amount` to avoid `amount * bps` overflow:
         // amount = q * 10_000 + r, so (amount * bps) / 10_000 = q * bps + (r * bps) / 10_000.
         // `r` is bounded to (-10_000, 10_000), so `r * bps` is always safe in i128.
+        // Defense-in-depth: use checked_mul with saturating fallback to guard against refactors.
         let q = amount / 10_000;
         let r = amount % 10_000;
         let bps = revenue_share_bps as i128;
@@ -3950,7 +3998,13 @@ impl RevoraRevenueShare {
             }
         });
 
-        let remainder_product = r * bps;
+        let remainder_product = r.checked_mul(bps).unwrap_or_else(|| {
+            if (r >= 0 && bps >= 0) || (r < 0 && bps < 0) {
+                i128::MAX
+            } else {
+                i128::MIN
+            }
+        });
         let remainder_share = match mode {
             RoundingMode::Truncation => remainder_product / 10_000,
             RoundingMode::RoundHalfUp => {
