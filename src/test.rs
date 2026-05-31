@@ -6959,6 +6959,91 @@ fn issuer_transfer_wrong_address_cannot_accept() {
 }
 
 #[test]
+fn issuer_transfer_migrates_vesting_schedule_after_cliff() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let beneficiary = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+
+    let schedule = crate::vesting::VestingSchedule {
+        issuer: issuer.clone(),
+        beneficiary: beneficiary.clone(),
+        token: token.clone(),
+        total_amount: 1_000,
+        cliff_ts: 1_000,
+        start_ts: 1_000,
+        end_ts: 2_000,
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Schedule(beneficiary.clone()), &schedule);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Claimed(beneficiary.clone()), &0_i128);
+
+    let offering_id = crate::vesting::VestingOfferingId {
+        issuer: issuer.clone(),
+        token: token.clone(),
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleCount(offering_id.clone()), &1_u32);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleItem(offering_id, 0), &beneficiary.clone());
+
+    env.ledger().with_mut(|li| li.timestamp = 1_500);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+    let migrated_schedule: crate::vesting::VestingSchedule = env
+        .storage()
+        .persistent()
+        .get(&crate::vesting::VestingKey::Schedule(beneficiary.clone()))
+        .unwrap();
+    assert_eq!(migrated_schedule.issuer, new_issuer);
+}
+
+#[test]
+fn issuer_transfer_rejects_pre_cliff_vesting_schedule() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let beneficiary = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+
+    let schedule = crate::vesting::VestingSchedule {
+        issuer: issuer.clone(),
+        beneficiary: beneficiary.clone(),
+        token: token.clone(),
+        total_amount: 1_000,
+        cliff_ts: 2_000,
+        start_ts: 1_000,
+        end_ts: 3_000,
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Schedule(beneficiary.clone()), &schedule);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Claimed(beneficiary.clone()), &0_i128);
+
+    let offering_id = crate::vesting::VestingOfferingId {
+        issuer: issuer.clone(),
+        token: token.clone(),
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleCount(offering_id.clone()), &1_u32);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleItem(offering_id, 0), &beneficiary.clone());
+
+    env.ledger().with_mut(|li| li.timestamp = 1_500);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert_eq!(result, Err(Ok(RevoraError::VestingTransferBlocked)));
+}
+
+#[test]
 fn issuer_transfer_replace_pending_requires_cancel_first() {
     // Verifies the state machine: propose → (IssuerTransferPending on re-propose) → cancel → propose new
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();

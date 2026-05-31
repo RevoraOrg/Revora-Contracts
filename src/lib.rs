@@ -144,6 +144,8 @@ pub enum RevoraError {
     OfferingFrozen = 42,
     /// Issuer transfer has expired.
     IssuerTransferExpired = 43,
+    /// Transfer blocked because the offering has pre-cliff vesting schedules.
+    VestingTransferBlocked = 48,
     /// Contract is paused.
     ContractPaused = 44,
     /// Blacklist size limit exceeded.
@@ -252,6 +254,7 @@ const EVENT_ISSUER_TRANSFER_PROPOSED: Symbol = symbol_short!("iss_prop");
 const EVENT_ISSUER_TRANSFER_ACCEPTED: Symbol = symbol_short!("iss_acc");
 const EVENT_ISSUER_TRANSFER_CANCELLED: Symbol = symbol_short!("iss_canc");
 const EVENT_ISSUER_TRANSFER_REJECTED: Symbol = symbol_short!("iss_rej");
+const EVENT_ISSUER_TRANSFER_VESTING_MIGRATED: Symbol = symbol_short!("iss_vst");
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
@@ -1747,6 +1750,40 @@ impl RevoraRevenueShare {
         .is_some()
         {
             return Err(RevoraError::LimitReached);
+        }
+
+        // Migrate any vesting schedules corresponding to this offering before completing
+        // the issuer transfer. This preserves active schedules under the new issuer key
+        // and prevents orphaned pre-cliff schedules.
+        let vesting_offering_id = vesting::VestingOfferingId {
+            issuer: old_issuer.clone(),
+            token: offering_id.token.clone(),
+        };
+        match vesting::migrate_offering_schedules(
+            &env,
+            &vesting_offering_id,
+            new_issuer.clone(),
+            current_timestamp,
+        ) {
+            Ok(beneficiaries) => {
+                for beneficiary in beneficiaries.iter() {
+                    env.events().publish(
+                        (
+                            EVENT_ISSUER_TRANSFER_VESTING_MIGRATED,
+                            offering_id.namespace.clone(),
+                            offering_id.token.clone(),
+                            beneficiary.clone(),
+                        ),
+                        (old_issuer.clone(), new_issuer.clone()),
+                    );
+                }
+            }
+            Err(vesting::VestingError::SchedulePreCliff) => {
+                return Err(RevoraError::VestingTransferBlocked);
+            }
+            Err(_) => {
+                // If the vesting index is empty or stale, ignore it and continue.
+            }
         }
 
         // Register namespace metadata for the new issuer.
