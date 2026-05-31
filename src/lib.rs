@@ -173,6 +173,8 @@ mod test_min_revenue_threshold_boundary;
 mod test_multisig_gas;
 #[cfg(test)]
 mod test_pause_tiers;
+#[cfg(test)]
+mod test_snapshot_monotonicity_replay;
 
 /// Two-tier pause state stored at `DataKey::Paused`.
 ///
