@@ -1857,9 +1857,9 @@ impl RevoraRevenueShare {
         env.events().publish(
             (
                 EVENT_ISSUER_TRANSFER_REJECTED,
-                offering_id.issuer,
-                offering_id.namespace,
-                offering_id.token,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
             ),
             (old_issuer, pending.new_issuer),
         );
