@@ -1848,7 +1848,7 @@ impl RevoraRevenueShare {
             .storage()
             .persistent()
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
-            .ok_or(RevoraError::NoTransferPending)?;
+            .unwrap();
 
         let old_issuer = offering_id.issuer.clone();
 
