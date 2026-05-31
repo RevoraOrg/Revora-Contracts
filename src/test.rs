@@ -6905,6 +6905,144 @@ fn issuer_transfer_replace_pending_requires_cancel_first() {
     );
 }
 
+// ── Issuer Transfer Expiry Boundary Tests ────────────────────
+
+#[test]
+fn issuer_transfer_accept_at_exact_expiry_boundary_succeeds() {
+    // Security: Verifies that the expiry check is exclusive (>) not inclusive (>=).
+    // At timestamp == proposal_time + ISSUER_TRANSFER_EXPIRY_SECS, accept must succeed.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Propose transfer at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance to exact expiry boundary: 1000 + 604800 = 605800
+    // ISSUER_TRANSFER_EXPIRY_SECS = 7 * 24 * 60 * 60 = 604800
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs);
+
+    // Accept should succeed at exact boundary
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "Accept should succeed at exact expiry boundary");
+
+    // Verify transfer completed
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
+    );
+    let offering = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
+    assert!(offering.is_some());
+    assert_eq!(offering.unwrap().issuer, new_issuer);
+}
+
+#[test]
+fn issuer_transfer_accept_one_second_past_expiry_fails() {
+    // Security: Verifies that transfers expire correctly one second after the boundary.
+    // At timestamp == proposal_time + ISSUER_TRANSFER_EXPIRY_SECS + 1, accept must fail.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Propose transfer at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance one second past expiry: 1000 + 604800 + 1 = 605801
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 1);
+
+    // Accept should fail with IssuerTransferExpired
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::IssuerTransferExpired)),
+        "Accept should fail one second past expiry"
+    );
+
+    // Verify transfer still pending (not cleared)
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer.clone())
+    );
+}
+
+#[test]
+fn issuer_transfer_expiry_handles_timestamp_overflow_safely() {
+    // Security: Verifies that saturating_add prevents overflow when proposal timestamp
+    // is near u64::MAX. The expiry check must not panic or wrap around.
+    let (env, client, issuer, token, _payment_token, contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Set proposal timestamp near u64::MAX to test overflow protection
+    let near_max_timestamp = u64::MAX - 1000;
+    env.ledger().with_mut(|li| li.timestamp = near_max_timestamp);
+
+    // Manually inject a pending transfer with near-max timestamp
+    // (propose_issuer_transfer would use current ledger time)
+    env.as_contract(&contract_id, || {
+        use soroban_sdk::storage::Storage;
+        let offering_id = crate::OfferingId {
+            issuer: issuer.clone(),
+            namespace: symbol_short!("def"),
+            token: token.clone(),
+        };
+        let pending = crate::PendingTransfer {
+            new_issuer: new_issuer.clone(),
+            timestamp: near_max_timestamp,
+        };
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::PendingIssuerTransfer(offering_id), &pending);
+    });
+
+    // Advance time slightly (still within u64 range)
+    env.ledger().with_mut(|li| li.timestamp = near_max_timestamp + 500);
+
+    // Accept should succeed because saturating_add(EXPIRY) saturates at u64::MAX,
+    // and current_timestamp (near_max + 500) is not > u64::MAX
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(
+        result.is_ok(),
+        "Accept should succeed when saturating_add prevents overflow"
+    );
+
+    // Verify transfer completed
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
+    );
+}
+
+#[test]
+fn issuer_transfer_self_transfer_ignores_expiry() {
+    // Edge case: When new_issuer == old_issuer, the transfer is a no-op and
+    // completes immediately without checking expiry. Verify this works even
+    // when the transfer would be expired.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    // Propose transfer to self at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &issuer);
+
+    // Advance far past expiry
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 10000);
+
+    // Accept should succeed because self-transfer short-circuits before expiry check
+    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert!(
+        result.is_ok(),
+        "Self-transfer should succeed regardless of expiry"
+    );
+
+    // Verify transfer cleared
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
+    );
+}
+
 #[test]
 fn testnet_mode_normal_operations_unaffected() {
     let env = Env::default();
