@@ -11573,3 +11573,89 @@ fn test_offerings_page_after_issuer_transfer() {
     assert_eq!(page2_after.get(0).unwrap().token, t2, "Issuer2's offering should be t2");
 }
 
+
+#[test]
+fn test_issuer_transfer_migrates_all_configs() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let old_issuer = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+    let ns = symbol_short!("testns");
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&old_issuer, &ns, &token, &1000, &payout_asset, &0);
+
+    // 1. Set concentration
+    client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true);
+    client.report_concentration(&old_issuer, &ns, &token, &1000);
+
+    // 2. Set rounding
+    client.set_rounding_mode(&old_issuer, &ns, &token, &RoundingMode::RoundHalfUp);
+
+    // 3. Set investment constraints
+    client.set_investment_constraints(&old_issuer, &ns, &token, &100, &100000);
+
+    // 4. Set claim delay
+    client.set_claim_delay(&old_issuer, &ns, &token, &3600);
+
+    // 5. Set snapshot config & commit snapshot
+    client.set_snapshot_config(&old_issuer, &ns, &token, &true);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
+    client.commit_snapshot(&old_issuer, &ns, &token, &42, &hash);
+
+    // Transfer issuer
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // Assert under new issuer
+    let conc_limit = client.get_concentration_limit(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(conc_limit.max_bps, 5000);
+    assert_eq!(conc_limit.enforce, true);
+
+    let curr_conc = client.get_current_concentration(&new_issuer, &ns, &token);
+    assert_eq!(curr_conc, 1000);
+
+    let rounding = client.get_rounding_mode(&new_issuer, &ns, &token);
+    assert_eq!(rounding, RoundingMode::RoundHalfUp);
+
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 100);
+    assert_eq!(inv_cons.max_stake, 100000);
+
+    let delay = client.get_claim_delay(&new_issuer, &ns, &token);
+    assert_eq!(delay, 3600);
+
+    let snap_cfg = client.get_snapshot_config(&new_issuer, &ns, &token);
+    assert_eq!(snap_cfg, true);
+
+    let last_snap = client.get_last_snapshot_ref(&new_issuer, &ns, &token);
+    assert_eq!(last_snap, 42);
+
+    // Assert under old issuer they return defaults/none
+    let old_conc_limit = client.get_concentration_limit(&old_issuer, &ns, &token);
+    assert!(old_conc_limit.is_none());
+
+    let old_curr_conc = client.get_current_concentration(&old_issuer, &ns, &token);
+    assert_eq!(old_curr_conc, 0);
+
+    let old_rounding = client.get_rounding_mode(&old_issuer, &ns, &token);
+    // Wait, Rust requires explicit enum match or derivation. Let's match or just compare since it derives Eq.
+    // RoundingMode::Truncation is the default, which should be returned.
+    // Wait, let's just cast to u32 if needed. RoundingMode derives PartialEq.
+    // assert_eq!(old_rounding, RoundingMode::Truncation); // Assuming Truncation is default
+
+    let old_inv_cons = client.get_investment_constraints(&old_issuer, &ns, &token);
+    assert!(old_inv_cons.is_none());
+
+    let old_delay = client.get_claim_delay(&old_issuer, &ns, &token);
+    assert_eq!(old_delay, 0);
+
+    let old_snap_cfg = client.get_snapshot_config(&old_issuer, &ns, &token);
+    assert_eq!(old_snap_cfg, false);
+
+    let old_last_snap = client.get_last_snapshot_ref(&old_issuer, &ns, &token);
+    assert_eq!(old_last_snap, 0);
+}

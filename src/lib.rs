@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 #![deny(unsafe_code)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
@@ -1858,6 +1858,36 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
+
+        // Migrate configuration state linked to the old OfferingId (#1344)
+        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+            env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
+        }
+        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+            env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
+        }
+        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
+            env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
+        }
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        }
+        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+            env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
+        }
+        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+            env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
+        }
+        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+            env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
+        }
 
         env.storage().persistent().remove(&DataKey::PendingIssuerTransfer(offering_id.clone()));
 
@@ -4694,7 +4724,7 @@ impl RevoraRevenueShare {
                 .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
                 .unwrap_or(0);
 
-            let new_total = current_total.saturating_sub(old_share).saturating_add(*share_bps);
+            let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
             if new_total > 10_000 {
                 return Err(RevoraError::InvalidShareBps);
             }
@@ -4705,7 +4735,7 @@ impl RevoraRevenueShare {
                 .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
 
             current_total = new_total;
-            added_bps = added_bps.saturating_add(*share_bps);
+            added_bps = added_bps.saturating_add(share_bps);
         }
 
         // Update snapshot metadata.
