@@ -8,7 +8,8 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env,
 };
 
-fn setup_snapshot_test() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+fn setup_snapshot_test(
+) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -40,10 +41,8 @@ fn finalize_snapshot_succeeds_when_hash_matches() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
     let holders = soroban_sdk::vec![&env, (holder1.clone(), 5_000u32), (holder2.clone(), 5_000u32)];
-    let content_hash = compute_snapshot_content_hash(
-        &env,
-        &[(holder1.clone(), 5_000), (holder2.clone(), 5_000)],
-    );
+    let content_hash =
+        compute_snapshot_content_hash(&env, &[(holder1.clone(), 5_000), (holder2.clone(), 5_000)]);
 
     client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash);
     client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);

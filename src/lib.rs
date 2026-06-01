@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 #![deny(unsafe_code)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
@@ -37,7 +37,8 @@
     clippy::manual_let_else,
     clippy::empty_line_after_doc_comments,
     clippy::doc_lazy_continuation,
-    clippy::unnecessary_lazy_evaluations
+    clippy::unnecessary_lazy_evaluations,
+    clippy::enum_variant_names
 )]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
@@ -1207,7 +1208,11 @@ impl RevoraRevenueShare {
             (holder.clone(), share_bps),
         );
         // Versioned v2 event: [2, holder, share_bps] — always emitted (#RC26Q2-C31)
-        Self::emit_v2_event(env, (EVENT_SHARE_SET_V2, issuer, namespace, token), (holder, share_bps));
+        Self::emit_v2_event(
+            env,
+            (EVENT_SHARE_SET_V2, issuer, namespace, token),
+            (holder, share_bps),
+        );
         Ok(())
     }
 
@@ -4345,6 +4350,7 @@ impl RevoraRevenueShare {
         period_id: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // Input validation (#35): reject zero/invalid period_id and non-positive amounts.
@@ -4386,6 +4392,7 @@ impl RevoraRevenueShare {
         snapshot_reference: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // 0. Validate snapshot reference using Negative Amount Validation Matrix (#163)
@@ -4617,9 +4624,7 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .set(&DataKey::SnapshotEntry(offering_id.clone(), snapshot_ref), &entry);
-        env.storage()
-            .persistent()
-            .set(&last_ref_key, &snapshot_ref);
+        env.storage().persistent().set(&last_ref_key, &snapshot_ref);
 
         env.events().publish(
             (EVENT_SNAP_COMMIT, issuer, namespace, token),
@@ -4720,7 +4725,7 @@ impl RevoraRevenueShare {
 
         for i in 0..batch_len {
             let (holder, share_bps) = holders.get(i).unwrap();
-            let slot = start_index.saturating_add(i as u32);
+            let slot = start_index.saturating_add(i);
 
             // Write indexed slot for deterministic enumeration.
             env.storage().persistent().set(
@@ -4765,7 +4770,9 @@ impl RevoraRevenueShare {
             .set(&DataKey::SnapshotHolderCount(offering_id.clone(), snapshot_ref), &slot_count);
 
         // Persist updated per-offering running total.
-        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id.clone()), &current_total);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderShareTotal(offering_id.clone()), &current_total);
 
         env.events().publish(
             (EVENT_SNAP_SHARES_APPLIED, issuer, namespace, token),
@@ -4814,35 +4821,23 @@ impl RevoraRevenueShare {
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
-        let current_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(RevoraError::NotInitialized)?;
+        let current_admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         current_admin.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::SnapshotFinalizationRequired, &enabled);
-        env.events()
-            .publish((EVENT_SNAP_FINALIZATION_CONFIG,), enabled);
+        env.storage().persistent().set(&DataKey::SnapshotFinalizationRequired, &enabled);
+        env.events().publish((EVENT_SNAP_FINALIZATION_CONFIG,), enabled);
         Ok(())
     }
 
     /// Return true when snapshot finalization is enforced by contract configuration.
     pub fn snapshot_finalization_required(env: Env) -> bool {
-        env.storage()
-            .persistent()
-            .get(&DataKey::SnapshotFinalizationRequired)
-            .unwrap_or(false)
+        env.storage().persistent().get(&DataKey::SnapshotFinalizationRequired).unwrap_or(false)
     }
 
     fn is_snapshot_finalized(env: &Env, offering_id: &OfferingId, snapshot_ref: u64) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::SnapshotFinalized(
-                offering_id.clone(),
-                snapshot_ref,
-            ))
+            .get(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref))
             .unwrap_or(false)
     }
 
@@ -4861,13 +4856,18 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env)?;
         issuer.require_auth();
 
-        let current_issuer = Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-            .ok_or(RevoraError::OfferingNotFound)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
         if current_issuer != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
 
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
         if !env
             .storage()
             .persistent()
@@ -4878,7 +4878,8 @@ impl RevoraRevenueShare {
         }
 
         let entry_key = DataKey::SnapshotEntry(offering_id.clone(), snapshot_ref);
-        let entry: SnapshotEntry = env.storage().persistent().get(&entry_key).ok_or(RevoraError::OutdatedSnapshot)?;
+        let entry: SnapshotEntry =
+            env.storage().persistent().get(&entry_key).ok_or(RevoraError::OutdatedSnapshot)?;
 
         if Self::is_snapshot_finalized(&env, &offering_id, snapshot_ref) {
             return Ok(());
@@ -4895,11 +4896,7 @@ impl RevoraRevenueShare {
             let (holder, share_bps): (Address, u32) = env
                 .storage()
                 .persistent()
-                .get(&DataKey::SnapshotHolder(
-                    offering_id.clone(),
-                    snapshot_ref,
-                    index,
-                ))
+                .get(&DataKey::SnapshotHolder(offering_id.clone(), snapshot_ref, index))
                 .ok_or(RevoraError::SnapshotHashMismatch)?;
 
             digest_input.append(&index.to_xdr(&env));
@@ -4915,10 +4912,7 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .set(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
-        env.events().publish(
-            (EVENT_SNAP_FINALIZED, issuer, namespace, token),
-            snapshot_ref,
-        );
+        env.events().publish((EVENT_SNAP_FINALIZED, issuer, namespace, token), snapshot_ref);
         Ok(())
     }
 
@@ -4937,7 +4931,11 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
         Self::get_current_issuer(
             &env,
             issuer.clone(),

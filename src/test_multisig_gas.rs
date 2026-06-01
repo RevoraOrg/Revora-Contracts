@@ -88,13 +88,15 @@ fn setup_max_multisig() -> (Env, Address, RevoraRevenueShareClient<'static>, Add
 
     // Majority threshold; duration = 1 day.
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1; // 11
-    RevoraRevenueShare::init_multisig(
-        env.clone(),
-        admin.clone(),
-        owners.clone(),
-        threshold,
-        86_400u64,
-    )
+    env.as_contract(&id, || {
+        RevoraRevenueShare::init_multisig(
+            env.clone(),
+            admin.clone(),
+            owners.clone(),
+            threshold,
+            86_400u64,
+        )
+    })
     .unwrap();
 
     (env, id, client, admin, owners)
@@ -104,18 +106,26 @@ fn setup_max_multisig() -> (Env, Address, RevoraRevenueShareClient<'static>, Add
 /// Returns the proposal id ready for `execute_action`.
 fn propose_and_approve(
     env: &Env,
+    contract_id: &Address,
     owners: &Vec<Address>,
     threshold: u32,
     action: ProposalAction,
 ) -> u32 {
     // owners[0] proposes (counts as first approval automatically).
     let proposer = owners.get(0).unwrap();
-    let proposal_id = RevoraRevenueShare::propose_action(env.clone(), proposer, action).unwrap();
+    let proposal_id = env
+        .as_contract(contract_id, || {
+            RevoraRevenueShare::propose_action(env.clone(), proposer, action)
+        })
+        .unwrap();
 
     // Collect remaining approvals up to threshold.
     for i in 1..threshold {
         let approver = owners.get(i).unwrap();
-        RevoraRevenueShare::approve_action(env.clone(), approver, proposal_id).unwrap();
+        env.as_contract(contract_id, || {
+            RevoraRevenueShare::approve_action(env.clone(), approver, proposal_id)
+        })
+        .unwrap();
     }
 
     proposal_id
@@ -137,15 +147,16 @@ fn execute_remove_owner_at_max_owners_within_budget() {
     let (env, id, _client, _admin, owners) = setup_max_multisig();
 
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1; // 11
-    // Remove the last owner (index 19) — it is not the proposer.
+                                                                     // Remove the last owner (index 19) — it is not the proposer.
     let target = owners.get(RevoraRevenueShare::MAX_MULTISIG_OWNERS - 1).unwrap();
     let action = ProposalAction::RemoveOwner(target);
 
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     let executor = owners.get(0).unwrap();
     // Must complete without panic or resource exhaustion.
-    RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id).unwrap();
+    env.as_contract(&id, || RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id))
+        .unwrap();
 
     // Functional correctness: owner count decreased by 1.
     assert_eq!(
@@ -172,22 +183,25 @@ fn execute_add_owner_at_cap_minus_one_within_budget() {
         owners.push_back(Address::generate(&env));
     }
     let threshold = count / 2 + 1; // 10
-    RevoraRevenueShare::init_multisig(
-        env.clone(),
-        admin.clone(),
-        owners.clone(),
-        threshold,
-        86_400u64,
-    )
+    env.as_contract(&id, || {
+        RevoraRevenueShare::init_multisig(
+            env.clone(),
+            admin.clone(),
+            owners.clone(),
+            threshold,
+            86_400u64,
+        )
+    })
     .unwrap();
 
     let new_owner = Address::generate(&env);
     let action = ProposalAction::AddOwner(new_owner.clone());
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     let executor = owners.get(0).unwrap();
     // Must complete without panic or resource exhaustion.
-    RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id).unwrap();
+    env.as_contract(&id, || RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id))
+        .unwrap();
 
     // Functional correctness: owner count is now MAX.
     let final_owners = read_owners(&env, &id);
@@ -210,10 +224,12 @@ fn execute_add_owner_at_max_returns_limit_reached() {
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1;
     let new_owner = Address::generate(&env);
     let action = ProposalAction::AddOwner(new_owner);
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     let executor = owners.get(0).unwrap();
-    let result = RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id);
+    let result = env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id)
+    });
 
     assert_eq!(
         result,
@@ -253,17 +269,36 @@ fn execute_remove_owner_below_threshold_returns_limit_reached() {
     owners.push_back(owner1.clone());
     owners.push_back(owner2.clone());
     owners.push_back(owner3.clone());
-    RevoraRevenueShare::init_multisig(env.clone(), admin.clone(), owners.clone(), 3u32, 86_400u64)
-        .unwrap();
+    env.as_contract(&id, || {
+        RevoraRevenueShare::init_multisig(
+            env.clone(),
+            admin.clone(),
+            owners.clone(),
+            3u32,
+            86_400u64,
+        )
+    })
+    .unwrap();
 
     // All 3 must approve to meet threshold = 3.
     let action = ProposalAction::RemoveOwner(owner3.clone());
-    let proposal_id =
-        RevoraRevenueShare::propose_action(env.clone(), owner1.clone(), action).unwrap();
-    RevoraRevenueShare::approve_action(env.clone(), owner2.clone(), proposal_id).unwrap();
-    RevoraRevenueShare::approve_action(env.clone(), owner3.clone(), proposal_id).unwrap();
+    let proposal_id = env
+        .as_contract(&id, || {
+            RevoraRevenueShare::propose_action(env.clone(), owner1.clone(), action)
+        })
+        .unwrap();
+    env.as_contract(&id, || {
+        RevoraRevenueShare::approve_action(env.clone(), owner2.clone(), proposal_id)
+    })
+    .unwrap();
+    env.as_contract(&id, || {
+        RevoraRevenueShare::approve_action(env.clone(), owner3.clone(), proposal_id)
+    })
+    .unwrap();
 
-    let result = RevoraRevenueShare::execute_action(env.clone(), owner1.clone(), proposal_id);
+    let result = env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), owner1.clone(), proposal_id)
+    });
 
     assert_eq!(
         result,
@@ -294,11 +329,13 @@ fn execute_action_non_owner_returns_not_authorized() {
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1;
     let target = owners.get(RevoraRevenueShare::MAX_MULTISIG_OWNERS - 1).unwrap();
     let action = ProposalAction::RemoveOwner(target);
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     // outsider is not in the owners list
     let outsider = Address::generate(&env);
-    let result = RevoraRevenueShare::execute_action(env.clone(), outsider, proposal_id);
+    let result = env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), outsider, proposal_id)
+    });
 
     assert_eq!(
         result,
@@ -320,7 +357,7 @@ fn execute_action_expired_proposal_returns_proposal_expired() {
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1;
     let target = owners.get(RevoraRevenueShare::MAX_MULTISIG_OWNERS - 1).unwrap();
     let action = ProposalAction::RemoveOwner(target);
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     // Advance ledger time past the 1-day duration.
     env.ledger().with_mut(|li| {
@@ -328,7 +365,9 @@ fn execute_action_expired_proposal_returns_proposal_expired() {
     });
 
     let executor = owners.get(0).unwrap();
-    let result = RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id);
+    let result = env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id)
+    });
 
     assert_eq!(
         result,
@@ -344,20 +383,25 @@ fn execute_action_expired_proposal_returns_proposal_expired() {
 /// `execute_action` on an already-executed proposal returns `LimitReached`.
 #[test]
 fn execute_action_already_executed_returns_limit_reached() {
-    let (env, _id, _client, _admin, owners) = setup_max_multisig();
+    let (env, id, _client, _admin, owners) = setup_max_multisig();
 
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1;
     let target = owners.get(RevoraRevenueShare::MAX_MULTISIG_OWNERS - 1).unwrap();
     let action = ProposalAction::RemoveOwner(target);
-    let proposal_id = propose_and_approve(&env, &owners, threshold, action);
+    let proposal_id = propose_and_approve(&env, &id, &owners, threshold, action);
 
     let executor = owners.get(0).unwrap();
 
     // First execution succeeds.
-    RevoraRevenueShare::execute_action(env.clone(), executor.clone(), proposal_id).unwrap();
+    env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), executor.clone(), proposal_id)
+    })
+    .unwrap();
 
     // Second execution must fail.
-    let result = RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id);
+    let result = env.as_contract(&id, || {
+        RevoraRevenueShare::execute_action(env.clone(), executor, proposal_id)
+    });
     assert_eq!(
         result,
         Err(RevoraError::LimitReached),
