@@ -166,6 +166,8 @@ pub mod vesting;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_compute_share_decomposition_prop;
+#[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
