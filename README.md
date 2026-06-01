@@ -282,6 +282,8 @@ Accepted ranges and rejection semantics:
 | `period_id` | `report_revenue` | `> 0` and `last + 1` (for new reports) | `InvalidPeriodId` |
 | `min_amount` | `set_min_revenue_threshold` | ≥ 0 | `InvalidAmount` |
 
+- `snapshot content_hash`: SHA-256 digest over the on-chain snapshot rows in ascending slot order. Each row is encoded in XDR as the tuple `(slot_index: u32, holder: Address, share_bps: u32)`.
+
 Use `try_*` client methods to receive these errors as `Result`.
 Consolidated invalid-amount regression coverage lives in `src/invalid_amount_matrix_tests.rs`; the checklist is in `docs/negative-amount-validation-matrix.md`.
 This branch's public fee-related amount helper is `calculate_fee_for_asset`; it is a pure quote helper and is documented separately from the `InvalidAmount` rejection matrix.
