@@ -4331,6 +4331,7 @@ impl RevoraRevenueShare {
         period_id: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // Input validation (#35): reject zero/invalid period_id and non-positive amounts.
@@ -4372,6 +4373,7 @@ impl RevoraRevenueShare {
         snapshot_reference: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         issuer.require_auth();
 
         // 0. Validate snapshot reference using Negative Amount Validation Matrix (#163)
@@ -4694,7 +4696,7 @@ impl RevoraRevenueShare {
                 .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
                 .unwrap_or(0);
 
-            let new_total = current_total.saturating_sub(old_share).saturating_add(*share_bps);
+            let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
             if new_total > 10_000 {
                 return Err(RevoraError::InvalidShareBps);
             }
@@ -4705,7 +4707,7 @@ impl RevoraRevenueShare {
                 .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
 
             current_total = new_total;
-            added_bps = added_bps.saturating_add(*share_bps);
+            added_bps = added_bps.saturating_add(share_bps);
         }
 
         // Update snapshot metadata.
@@ -6509,6 +6511,7 @@ mod issue_414_supply_cap_tests {
         mint_amount: i128,
     ) -> (
         Env,
+        Address,
         RevoraRevenueShareClient<'static>,
         Address,
         Symbol,
@@ -6530,12 +6533,12 @@ mod issue_414_supply_cap_tests {
         let payment_token_admin = token::StellarAssetClient::new(&env, &payment_token);
         payment_token_admin.mint(&issuer, &mint_amount);
 
-        (env, client, issuer, namespace, token_addr, payment_token)
+        (env, contract_id, client, issuer, namespace, token_addr, payment_token)
     }
 
     #[test]
     fn supply_cap_zero_is_unset_and_not_enforced() {
-        let (_env, client, issuer, namespace, token_addr, payment_token) =
+        let (_env, _contract_id, client, issuer, namespace, token_addr, payment_token) =
             setup_with_payment_token(2_000_000);
 
         assert_eq!(
@@ -6564,7 +6567,7 @@ mod issue_414_supply_cap_tests {
 
     #[test]
     fn supply_cap_one_allows_exact_cap_and_rejects_next_unit() {
-        let (_env, client, issuer, namespace, token_addr, payment_token) =
+        let (_env, _contract_id, client, issuer, namespace, token_addr, payment_token) =
             setup_with_payment_token(10);
 
         assert_eq!(
@@ -6586,7 +6589,7 @@ mod issue_414_supply_cap_tests {
 
     #[test]
     fn supply_cap_readable_large_boundary_enforced() {
-        let (_env, client, issuer, namespace, token_addr, payment_token) =
+        let (_env, _contract_id, client, issuer, namespace, token_addr, payment_token) =
             setup_with_payment_token(2_000_000);
         let cap = 1_000_000_i128;
 
@@ -6615,7 +6618,7 @@ mod issue_414_supply_cap_tests {
 
     #[test]
     fn negative_supply_cap_rejected_on_register() {
-        let (_env, client, issuer, namespace, token_addr, payment_token) =
+        let (_env, _contract_id, client, issuer, namespace, token_addr, payment_token) =
             setup_with_payment_token(10);
 
         assert_eq!(
@@ -6633,7 +6636,7 @@ mod issue_414_supply_cap_tests {
 
     #[test]
     fn supply_cap_saturation_near_i128_max_is_safe() {
-        let (env, client, issuer, namespace, token_addr, payment_token) =
+        let (_env, _contract_id, client, issuer, namespace, token_addr, payment_token) =
             setup_with_payment_token(i128::MAX);
 
         let cap = i128::MAX - 2;
@@ -6649,13 +6652,16 @@ mod issue_414_supply_cap_tests {
             Ok(Ok(()))
         );
 
-        RevoraRevenueShare::test_insert_period(
-            env.clone(),
-            issuer.clone(),
-            namespace.clone(),
-            token_addr.clone(),
-            1,
-            i128::MAX - 3,
+        assert_eq!(
+            client.try_deposit_revenue(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &payment_token,
+                &(i128::MAX - 3),
+                &1
+            ),
+            Ok(Ok(()))
         );
 
         assert_eq!(
