@@ -19,6 +19,18 @@ pub enum VestingKey {
     Schedule(Address),
     /// How many tokens the beneficiary has already claimed.
     Claimed(Address),
+    /// Number of scheduled beneficiaries for a given issuer/token pair.
+    OfferingScheduleCount(VestingOfferingId),
+    /// A scheduled beneficiary entry for an issuer/token pair.
+    OfferingScheduleItem(VestingOfferingId, u32),
+}
+
+/// A simple vesting offering identifier with issuer and token.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VestingOfferingId {
+    pub issuer: Address,
+    pub token: Address,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -53,6 +65,8 @@ pub enum VestingError {
     NothingToClaimYet = 104,
     /// Caller is not authorised for this operation.
     Unauthorized = 105,
+    /// A vesting schedule is pre-cliff and blocks issuer transfer migration.
+    SchedulePreCliff = 106,
 }
 
 /// Shared schema version for vesting events.
@@ -103,6 +117,15 @@ impl VestingContract {
         };
         env.storage().persistent().set(&key, &schedule);
         env.storage().persistent().set(&VestingKey::Claimed(beneficiary.clone()), &0_i128);
+
+        let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
+        let count_key = VestingKey::OfferingScheduleCount(offering_id.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        env.storage().persistent().set(
+            &VestingKey::OfferingScheduleItem(offering_id.clone(), count),
+            &beneficiary.clone(),
+        );
+        env.storage().persistent().set(&count_key, &(count + 1));
 
         env.events().publish(
             (EVENT_VESTING_CREATED, beneficiary),
@@ -177,6 +200,81 @@ impl VestingContract {
         }
         out
     }
+}
+
+/// Migrate all vesting schedules for an issuer/token pair to a new issuer.
+///
+/// This is used by the issuer transfer workflow to preserve existing schedules
+/// when the underlying offering is re-keyed to a new issuer.
+pub fn migrate_offering_schedules(
+    env: &Env,
+    offering_id: &VestingOfferingId,
+    new_issuer: Address,
+    now: u64,
+) -> Result<Vec<Address>, VestingError> {
+    let count_key = VestingKey::OfferingScheduleCount(offering_id.clone());
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    if count == 0 {
+        return Ok(Vec::new(env));
+    }
+
+    let mut beneficiaries = Vec::new(env);
+    for i in 0..count {
+        if let Some(beneficiary) =
+            env.storage().persistent().get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
+        {
+            beneficiaries.push_back(beneficiary);
+        }
+    }
+
+    let new_offering_id = VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
+    let mut new_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&VestingKey::OfferingScheduleCount(new_offering_id.clone()))
+        .unwrap_or(0);
+    let mut migrated = Vec::new(&env);
+
+    // First pass: validate that no schedule is pre-cliff.
+    for beneficiary in beneficiaries.iter() {
+        if let Some(schedule) = env.storage().persistent().get(&VestingKey::Schedule(beneficiary.clone())) {
+            if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
+                if now < schedule.cliff_ts {
+                    return Err(VestingError::SchedulePreCliff);
+                }
+            }
+        }
+    }
+
+    // Second pass: migrate matching schedules and rebuild the beneficiary index.
+    for beneficiary in beneficiaries.iter() {
+        if let Some(mut schedule) = env.storage().persistent().get(&VestingKey::Schedule(beneficiary.clone())) {
+            if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
+                schedule.issuer = new_issuer.clone();
+                env.storage().persistent().set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
+                env.storage().persistent().set(
+                    &VestingKey::OfferingScheduleItem(new_offering_id.clone(), new_count),
+                    &beneficiary.clone(),
+                );
+                new_count = new_count.saturating_add(1);
+                migrated.push_back(beneficiary.clone());
+            }
+        }
+    }
+
+    for i in 0..count {
+        env.storage()
+            .persistent()
+            .remove(&VestingKey::OfferingScheduleItem(offering_id.clone(), i));
+    }
+    env.storage().persistent().remove(&count_key);
+    if new_count > 0 {
+        env.storage()
+            .persistent()
+            .set(&VestingKey::OfferingScheduleCount(new_offering_id), &new_count);
+    }
+
+    Ok(migrated)
 }
 
 /// Helper: compute total vested tokens at a given timestamp.

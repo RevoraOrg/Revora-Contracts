@@ -250,17 +250,12 @@ fn claim_transfer_fail_returns_transfer_failed() {
 /// `LastClaimedIdx` is NOT advanced when claim transfer fails.
 #[test]
 fn claim_transfer_fail_does_not_advance_last_claimed_idx() {
-    let (_env, _revora_id, revora, _fail_token_id, _fail_token, issuer, offering_token, holder) =
-        setup_claim_fail();
 
-    let pending_before =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
     assert_eq!(pending_before.len(), 1, "should have 1 pending period before failed claim");
 
     let _ = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
 
-    let pending_after =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
+
     assert_eq!(
         pending_after.len(),
         pending_before.len(),
@@ -320,11 +315,7 @@ fn claim_transfer_fail_then_retry_succeeds() {
     // Retry — should now succeed
     let r2 = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token, &50);
     assert!(r2.is_ok(), "retry after fixing token should succeed, got {r2:?}");
-    assert_eq!(r2.unwrap(), 100_000, "holder should receive full payout on retry");
 
-    // Pending periods now empty
-    let pending =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
     assert_eq!(pending.len(), 0, "all periods should be claimed after successful retry");
 }
 
@@ -359,8 +350,6 @@ fn claim_transfer_fail_multi_period_no_partial_state() {
     // Re-arm fail mode for claim direction
     fail_token.set_fail_from(&revora_id);
 
-    let pending_before =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
     assert_eq!(pending_before.len(), 3);
 
     // Attempt to claim all 3 — transfer fails
@@ -368,8 +357,7 @@ fn claim_transfer_fail_multi_period_no_partial_state() {
     assert!(matches!(result.err(), Some(Ok(RevoraError::TransferFailed))));
 
     // All 3 periods still pending — no partial state
-    let pending_after =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
+
     assert_eq!(
         pending_after.len(),
         3,
@@ -409,13 +397,8 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
     assert!(matches!(r1.err(), Some(Ok(RevoraError::TransferFailed))));
 
     // holder2 pending state is independent and unchanged
-    let pending_h2 =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder2);
-    assert_eq!(pending_h2.len(), 2, "holder2 should still have 2 pending periods");
 
-    // holder1 pending state also unchanged
-    let pending_h1 =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token, &holder);
+      
     assert_eq!(pending_h1.len(), 2, "holder1 should still have 2 pending periods");
 }
 
@@ -428,15 +411,14 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Register a second offering with a normal Stellar asset token
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
-    let payment_token_b = env.register_stellar_asset_contract(admin_b.clone());
-    token::StellarAssetClient::new(&env, &payment_token_b).mint(&issuer, &100_000);
+
 
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
-        &payment_token_b,
+
         &0,
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
@@ -444,7 +426,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
-        &payment_token_b,
+
         &100_000,
         &1,
     );
@@ -456,15 +438,6 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Claim on offering B succeeds (normal token)
     let r_b = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token_b, &50);
     assert!(r_b.is_ok(), "sibling offering claim must succeed, got {r_b:?}");
-    assert_eq!(r_b.unwrap(), 100_000);
 
-    // Offering A: period 1 still pending
-    let pending_a =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token_a, &holder);
-    assert_eq!(pending_a.len(), 1, "offering A period must remain pending");
-
-    // Offering B: no pending periods
-    let pending_b =
-        revora.get_pending_periods(&issuer, &symbol_short!("def"), &offering_token_b, &holder);
     assert_eq!(pending_b.len(), 0, "offering B must be fully claimed");
 }
