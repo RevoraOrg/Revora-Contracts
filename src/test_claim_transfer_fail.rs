@@ -41,9 +41,8 @@
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    testutils::Address as _,
-    token, Address, Env, String,
+    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, token, Address,
+    Env, String,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -71,8 +70,7 @@ impl FailingTransferToken {
 
     /// Mint tokens to `to` (test helper, no auth).
     pub fn mint(env: Env, to: Address, amount: i128) {
-        let bal: i128 =
-            env.storage().persistent().get(&TokenKey::Balance(to.clone())).unwrap_or(0);
+        let bal: i128 = env.storage().persistent().get(&TokenKey::Balance(to.clone())).unwrap_or(0);
         env.storage().persistent().set(&TokenKey::Balance(to), &(bal + amount));
     }
 
@@ -268,11 +266,7 @@ fn claim_transfer_fail_does_not_advance_last_claimed_idx() {
         pending_before.len(),
         "LastClaimedIdx must not advance on transfer failure"
     );
-    assert_eq!(
-        pending_after.get(0),
-        pending_before.get(0),
-        "pending period IDs must be unchanged"
-    );
+    assert_eq!(pending_after.get(0), pending_before.get(0), "pending period IDs must be unchanged");
 }
 
 /// Holder balance is unchanged when claim transfer fails.
@@ -445,13 +439,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &payment_token_b,
         &0,
     );
-    revora.set_holder_share(
-        &issuer,
-        &symbol_short!("def"),
-        &offering_token_b,
-        &holder,
-        &10_000,
-    );
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
     revora.deposit_revenue(
         &issuer,
         &symbol_short!("def"),

@@ -162,11 +162,11 @@ pub enum RevoraError {
 pub mod vesting;
 
 #[cfg(test)]
+mod test_claim_transfer_fail;
+#[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
-#[cfg(test)]
-mod test_claim_transfer_fail;
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -1571,6 +1571,20 @@ impl RevoraRevenueShare {
             .map(|pending| pending.new_issuer)
     }
 
+    /// Return full details of a pending issuer transfer, including the proposed new issuer,
+    /// the proposal timestamp, and the effective expiry in seconds (0 = default 7 days).
+    pub fn get_pending_transfer_details(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<PendingTransfer> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey, PendingTransfer>(&DataKey::PendingIssuerTransfer(offering_id))
+    }
+
     fn find_pending_transfer_for_new_issuer(
         env: &Env,
         namespace: &Symbol,
@@ -1670,15 +1684,17 @@ impl RevoraRevenueShare {
         let effective_expiry = if expiry_secs == 0 {
             0
         } else {
-            expiry_secs
-                .max(MIN_ISSUER_TRANSFER_EXPIRY_SECS)
-                .min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
+            expiry_secs.max(MIN_ISSUER_TRANSFER_EXPIRY_SECS).min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
         };
 
         let timestamp = env.ledger().timestamp();
         env.storage().persistent().set(
             &key,
-            &PendingTransfer { new_issuer: new_issuer.clone(), timestamp, expiry_secs: effective_expiry },
+            &PendingTransfer {
+                new_issuer: new_issuer.clone(),
+                timestamp,
+                expiry_secs: effective_expiry,
+            },
         );
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
@@ -1717,9 +1733,15 @@ impl RevoraRevenueShare {
 
         let pending: PendingTransfer = env.storage().persistent().get(&key).unwrap();
         let timestamp = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp, expiry_secs: 0 });
+        // Preserve the original expiry_secs so the replacement inherits the same window.
+        env.storage().persistent().set(
+            &key,
+            &PendingTransfer {
+                new_issuer: new_issuer.clone(),
+                timestamp,
+                expiry_secs: pending.expiry_secs,
+            },
+        );
 
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
@@ -3315,10 +3337,7 @@ impl RevoraRevenueShare {
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
         let key = DataKey2::BlacklistSizeLimit(offering_id.clone());
-        env.storage()
-            .persistent()
-            .get::<DataKey2, u32>(&key)
-            .unwrap_or(MAX_BLACKLIST_SIZE)
+        env.storage().persistent().get::<DataKey2, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
     /// Set the per-offering blacklist size limit.
