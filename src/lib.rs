@@ -159,6 +159,9 @@ pub enum RevoraError {
     ///
     /// Wire value: next available stable discriminant.
     MissingReportForOverride = 47,
+    /// Concentration data is missing or older than `max_staleness_secs` and enforcement is on.
+    /// Wire value: 49. Stable since v1.
+    StaleConcentrationData = 49,
 }
 
 pub mod vesting;
@@ -393,6 +396,11 @@ pub struct ConcentrationLimitConfig {
     pub max_bps: u32,
     /// If true, `report_revenue` will fail if current concentration exceeds `max_bps`.
     pub enforce: bool,
+    /// Maximum age (in seconds) of a `report_concentration` call before it is considered stale.
+    /// When `enforce` is true and this is > 0, `report_revenue` rejects if no concentration has
+    /// been reported or the last report is older than this many seconds. 0 = disabled (no staleness
+    /// check).
+    pub max_staleness_secs: u64,
 }
 
 /// Per-offering investment constraints (#97). Min/max stake per investor; off-chain enforced.
@@ -594,6 +602,8 @@ pub enum DataKey {
     ConcentrationLimit(OfferingId),
     /// Per-offering: last reported concentration in bps.
     CurrentConcentration(OfferingId),
+    /// Per-offering: ledger timestamp of the last report_concentration call.
+    ConcentrationReportedAt(OfferingId),
     /// Per-offering: audit summary.
     AuditSummary(OfferingId),
     /// Per-offering: rounding mode for share math.
@@ -2448,6 +2458,22 @@ impl RevoraRevenueShare {
                     // reject report if current concentration exceeds the limit.
                     // Allowed: current <= max_bps. Rejected: current > max_bps.
                     if config.enforce && config.max_bps > 0 {
+                        // Staleness guard: if max_staleness_secs > 0, require a fresh report.
+                        if config.max_staleness_secs > 0 {
+                            let reported_at: Option<u64> = env.storage().persistent().get(
+                                &DataKey::ConcentrationReportedAt(offering_id.clone()),
+                            );
+                            match reported_at {
+                                None => return Err(RevoraError::StaleConcentrationData),
+                                Some(ts) => {
+                                    if current_timestamp.saturating_sub(ts)
+                                        > config.max_staleness_secs
+                                    {
+                                        return Err(RevoraError::StaleConcentrationData);
+                                    }
+                                }
+                            }
+                        }
                         let curr_key = DataKey::CurrentConcentration(offering_id.clone());
                         let current: u32 = env.storage().persistent().get(&curr_key).unwrap_or(0);
                         if current > config.max_bps {
@@ -3787,6 +3813,9 @@ impl RevoraRevenueShare {
     /// ### Parameters
     /// - `max_bps`: The maximum allowed share for a single holder in basis points.
     /// - `enforce`: If true, `report_revenue` will fail if current concentration > `max_bps`.
+    /// - `max_staleness_secs`: When > 0 and `enforce` is true, `report_revenue` rejects if no
+    ///   concentration has been reported or the last report is older than this many seconds.
+    ///   Set to 0 to disable the staleness check.
     ///
     /// ### Constraints
     /// - `max_bps` must be <= 10,000.
@@ -3797,6 +3826,7 @@ impl RevoraRevenueShare {
         token: Address,
         max_bps: u32,
         enforce: bool,
+        max_staleness_secs: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -3826,7 +3856,9 @@ impl RevoraRevenueShare {
 
         if !Self::is_event_only(&env) {
             let key = DataKey::ConcentrationLimit(offering_id);
-            env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
+            env.storage()
+                .persistent()
+                .set(&key, &ConcentrationLimitConfig { max_bps, enforce, max_staleness_secs });
         }
 
         Self::emit_v2_event(
@@ -3907,6 +3939,10 @@ impl RevoraRevenueShare {
             env.storage()
                 .persistent()
                 .set(&DataKey::CurrentConcentration(offering_id.clone()), &concentration_bps);
+            env.storage().persistent().set(
+                &DataKey::ConcentrationReportedAt(offering_id.clone()),
+                &env.ledger().timestamp(),
+            );
             env.events().publish(
                 (EVENT_CONCENTRATION_REPORTED, issuer, namespace, token),
                 concentration_bps,

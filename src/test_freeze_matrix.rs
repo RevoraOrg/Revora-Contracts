@@ -234,6 +234,7 @@ fn frozen_set_concentration_limit_returns_contract_frozen() {
         &token,
         &5_000u32,
         &true,
+        &0u64,
     );
     assert_frozen_err(result);
     assert!(client.get_concentration_limit(&issuer, &symbol_short!("ns"), &token).is_none());
@@ -566,6 +567,7 @@ fn frozen_set_concentration_limit_no_partial_write() {
         &token,
         &3_000u32,
         &true,
+        &0u64,
     );
 
     assert!(client.get_concentration_limit(&issuer, &symbol_short!("ns"), &token).is_none());

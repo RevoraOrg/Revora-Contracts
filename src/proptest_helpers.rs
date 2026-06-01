@@ -131,8 +131,8 @@ pub enum TestOperation {
     BlacklistAdd { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
     /// `blacklist_remove(caller, issuer, namespace, token, investor)`
     BlacklistRemove { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
-    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce)`
-    SetConcentrationLimit { max_bps: u32, enforce: bool },
+    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce, max_staleness_secs)`
+    SetConcentrationLimit { max_bps: u32, enforce: bool, max_staleness_secs: u64 },
     /// `report_concentration(issuer, namespace, token, concentration_bps)`
     ReportConcentration { concentration_bps: u32 },
     /// `freeze()` — admin-only global freeze
@@ -186,8 +186,9 @@ pub fn arb_blacklist_remove() -> impl Strategy<Value = TestOperation> {
 
 /// Strategy for a single `SetConcentrationLimit` operation.
 pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
-    (arb_valid_bps(), any::<bool>())
-        .prop_map(|(max_bps, enforce)| TestOperation::SetConcentrationLimit { max_bps, enforce })
+    (arb_valid_bps(), any::<bool>()).prop_map(|(max_bps, enforce)| {
+        TestOperation::SetConcentrationLimit { max_bps, enforce, max_staleness_secs: 0 }
+    })
 }
 
 /// Strategy for any single valid operation (uniform distribution across all variants).

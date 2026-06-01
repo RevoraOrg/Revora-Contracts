@@ -34,7 +34,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `blacklist_remove` | `caller: Address`, `token: Address`, `investor: Address` | — | issuer | Remove investor from blacklist. Only the current issuer can perform this action. Idempotent. |
 | `is_blacklisted` | `token: Address`, `investor: Address` | `bool` | — | Whether investor is blacklisted for token. |
 | `get_blacklist` | `token: Address` | `Vec<Address>` | — | All blacklisted addresses for token. |
-| `set_concentration_limit` | `issuer: Address`, `token: Address`, `max_bps: u32`, `enforce: bool` | `Result<(), RevoraError>` | issuer | Set per-offering max single-holder concentration (bps). 0 = disabled. If `enforce` is true, `report_revenue` fails when reported concentration > `max_bps`. Offering must exist. |
+| `set_concentration_limit` | `issuer: Address`, `token: Address`, `max_bps: u32`, `enforce: bool`, `max_staleness_secs: u64` | `Result<(), RevoraError>` | issuer | Set per-offering max single-holder concentration (bps). 0 = disabled. If `enforce` is true, `report_revenue` fails when reported concentration > `max_bps`. When `max_staleness_secs > 0` and `enforce` is true, `report_revenue` also fails if no concentration has been reported or the last report is older than `max_staleness_secs` seconds. Offering must exist. |
 | `report_concentration` | `issuer: Address`, `token: Address`, `concentration_bps: u32` | `Result<(), RevoraError>` | issuer | Report current top-holder concentration (bps). Emits `conc_warn` if over configured limit. |
 | `get_concentration_limit` | `issuer: Address`, `token: Address` | `Option<ConcentrationLimitConfig>` | — | Get concentration limit config for offering. |
 | `get_current_concentration` | `issuer: Address`, `token: Address` | `Option<u32>` | — | Last reported concentration (bps) for offering. |
@@ -56,7 +56,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 ### Types
 
 - **Offering:** `{ issuer: Address, token: Address, revenue_share_bps: u32 }`
-- **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool }` — per-offering concentration guardrail.
+- **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool, max_staleness_secs: u64 }` — per-offering concentration guardrail. When `enforce` is true and `max_staleness_secs > 0`, `report_revenue` rejects with `StaleConcentrationData` if no concentration has been reported or the last report is older than `max_staleness_secs` seconds.
 - **AuditSummary:** `{ total_revenue: i128, report_count: u64 }` — per-offering audit log summary.
 - **RoundingMode:** `Truncation` (0) or `RoundHalfUp` (1) — used by `compute_share` and per-offering default.
 
@@ -75,6 +75,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
 | 25 | `ReportingWindowClosed` | Current ledger timestamp is outside the configured reporting window; `report_revenue` rejected. |
 | 26 | `ClaimWindowClosed` | Current ledger timestamp is outside the configured claiming window; `claim` rejected. |
+| 49 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
