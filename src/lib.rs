@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 #![deny(unsafe_code)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
@@ -37,7 +37,8 @@
     clippy::manual_let_else,
     clippy::empty_line_after_doc_comments,
     clippy::doc_lazy_continuation,
-    clippy::unnecessary_lazy_evaluations
+    clippy::unnecessary_lazy_evaluations,
+    clippy::enum_variant_names
 )]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
@@ -185,6 +186,7 @@ mod test_pause_tiers;
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
+#[allow(clippy::enum_variant_names)]
 pub enum PauseState {
     NotPaused = 0,
     SoftPaused = 1,
@@ -1193,7 +1195,11 @@ impl RevoraRevenueShare {
             (holder.clone(), share_bps),
         );
         // Versioned v2 event: [2, holder, share_bps] — always emitted (#RC26Q2-C31)
-        Self::emit_v2_event(env, (EVENT_SHARE_SET_V2, issuer, namespace, token), (holder, share_bps));
+        Self::emit_v2_event(
+            env,
+            (EVENT_SHARE_SET_V2, issuer, namespace, token),
+            (holder, share_bps),
+        );
         Ok(())
     }
 
@@ -4718,7 +4724,9 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&entry_key, &entry);
 
         // Persist updated per-offering running total.
-        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id.clone()), &current_total);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderShareTotal(offering_id.clone()), &current_total);
 
         env.events().publish(
             (EVENT_SNAP_SHARES_APPLIED, issuer, namespace, token),
@@ -4775,7 +4783,11 @@ impl RevoraRevenueShare {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
         Self::get_current_issuer(
             &env,
             issuer.clone(),
@@ -6509,15 +6521,7 @@ mod issue_414_supply_cap_tests {
 
     fn setup_with_payment_token(
         mint_amount: i128,
-    ) -> (
-        Env,
-        Address,
-        RevoraRevenueShareClient<'static>,
-        Address,
-        Symbol,
-        Address,
-        Address,
-    ) {
+    ) -> (Env, Address, RevoraRevenueShareClient<'static>, Address, Symbol, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -6529,11 +6533,11 @@ mod issue_414_supply_cap_tests {
         let token_addr = Address::generate(&env);
 
         let token_admin = Address::generate(&env);
-        let payment_token = env.register_stellar_asset_contract(token_admin.clone());
-        let payment_token_admin = token::StellarAssetClient::new(&env, &payment_token);
+        let payment_token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let payment_token_admin = token::StellarAssetClient::new(&env, &payment_token.address());
         payment_token_admin.mint(&issuer, &mint_amount);
 
-        (env, contract_id, client, issuer, namespace, token_addr, payment_token)
+        (env, contract_id, client, issuer, namespace, token_addr, payment_token.address())
     }
 
     #[test]
@@ -6542,25 +6546,49 @@ mod issue_414_supply_cap_tests {
             setup_with_payment_token(2_000_000);
 
         assert_eq!(
-            client
-                .try_register_offering(&issuer, &namespace, &token_addr, &1_000, &payment_token, &0),
+            client.try_register_offering(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &1_000,
+                &payment_token,
+                &0
+            ),
             Ok(Ok(()))
         );
         assert_eq!(client.get_supply_cap(&issuer, &namespace, &token_addr), 0);
 
         assert_eq!(
-            client
-                .try_deposit_revenue(&issuer, &namespace, &token_addr, &payment_token, &700_000, &1),
+            client.try_deposit_revenue(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &payment_token,
+                &700_000,
+                &1
+            ),
             Ok(Ok(()))
         );
         assert_eq!(
-            client
-                .try_deposit_revenue(&issuer, &namespace, &token_addr, &payment_token, &700_000, &2),
+            client.try_deposit_revenue(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &payment_token,
+                &700_000,
+                &2
+            ),
             Ok(Ok(()))
         );
         assert_eq!(
-            client
-                .try_deposit_revenue(&issuer, &namespace, &token_addr, &payment_token, &600_000, &3),
+            client.try_deposit_revenue(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &payment_token,
+                &600_000,
+                &3
+            ),
             Ok(Ok(()))
         );
     }
@@ -6571,8 +6599,14 @@ mod issue_414_supply_cap_tests {
             setup_with_payment_token(10);
 
         assert_eq!(
-            client
-                .try_register_offering(&issuer, &namespace, &token_addr, &1_000, &payment_token, &1),
+            client.try_register_offering(
+                &issuer,
+                &namespace,
+                &token_addr,
+                &1_000,
+                &payment_token,
+                &1
+            ),
             Ok(Ok(()))
         );
         assert_eq!(client.get_supply_cap(&issuer, &namespace, &token_addr), 1);
