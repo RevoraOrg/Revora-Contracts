@@ -268,6 +268,7 @@ pub struct Proposal {
 const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
 
 const EVENT_INIT: Symbol = symbol_short!("init");
+const EVENT_LAYOUT_VERSION: Symbol = symbol_short!("layout_v");
 const EVENT_PAUSED: Symbol = symbol_short!("paused");
 const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 /// Versioned pause event carrying the tier (SoftPaused / HardPaused / NotPaused).
@@ -352,6 +353,8 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 // â”€â”€ Data structures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: u32 = 23;
+/// Persistent storage layout version. Bump when adding/renaming DataKey variants.
+pub const STORAGE_LAYOUT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -669,6 +672,8 @@ pub enum DataKey {
     EventOnlyMode,
     /// Last migrated storage version for upgrade hooks.
     DeployedVersion,
+    /// Persistent storage layout version stamp. Set during `initialize` and migrations.
+    StorageLayoutVersion,
 
     /// Platform fee in basis points.
     PlatformFeeBps,
@@ -984,9 +989,36 @@ impl RevoraRevenueShare {
 
     /// Returns error if contract is frozen (#32). Call at start of state-mutating entrypoints.
     fn require_not_frozen(env: &Env) -> Result<(), RevoraError> {
+        // Ensure on-chain storage layout is compatible with this binary.
+        Self::assert_storage_layout_compatible(env)?;
+
         let key = DataKey::Frozen;
         if env.storage().persistent().get::<DataKey, bool>(&key).unwrap_or(false) {
             return Err(RevoraError::ContractFrozen);
+        }
+        Ok(())
+    }
+
+    /// Ensure the on-chain storage layout is compatible with this binary.
+    ///
+    /// - If the on-chain layout version is greater than the compiled `STORAGE_LAYOUT_VERSION`,
+    ///   reject with `MigrationDowngradeNotAllowed`.
+    /// - If the on-chain layout version is absent or older, stamp the storage with the
+    ///   compiled `STORAGE_LAYOUT_VERSION` and emit `EVENT_LAYOUT_VERSION` to signal migration.
+    fn assert_storage_layout_compatible(env: &Env) -> Result<(), RevoraError> {
+        let key = DataKey::StorageLayoutVersion;
+        if let Some(stored_v) = env.storage().persistent().get::<DataKey, u32>(&key) {
+            if stored_v > STORAGE_LAYOUT_VERSION {
+                return Err(RevoraError::MigrationDowngradeNotAllowed);
+            }
+            if stored_v < STORAGE_LAYOUT_VERSION {
+                env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
+                env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+            }
+        } else {
+            // No layout stamp found: stamp it now (first-time initialize/migration path).
+            env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
+            env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
         }
         Ok(())
     }
@@ -1596,6 +1628,25 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Read-only accessor for the on-chain storage layout version stamp.
+    pub fn storage_layout_version(env: Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey::StorageLayoutVersion)
+    }
+
+    /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
+    /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
+    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &v);
+        env.events().publish((EVENT_LAYOUT_VERSION,), v);
+        Ok(())
+    }
+
     pub fn get_pending_issuer_transfer(
         env: Env,
         issuer: Address,
@@ -1960,6 +2011,12 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Paused, &PauseState::NotPaused);
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
+        // Stamp storage layout version for future compatibility checks.
+        env.storage()
+            .persistent()
+            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
 
