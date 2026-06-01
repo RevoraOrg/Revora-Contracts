@@ -107,9 +107,9 @@ impl VestingContract {
         }
 
         let schedule = VestingSchedule {
-            issuer,
+            issuer: issuer.clone(),
             beneficiary: beneficiary.clone(),
-            token,
+            token: token.clone(),
             total_amount,
             cliff_ts,
             start_ts,
@@ -218,40 +218,54 @@ pub fn migrate_offering_schedules(
         return Ok(Vec::new(env));
     }
 
-    let mut beneficiaries = Vec::new(env);
+    let mut beneficiaries: Vec<Address> = Vec::new(env);
     for i in 0..count {
-        if let Some(beneficiary) =
-            env.storage().persistent().get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
+        if let Some(beneficiary) = env
+            .storage()
+            .persistent()
+            .get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
         {
             beneficiaries.push_back(beneficiary);
         }
     }
 
-    let new_offering_id = VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
+    let new_offering_id =
+        VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
     let mut new_count: u32 = env
         .storage()
         .persistent()
         .get(&VestingKey::OfferingScheduleCount(new_offering_id.clone()))
         .unwrap_or(0);
-    let mut migrated = Vec::new(&env);
+    let mut migrated: Vec<Address> = Vec::new(env);
 
     // First pass: validate that no schedule is pre-cliff.
     for beneficiary in beneficiaries.iter() {
-        if let Some(schedule) = env.storage().persistent().get(&VestingKey::Schedule(beneficiary.clone())) {
-            if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
-                if now < schedule.cliff_ts {
-                    return Err(VestingError::SchedulePreCliff);
-                }
+        if let Some(schedule) = env
+            .storage()
+            .persistent()
+            .get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone()))
+        {
+            if schedule.issuer == offering_id.issuer
+                && schedule.token == offering_id.token
+                && now < schedule.cliff_ts
+            {
+                return Err(VestingError::SchedulePreCliff);
             }
         }
     }
 
     // Second pass: migrate matching schedules and rebuild the beneficiary index.
     for beneficiary in beneficiaries.iter() {
-        if let Some(mut schedule) = env.storage().persistent().get(&VestingKey::Schedule(beneficiary.clone())) {
+        if let Some(mut schedule) = env
+            .storage()
+            .persistent()
+            .get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone()))
+        {
             if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
                 schedule.issuer = new_issuer.clone();
-                env.storage().persistent().set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
+                env.storage()
+                    .persistent()
+                    .set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
                 env.storage().persistent().set(
                     &VestingKey::OfferingScheduleItem(new_offering_id.clone(), new_count),
                     &beneficiary.clone(),
