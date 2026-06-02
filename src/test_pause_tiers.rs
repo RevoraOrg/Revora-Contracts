@@ -30,13 +30,13 @@ use crate::{PauseState, RevoraError, RevoraRevenueShare, RevoraRevenueShareClien
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
 
 /// Initialize with both admin and safety roles; mock all auths for the test.
-fn setup(env: &Env) -> (RevoraRevenueShareClient, Address, Address) {
+fn setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address) {
     env.mock_all_auths();
     let client = make_client(env);
     let admin = Address::generate(env);
@@ -51,7 +51,7 @@ fn setup(env: &Env) -> (RevoraRevenueShareClient, Address, Address) {
 /// Returns `(client, admin, safety, issuer, offering_token, payment_token, holder)`.
 fn setup_with_offering(
     env: &Env,
-) -> (RevoraRevenueShareClient, Address, Address, Address, Address, Address, Address) {
+) -> (RevoraRevenueShareClient<'_>, Address, Address, Address, Address, Address, Address) {
     env.mock_all_auths();
     let client = make_client(env);
     let admin = Address::generate(env);
