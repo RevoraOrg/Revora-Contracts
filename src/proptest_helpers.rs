@@ -47,6 +47,18 @@ pub fn any_positive_amount() -> impl Strategy<Value = i128> {
     1i128..=100_000_000
 }
 
+/// Bounded fuzz amount for `compute_share` decomposition tests (Issue #411).
+///
+/// Range: `[i128::MIN/2, i128::MAX/2]`.
+///
+/// This range avoids saturation in the reference decomposition formula while
+/// still covering large positive and negative values, zero, and ±1. Values
+/// outside this range are covered by the explicit boundary-seed tests in
+/// `test_compute_share_decomposition_prop`.
+pub fn arb_fuzz_decomposition_amount() -> impl Strategy<Value = i128> {
+    (i128::MIN / 2)..=(i128::MAX / 2)
+}
+
 /// Any non-negative amount (0 .. 100 000 000).
 pub fn arb_non_negative_amount() -> impl Strategy<Value = i128> {
     0i128..=100_000_000
