@@ -137,7 +137,7 @@ fn execute_remove_owner_at_max_owners_within_budget() {
     let (env, id, _client, _admin, owners) = setup_max_multisig();
 
     let threshold = RevoraRevenueShare::MAX_MULTISIG_OWNERS / 2 + 1; // 11
-    // Remove the last owner (index 19) — it is not the proposer.
+                                                                     // Remove the last owner (index 19) — it is not the proposer.
     let target = owners.get(RevoraRevenueShare::MAX_MULTISIG_OWNERS - 1).unwrap();
     let action = ProposalAction::RemoveOwner(target);
 
