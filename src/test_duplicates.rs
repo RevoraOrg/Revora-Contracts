@@ -224,3 +224,41 @@ fn test_duplicate_report_revenue_rev_rej_event_payload() {
     }
     assert!(found_asset, "rev_reja event with correct payload must be emitted");
 }
+
+#[test]
+fn test_override_missing_report_emits_rev_omiss_and_returns_missing_override() {
+    let (env, client, issuer, token, payout_asset) = setup_offering();
+    let namespace = symbol_short!("ns");
+    let attempted_amount: i128 = 123;
+    let period_id: u64 = 1;
+
+    let before = env.events().all().len();
+    let result = client.try_report_revenue(
+        &issuer,
+        &namespace,
+        &token,
+        &payout_asset,
+        &attempted_amount,
+        &period_id,
+        &true,
+    );
+
+    assert_eq!(result, Err(Ok(RevoraError::MissingReportForOverride)));
+
+    let mut found_rev_omiss = false;
+    for i in before..env.events().all().len() {
+        let (_, topics, data) = env.events().all().get(i).unwrap();
+        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
+        let topic_sym: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+        if topic_sym == symbol_short!("rev_omiss") {
+            let data_vec: soroban_sdk::Vec<Val> = data.clone().into_val(&env);
+            let amount: i128 = data_vec.get(0).unwrap().into_val(&env);
+            let pid: u64 = data_vec.get(1).unwrap().into_val(&env);
+            assert_eq!(amount, attempted_amount);
+            assert_eq!(pid, period_id);
+            found_rev_omiss = true;
+            break;
+        }
+    }
+    assert!(found_rev_omiss, "rev_omiss event with correct payload must be emitted");
+}
