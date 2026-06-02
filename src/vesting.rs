@@ -108,9 +108,9 @@ impl VestingContract {
 
         let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
         let schedule = VestingSchedule {
-            issuer,
+            issuer: issuer.clone(),
             beneficiary: beneficiary.clone(),
-            token,
+            token: token.clone(),
             total_amount,
             cliff_ts,
             start_ts,
@@ -219,14 +219,17 @@ pub fn migrate_offering_schedules(
 
     let mut beneficiaries: Vec<Address> = Vec::new(env);
     for i in 0..count {
-        if let Some(beneficiary) =
-            env.storage().persistent().get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
+        if let Some(beneficiary) = env
+            .storage()
+            .persistent()
+            .get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
         {
             beneficiaries.push_back(beneficiary);
         }
     }
 
-    let new_offering_id = VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
+    let new_offering_id =
+        VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
     let mut new_count: u32 = env
         .storage()
         .persistent()
@@ -250,10 +253,12 @@ pub fn migrate_offering_schedules(
         if let Some(mut schedule) = env.storage().persistent().get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone())) {
             if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
                 schedule.issuer = new_issuer.clone();
-                env.storage().persistent().set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
+                env.storage()
+                    .persistent()
+                    .set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
                 env.storage().persistent().set(
                     &VestingKey::OfferingScheduleItem(new_offering_id.clone(), new_count),
-                    &beneficiary.clone(),
+                    &beneficiary,
                 );
                 new_count = new_count.saturating_add(1);
                 migrated.push_back(beneficiary.clone());
