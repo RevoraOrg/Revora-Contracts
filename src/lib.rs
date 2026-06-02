@@ -168,6 +168,8 @@ mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
+mod test_event_indexed_v2;
+#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_multisig_gas;
@@ -4694,7 +4696,7 @@ impl RevoraRevenueShare {
                 .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
                 .unwrap_or(0);
 
-            let new_total = current_total.saturating_sub(old_share).saturating_add(*share_bps);
+            let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
             if new_total > 10_000 {
                 return Err(RevoraError::InvalidShareBps);
             }
@@ -4705,7 +4707,7 @@ impl RevoraRevenueShare {
                 .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
 
             current_total = new_total;
-            added_bps = added_bps.saturating_add(*share_bps);
+            added_bps = added_bps.saturating_add(share_bps);
         }
 
         // Update snapshot metadata.
