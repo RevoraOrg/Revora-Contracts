@@ -118,7 +118,7 @@ impl VestingContract {
         env.storage().persistent().set(&key, &schedule);
         env.storage().persistent().set(&VestingKey::Claimed(beneficiary.clone()), &0_i128);
 
-        let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
+        let offering_id = VestingOfferingId { issuer, token };
         let count_key = VestingKey::OfferingScheduleCount(offering_id.clone());
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
         env.storage().persistent().set(
@@ -220,20 +220,23 @@ pub fn migrate_offering_schedules(
 
     let mut beneficiaries: Vec<Address> = Vec::new(env);
     for i in 0..count {
-        if let Some(beneficiary) =
-            env.storage().persistent().get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
+        if let Some(beneficiary) = env
+            .storage()
+            .persistent()
+            .get(&VestingKey::OfferingScheduleItem(offering_id.clone(), i))
         {
             beneficiaries.push_back(beneficiary);
         }
     }
 
-    let new_offering_id = VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
+    let new_offering_id =
+        VestingOfferingId { issuer: new_issuer.clone(), token: offering_id.token.clone() };
     let mut new_count: u32 = env
         .storage()
         .persistent()
         .get(&VestingKey::OfferingScheduleCount(new_offering_id.clone()))
         .unwrap_or(0);
-    let mut migrated = Vec::new(&env);
+    let mut migrated: Vec<Address> = Vec::new(env);
 
     // First pass: validate that no schedule is pre-cliff.
     for beneficiary in beneficiaries.iter() {
@@ -251,10 +254,12 @@ pub fn migrate_offering_schedules(
         if let Some(mut schedule) = env.storage().persistent().get::<_, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone())) {
             if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
                 schedule.issuer = new_issuer.clone();
-                env.storage().persistent().set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
+                env.storage()
+                    .persistent()
+                    .set(&VestingKey::Schedule(beneficiary.clone()), &schedule);
                 env.storage().persistent().set(
                     &VestingKey::OfferingScheduleItem(new_offering_id.clone(), new_count),
-                    &beneficiary.clone(),
+                    &beneficiary,
                 );
                 new_count = new_count.saturating_add(1);
                 migrated.push_back(beneficiary.clone());

@@ -1,4 +1,4 @@
-﻿//! # Report/Claim Window Time Boundary Matrix
+//! # Report/Claim Window Time Boundary Matrix
 //!
 //! Hardens the reporting and claiming window checks based on ledger time.
 //!
@@ -1136,9 +1136,58 @@ fn set_report_window_overwrites_previous() {
     assert_eq!(w.end_timestamp, 4_000);
 }
 
+// â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
+// SECTION 9 â€” Epoch Boundary Report Revenue Ordering Invariant
+// â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
 
+/// #407 Add concurrent report_revenue epoch-boundary tests asserting period_id ordering invariant under window cutover
+///
+/// Security Notes:
+/// This test validates that `report_revenue` correctly preserves the strict monotonic
+/// ordering invariant of `last_report_period_id` when transitioning across reporting-window boundaries.
+/// - The strict `+1` step requirement (`require_next_period_id`) cannot be bypassed by
+///   shifting the temporal reporting window mid-flight.
+/// - Skipped period slots correctly reject with `InvalidPeriodId` even if the
+///   window is dynamically reconfigured, overlapping, or compressed to zero-width.
+#[test]
+fn report_revenue_epoch_boundary_ordering_invariant() {
+    let (env, client, issuer, token, payment_token, _holder) = setup_with_holder();
 
+    // 1. Configure window [1000, 2000] (A to B)
+    client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
+    
+    // Move time to A (1000)
+    set_time(&env, 1_000);
+    
+    // 2. Report period 1 at A
+    let r1 = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &1, &false);
+    assert!(r1.is_ok(), "Period 1 report failed");
 
+    // 3. Move time to B+1 (2001) and reconfigure to [2001, 3000] (C)
+    set_time(&env, 2_001);
+    client.set_report_window(&issuer, &symbol_short!("ns"), &token, &2_001, &3_000);
 
+    // Edge case: skipped - period_id rejected
+    let r_skip = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &3, &false);
+    assert_eq!(r_skip, Err(Ok(RevoraError::InvalidPeriodId)), "Skipped period_id must be rejected");
 
+    // 4. Report period 2 and assert it succeeds, verifying invariant that last_report_period_id == 1 was persisted across the cutover
+    let r2 = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &2, &false);
+    assert!(r2.is_ok(), "Period 2 report failed across epoch boundary");
 
+    // Edge case: Window reset to zero-width
+    client.set_report_window(&issuer, &symbol_short!("ns"), &token, &4_000, &4_000);
+    set_time(&env, 4_000);
+    let r3 = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &3, &false);
+    assert!(r3.is_ok(), "Period 3 report failed on zero-width window");
+
+    // Edge case: overlapping windows (start time of new window is before end of old logic)
+    client.set_report_window(&issuer, &symbol_short!("ns"), &token, &3_500, &5_000);
+    set_time(&env, 4_500);
+    let r4 = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &4, &false);
+    assert!(r4.is_ok(), "Period 4 report failed on overlapping window reconfiguration");
+
+    // Verify ordering invariant is still strictly enforced
+    let r_skip2 = client.try_report_revenue(&issuer, &symbol_short!("ns"), &token, &payment_token, &100, &6, &false);
+    assert_eq!(r_skip2, Err(Ok(RevoraError::InvalidPeriodId)), "Skipped period_id must be rejected after multiple window reconfigurations");
+}

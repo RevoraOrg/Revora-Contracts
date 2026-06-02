@@ -1258,7 +1258,7 @@ fn set_concentration_limit_requires_offering_to_exist() {
     let token = Address::generate(&env);
     // No offering registered
     let r =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     assert!(r.is_err());
 }
 
@@ -1271,7 +1271,7 @@ fn set_concentration_limit_stores_config() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
     assert_eq!(config.clone().unwrap().max_bps, 5000);
     assert!(!config.clone().unwrap().enforce);
@@ -1291,7 +1291,7 @@ fn set_concentration_limit_bounds_check() {
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
 
     let res =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false, &0u64);
     assert!(res.is_err());
 }
 
@@ -1324,7 +1324,7 @@ fn set_concentration_limit_respects_pause() {
 
     client.pause_admin(&admin);
     let res =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     assert!(res.is_err());
 }
 
@@ -1373,7 +1373,7 @@ fn report_concentration_emits_warning_when_over_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     assert!(env.events().all().len() > before);
@@ -1392,7 +1392,7 @@ fn report_concentration_no_warning_when_below_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
     assert_eq!(
         client.get_current_concentration(&issuer, &symbol_short!("def"), &token),
@@ -1409,7 +1409,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     let r = client.try_report_revenue(
         &issuer,
@@ -1435,7 +1435,7 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
     client.report_revenue(
         &issuer,
@@ -1467,7 +1467,7 @@ fn concentration_near_threshold_boundary() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5001);
 
     assert!(client
@@ -1520,6 +1520,7 @@ fn set_concentration_limit_requires_auth_before_state_read() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     assert!(result.is_err(), "unauthenticated call must be rejected");
 }
@@ -1549,6 +1550,7 @@ fn set_concentration_limit_auth_required_even_in_event_only_mode() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     // In event-only mode the function returns Ok but does not write storage.
     assert!(result.is_ok(), "authenticated call in event-only mode must return Ok");
@@ -1577,8 +1579,193 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// Concentration staleness guard (#355)
+// ---------------------------------------------------------------------------
+
+/// report_revenue must fail with StaleConcentrationData when enforce=true,
+/// max_staleness_secs > 0, and no concentration has ever been reported.
+#[test]
+fn concentration_staleness_no_prior_report_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // enforce=true, max_staleness_secs=3600 — no report_concentration called yet
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+    let r = client.try_report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+    assert_eq!(
+        r,
+        Err(Ok(RevoraError::StaleConcentrationData)),
+        "must reject when no concentration has been reported and staleness guard is on"
+    );
+}
+
+/// report_revenue must fail with StaleConcentrationData when the last
+/// report_concentration is older than max_staleness_secs.
+#[test]
+fn concentration_staleness_stale_report_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    // Report concentration at t=1000
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Advance time past the staleness window (1000 + 3600 + 1 = 4601)
+    env.ledger().set_timestamp(4601);
+    let r = client.try_report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+    assert_eq!(
+        r,
+        Err(Ok(RevoraError::StaleConcentrationData)),
+        "must reject when concentration report is older than max_staleness_secs"
+    );
+}
+
+/// report_revenue must succeed when concentration was reported within the
+/// staleness window.
+#[test]
+fn concentration_staleness_fresh_report_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    // Report concentration at t=1000
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Advance time but stay within the window (1000 + 3600 = 4600, so 4600 is still valid)
+    env.ledger().set_timestamp(4600);
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// When enforce=false, the staleness guard must not apply even if
+/// max_staleness_secs > 0 and no concentration has been reported.
+#[test]
+fn concentration_staleness_enforce_off_bypasses_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // enforce=false — staleness guard must not fire
+    client.set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5000,
+        &false,
+        &3600u64,
+    );
+    // No report_concentration called
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// When max_staleness_secs=0, the staleness guard is disabled even if
+/// enforce=true and no concentration has been reported.
+#[test]
+fn concentration_staleness_zero_secs_disables_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // max_staleness_secs=0 — guard disabled
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
+    // No report_concentration called — should not be rejected for staleness
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// Boundary: report exactly at the edge of the staleness window (now - ts == max_staleness_secs)
+/// must be allowed (inclusive boundary).
+#[test]
+fn concentration_staleness_boundary_exact_window_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Exactly at the boundary: now - ts = 3600 == max_staleness_secs → allowed
+    env.ledger().set_timestamp(4600);
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -5771,7 +5958,7 @@ fn testnet_mode_skips_concentration_enforcement() {
 
     // Register offering and set concentration limit with enforcement
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
     // In testnet mode, report_revenue should succeed despite concentration being over limit
@@ -5872,7 +6059,7 @@ fn testnet_mode_disabled_enforces_concentration() {
 
     // Testnet mode disabled (default)
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
     // Should fail with concentration enforcement
@@ -5986,7 +6173,7 @@ fn testnet_mode_concentration_warning_still_emitted() {
     client.set_testnet_mode(&true);
 
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
 
     // Warning should still be emitted in testnet mode
     let before = legacy_events(&env).len();
@@ -6057,6 +6244,245 @@ fn issuer_transfer_replace_without_pending_transfer_fails() {
 
     let result = client.try_replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     assert!(result.is_err());
+}
+
+// ── Configurable expiry tests (#362) ─────────────────────────
+
+#[test]
+fn issuer_transfer_default_expiry_used_when_expiry_secs_zero() {
+    // propose_issuer_transfer (expiry_secs=0) → accept within 7 days → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance time to just before the 7-day default expiry
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days - 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within default 7-day window");
+}
+
+#[test]
+fn issuer_transfer_default_expiry_rejects_after_seven_days() {
+    // propose_issuer_transfer (expiry_secs=0) → accept after 7 days → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after default 7-day expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_within_window() {
+    // propose_transfer_with_expiry(2h) → accept at 1h → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60); // +1h
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within custom 2h window");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_rejected_after_window() {
+    // propose_transfer_with_expiry(2h) → accept at 2h+1s → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after custom 2h expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_at_exact_boundary() {
+    // propose_transfer_with_expiry(2h) → accept at exactly 2h → succeeds (inclusive)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept at exact expiry boundary (timestamp == expiry)");
+}
+
+#[test]
+fn issuer_transfer_expiry_below_min_clamped_to_min() {
+    // expiry_secs below 1h minimum → clamped to 1h
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let below_min = 60u64; // 1 minute — below 1h minimum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &below_min,
+    );
+
+    // Should still be valid at 30 minutes (clamped to 1h minimum)
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 60);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "clamped-to-min expiry should still be valid at 30min");
+}
+
+#[test]
+fn issuer_transfer_expiry_above_max_clamped_to_max() {
+    // expiry_secs above 30-day maximum → clamped to 30 days
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let above_max = 999u64 * 24 * 60 * 60; // 999 days — above 30-day maximum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &above_max,
+    );
+
+    // At 31 days (past 30-day max), should be expired
+    let thirty_days_plus_one = 30u64 * 24 * 60 * 60 + 1;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + thirty_days_plus_one);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "clamped-to-max expiry should expire after 30 days");
+}
+
+#[test]
+fn issuer_transfer_min_clamp_accept_at_exact_one_hour_boundary() {
+    // expiry_secs below min → clamped to 1h; accept at exactly 1h → succeeds (inclusive boundary)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let below_min = 30u64; // 30 seconds — well below 1h minimum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &below_min,
+    );
+
+    // Accept at exactly 1h (the clamped minimum) — should succeed (inclusive)
+    let one_hour = 60u64 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + one_hour);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "min-clamped expiry should accept at exactly 1h boundary");
+}
+
+#[test]
+fn issuer_transfer_max_clamp_accept_within_thirty_day_window() {
+    // expiry_secs above max → clamped to 30 days; accept at 15 days → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let above_max = 999u64 * 24 * 60 * 60; // 999 days — above 30-day maximum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &above_max,
+    );
+
+    // Accept at 15 days — well within the clamped 30-day window
+    let fifteen_days = 15u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + fifteen_days);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "max-clamped expiry should accept within 30-day window");
+}
+
+#[test]
+fn replace_issuer_transfer_preserves_custom_expiry() {
+    // propose_transfer_with_expiry(2h) → replace → accept at 1h → still succeeds (expiry preserved)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer_1,
+        &two_hours,
+    );
+
+    // Replace the pending transfer (should preserve the 2h expiry)
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+
+    // Accept at 1h — should succeed because the 2h expiry was preserved
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60);
+    let result = client.try_accept_issuer_transfer(&new_issuer_2, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "replace should preserve original custom expiry");
+}
+
+#[test]
+fn get_pending_issuer_transfer_details_returns_expiry() {
+    // propose_transfer_with_expiry(2h) → get_pending_issuer_transfer_details → expiry_secs == 2h
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    let details = client
+        .get_pending_transfer_details(&issuer, &symbol_short!("def"), &token)
+        .expect("should have pending transfer details");
+    assert_eq!(details.new_issuer, new_issuer);
+    assert_eq!(details.expiry_secs, two_hours, "expiry_secs should match the proposed value");
+}
+
+#[test]
+fn get_pending_issuer_transfer_details_returns_none_when_no_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let _ = env;
+    let result = client.get_pending_transfer_details(&issuer, &symbol_short!("def"), &token);
+    assert!(result.is_none(), "should return None when no transfer is pending");
 }
 
 // ── Security and abuse prevention tests ──────────────────────
@@ -7208,6 +7634,7 @@ fn issuer_transfer_new_issuer_can_set_concentration_limit() {
         &token,
         &5_000,
         &true,
+        &0u64,
     );
     assert!(result.is_ok());
 }
@@ -7341,7 +7768,7 @@ fn issuer_transfer_new_issuer_can_report_concentration() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let new_issuer = Address::generate(&env);
 
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &6_000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &6_000, &false, &0u64);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
@@ -8104,8 +8531,8 @@ proptest! {
                 TestOperation::ReportRevenue { amount, period_id, override_existing } => {
                     let _ = client.try_report_revenue(&issuer, &ns, &token, &token, &amount, &period_id, &override_existing);
                 }
-                TestOperation::SetConcentrationLimit { max_bps, enforce: e } => {
-                    let _ = client.try_set_concentration_limit(&issuer, &ns, &token, &max_bps, &e);
+                TestOperation::SetConcentrationLimit { max_bps, enforce: e, max_staleness_secs } => {
+                    let _ = client.try_set_concentration_limit(&issuer, &ns, &token, &max_bps, &e, &max_staleness_secs);
                 }
                 TestOperation::ReportConcentration { concentration_bps } => {
                     let _ = client.try_report_concentration(&issuer, &ns, &token, &concentration_bps);
@@ -8115,7 +8542,7 @@ proptest! {
         }
         
         // Set target configuration
-        client.set_concentration_limit(&issuer, &ns, &token.clone(), &limit_bps, &enforce);
+        client.set_concentration_limit(&issuer, &ns, &token.clone(), &limit_bps, &enforce, &0u64);
         
         // Report concentration over limit
         client.report_concentration(&issuer, &ns, &token.clone(), &conc_bps);
@@ -10317,7 +10744,7 @@ mod regression {
     fn set_concentration_limit_emits_event() {
         let (env, client, issuer, token, _) = setup_with_offering();
         let before = env.events().all().len();
-        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5_000, &true);
+        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5_000, &true, &0u64);
         assert!(env.events().all().len() > before);
     }
 
