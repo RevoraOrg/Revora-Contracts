@@ -47,6 +47,18 @@ pub fn any_positive_amount() -> impl Strategy<Value = i128> {
     1i128..=100_000_000
 }
 
+/// Bounded fuzz amount for `compute_share` decomposition tests (Issue #411).
+///
+/// Range: `[i128::MIN/2, i128::MAX/2]`.
+///
+/// This range avoids saturation in the reference decomposition formula while
+/// still covering large positive and negative values, zero, and ±1. Values
+/// outside this range are covered by the explicit boundary-seed tests in
+/// `test_compute_share_decomposition_prop`.
+pub fn arb_fuzz_decomposition_amount() -> impl Strategy<Value = i128> {
+    (i128::MIN / 2)..=(i128::MAX / 2)
+}
+
 /// Any non-negative amount (0 .. 100 000 000).
 pub fn arb_non_negative_amount() -> impl Strategy<Value = i128> {
     0i128..=100_000_000
@@ -131,8 +143,8 @@ pub enum TestOperation {
     BlacklistAdd { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
     /// `blacklist_remove(caller, issuer, namespace, token, investor)`
     BlacklistRemove { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
-    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce)`
-    SetConcentrationLimit { max_bps: u32, enforce: bool },
+    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce, max_staleness_secs)`
+    SetConcentrationLimit { max_bps: u32, enforce: bool, max_staleness_secs: u64 },
     /// `report_concentration(issuer, namespace, token, concentration_bps)`
     ReportConcentration { concentration_bps: u32 },
     /// `freeze()` — admin-only global freeze
@@ -186,8 +198,9 @@ pub fn arb_blacklist_remove() -> impl Strategy<Value = TestOperation> {
 
 /// Strategy for a single `SetConcentrationLimit` operation.
 pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
-    (arb_valid_bps(), any::<bool>())
-        .prop_map(|(max_bps, enforce)| TestOperation::SetConcentrationLimit { max_bps, enforce })
+    (arb_valid_bps(), any::<bool>()).prop_map(|(max_bps, enforce)| {
+        TestOperation::SetConcentrationLimit { max_bps, enforce, max_staleness_secs: 0 }
+    })
 }
 
 /// Strategy for any single valid operation (uniform distribution across all variants).

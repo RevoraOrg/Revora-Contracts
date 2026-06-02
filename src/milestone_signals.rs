@@ -244,7 +244,7 @@ fn milestone_concentration_enforcement_blocks_revenue_report() {
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
     client.report_concentration(&issuer, &ns, &token, &6_000u32);
 
     assert!(
@@ -267,7 +267,7 @@ fn milestone_concentration_at_limit_allows_revenue_report() {
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
     client.report_concentration(&issuer, &ns, &token, &5_000u32);
 
     client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
@@ -283,7 +283,7 @@ fn milestone_concentration_warning_does_not_block_report() {
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false);
+    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64);
     client.report_concentration(&issuer, &ns, &token, &8_000u32);
 
     client.report_revenue(&issuer, &ns, &token, &payout, &500i128, &1u64, &false);
@@ -303,7 +303,7 @@ fn milestone_concentration_warning_event_emitted() {
     let (issuer, token, _payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false);
+    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64);
     client.report_concentration(&issuer, &ns, &token, &8_000u32);
 
     assert!(
@@ -320,7 +320,7 @@ fn milestone_concentration_one_bps_over_limit_rejected() {
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
     client.report_concentration(&issuer, &ns, &token, &5_001u32);
 
     let result = client.try_report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
@@ -338,7 +338,7 @@ fn milestone_concentration_testnet_mode_bypasses_enforcement() {
     // Enable testnet mode (requires admin auth)
     client.set_testnet_mode(&true);
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
     client.report_concentration(&issuer, &ns, &token, &6_000u32);
 
     // Should succeed despite being over limit

@@ -164,6 +164,9 @@ pub enum RevoraError {
     ///
     /// Wire value: next available stable discriminant.
     MissingReportForOverride = 47,
+    /// Concentration data is missing or older than `max_staleness_secs` and enforcement is on.
+    /// Wire value: 49. Stable since v1.
+    StaleConcentrationData = 49,
 }
 
 pub mod vesting;
@@ -172,6 +175,8 @@ pub mod vesting;
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_duplicates;
+#[cfg(test)]
+mod test_override_audit_trail;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
@@ -222,6 +227,7 @@ const EVENT_REVENUE_REPORT_INITIAL_ASSET: Symbol = symbol_short!("rev_inia");
 const EVENT_REVENUE_REPORT_OVERRIDE: Symbol = symbol_short!("rev_ovrd");
 const EVENT_REVENUE_REPORT_OVERRIDE_ASSET: Symbol = symbol_short!("rev_ovra");
 const EVENT_REVENUE_REPORT_REJECTED: Symbol = symbol_short!("rev_rej");
+const EVENT_REVENUE_REPORT_MISSING_OVERRIDE: Symbol = symbol_short!("rev_omiss");
 const EVENT_REVENUE_REPORT_REJECTED_ASSET: Symbol = symbol_short!("rev_reja");
 pub const EVENT_SCHEMA_VERSION_V2: u32 = 2;
 
@@ -275,6 +281,7 @@ pub struct Proposal {
 const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
 
 const EVENT_INIT: Symbol = symbol_short!("init");
+const EVENT_LAYOUT_VERSION: Symbol = symbol_short!("layout_v");
 const EVENT_PAUSED: Symbol = symbol_short!("paused");
 const EVENT_UNPAUSED: Symbol = symbol_short!("unpaused");
 /// Versioned pause event carrying the tier (SoftPaused / HardPaused / NotPaused).
@@ -306,6 +313,7 @@ const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
+const EVENT_TYPE_REV_OMISS: Symbol = symbol_short!("rv_omiss");
 const EVENT_TYPE_REV_REP: Symbol = symbol_short!("rv_rep");
 const EVENT_TYPE_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_REPORT_WINDOW_SET: Symbol = symbol_short!("rep_win");
@@ -350,8 +358,12 @@ const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
 const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
 const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
-/// Issuer transfer expiry: 7 days in seconds.
+/// Issuer transfer expiry: 7 days in seconds (default).
 const ISSUER_TRANSFER_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+/// Minimum configurable issuer transfer expiry: 1 hour.
+const MIN_ISSUER_TRANSFER_EXPIRY_SECS: u64 = 60 * 60;
+/// Maximum configurable issuer transfer expiry: 30 days.
+const MAX_ISSUER_TRANSFER_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
 const EVENT_CLAIM: Symbol = symbol_short!("claim");
 const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 // v1 versioned event symbols (legacy)
@@ -361,6 +373,8 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 // â”€â”€ Data structures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /// Contract version identifier (#23). Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: u32 = 23;
+/// Persistent storage layout version. Bump when adding/renaming DataKey variants.
+pub const STORAGE_LAYOUT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +416,11 @@ pub struct ConcentrationLimitConfig {
     pub max_bps: u32,
     /// If true, `report_revenue` will fail if current concentration exceeds `max_bps`.
     pub enforce: bool,
+    /// Maximum age (in seconds) of a `report_concentration` call before it is considered stale.
+    /// When `enforce` is true and this is > 0, `report_revenue` rejects if no concentration has
+    /// been reported or the last report is older than this many seconds. 0 = disabled (no staleness
+    /// check).
+    pub max_staleness_secs: u64,
 }
 
 /// Per-offering investment constraints (#97). Min/max stake per investor; off-chain enforced.
@@ -435,12 +454,33 @@ pub struct AuditReconciliationResult {
     pub is_saturated: bool,
 }
 
+/// One entry in a distribution proof: the holder's address, their share in basis points,
+/// and the normalized payout computed by the contract for a specific period.
+///
+/// Returned by `prove_distribution_for_period`. The ordering of entries in the returned
+/// vector matches the order of the `holders` input slice exactly, enabling deterministic
+/// digest verification by off-chain indexers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DistributionEntry {
+    /// The holder's address.
+    pub holder: Address,
+    /// The holder's share in basis points (0–10000).
+    pub share_bps: u32,
+    /// The normalized payout computed by the contract for this period.
+    /// Equals `compute_share(normalize_amount(period_revenue, decimals), share_bps, rounding_mode)`.
+    /// Zero when `share_bps == 0` or `period_revenue == 0`.
+    pub normalized_payout: i128,
+}
+
 /// Pending issuer transfer details including expiry tracking.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingTransfer {
     pub new_issuer: Address,
     pub timestamp: u64,
+    /// Effective expiry in seconds. 0 means use ISSUER_TRANSFER_EXPIRY_SECS default.
+    pub expiry_secs: u64,
 }
 
 /// Cross-offering aggregated metrics (#39).
@@ -603,6 +643,8 @@ pub enum DataKey {
     ConcentrationLimit(OfferingId),
     /// Per-offering: last reported concentration in bps.
     CurrentConcentration(OfferingId),
+    /// Per-offering: ledger timestamp of the last report_concentration call.
+    ConcentrationReportedAt(OfferingId),
     /// Per-offering: audit summary.
     AuditSummary(OfferingId),
     /// Per-offering: rounding mode for share math.
@@ -678,6 +720,8 @@ pub enum DataKey {
     EventOnlyMode,
     /// Last migrated storage version for upgrade hooks.
     DeployedVersion,
+    /// Persistent storage layout version stamp. Set during `initialize` and migrations.
+    StorageLayoutVersion,
 
     /// Platform fee in basis points.
     PlatformFeeBps,
@@ -728,16 +772,6 @@ pub enum DataKey2 {
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
 
-    /// Metadata reference for an offering.
-    OfferingMetadata(OfferingId),
-    /// Per-offering minimum revenue threshold (#25).
-    MinRevenueThreshold(OfferingId),
-    /// Total deposited revenue for an offering (#39).
-    DepositedRevenue(OfferingId),
-    /// Per-offering supply cap (#96). 0 = no cap.
-    SupplyCap(OfferingId),
-    /// Per-offering investment constraints (#97).
-    InvestmentConstraints(OfferingId),
     /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
     BlacklistSizeLimit(OfferingId),
 }
@@ -999,9 +1033,36 @@ impl RevoraRevenueShare {
 
     /// Returns error if contract is frozen (#32). Call at start of state-mutating entrypoints.
     fn require_not_frozen(env: &Env) -> Result<(), RevoraError> {
+        // Ensure on-chain storage layout is compatible with this binary.
+        Self::assert_storage_layout_compatible(env)?;
+
         let key = DataKey::Frozen;
         if env.storage().persistent().get::<DataKey, bool>(&key).unwrap_or(false) {
             return Err(RevoraError::ContractFrozen);
+        }
+        Ok(())
+    }
+
+    /// Ensure the on-chain storage layout is compatible with this binary.
+    ///
+    /// - If the on-chain layout version is greater than the compiled `STORAGE_LAYOUT_VERSION`,
+    ///   reject with `MigrationDowngradeNotAllowed`.
+    /// - If the on-chain layout version is absent or older, stamp the storage with the
+    ///   compiled `STORAGE_LAYOUT_VERSION` and emit `EVENT_LAYOUT_VERSION` to signal migration.
+    fn assert_storage_layout_compatible(env: &Env) -> Result<(), RevoraError> {
+        let key = DataKey::StorageLayoutVersion;
+        if let Some(stored_v) = env.storage().persistent().get::<DataKey, u32>(&key) {
+            if stored_v > STORAGE_LAYOUT_VERSION {
+                return Err(RevoraError::MigrationDowngradeNotAllowed);
+            }
+            if stored_v < STORAGE_LAYOUT_VERSION {
+                env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
+                env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+            }
+        } else {
+            // No layout stamp found: stamp it now (first-time initialize/migration path).
+            env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
+            env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
         }
         Ok(())
     }
@@ -1615,6 +1676,25 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Read-only accessor for the on-chain storage layout version stamp.
+    pub fn storage_layout_version(env: Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey::StorageLayoutVersion)
+    }
+
+    /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
+    /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
+    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &v);
+        env.events().publish((EVENT_LAYOUT_VERSION,), v);
+        Ok(())
+    }
+
     pub fn get_pending_issuer_transfer(
         env: Env,
         issuer: Address,
@@ -1626,6 +1706,20 @@ impl RevoraRevenueShare {
             .persistent()
             .get::<DataKey, PendingTransfer>(&DataKey::PendingIssuerTransfer(offering_id))
             .map(|pending| pending.new_issuer)
+    }
+
+    /// Return full details of a pending issuer transfer, including the proposed new issuer,
+    /// the proposal timestamp, and the effective expiry in seconds (0 = default 7 days).
+    pub fn get_pending_transfer_details(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<PendingTransfer> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey, PendingTransfer>(&DataKey::PendingIssuerTransfer(offering_id))
     }
 
     fn find_pending_transfer_for_new_issuer(
@@ -1675,6 +1769,33 @@ impl RevoraRevenueShare {
         token: Address,
         new_issuer: Address,
     ) -> Result<(), RevoraError> {
+        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, 0)
+    }
+
+    /// Propose an issuer transfer with a custom expiry window.
+    ///
+    /// `expiry_secs` is clamped to `[MIN_ISSUER_TRANSFER_EXPIRY_SECS, MAX_ISSUER_TRANSFER_EXPIRY_SECS]`.
+    /// Pass `0` to use the default `ISSUER_TRANSFER_EXPIRY_SECS` (7 days).
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_transfer_with_expiry(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+        expiry_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, expiry_secs)
+    }
+
+    fn do_propose_issuer_transfer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        new_issuer: Address,
+        expiry_secs: u64,
+    ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
@@ -1696,10 +1817,22 @@ impl RevoraRevenueShare {
             return Err(RevoraError::IssuerTransferPending);
         }
 
+        // Clamp expiry: 0 means default; non-zero is clamped to [MIN, MAX].
+        let effective_expiry = if expiry_secs == 0 {
+            0
+        } else {
+            expiry_secs.max(MIN_ISSUER_TRANSFER_EXPIRY_SECS).min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
+        };
+
         let timestamp = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+        env.storage().persistent().set(
+            &key,
+            &PendingTransfer {
+                new_issuer: new_issuer.clone(),
+                timestamp,
+                expiry_secs: effective_expiry,
+            },
+        );
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_PROPOSED, issuer.clone(), namespace.clone(), token.clone()),
             (new_issuer.clone(), timestamp),
@@ -1737,9 +1870,15 @@ impl RevoraRevenueShare {
 
         let pending: PendingTransfer = env.storage().persistent().get(&key).unwrap();
         let timestamp = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&key, &PendingTransfer { new_issuer: new_issuer.clone(), timestamp });
+        // Preserve the original expiry_secs so the replacement inherits the same window.
+        env.storage().persistent().set(
+            &key,
+            &PendingTransfer {
+                new_issuer: new_issuer.clone(),
+                timestamp,
+                expiry_secs: pending.expiry_secs,
+            },
+        );
 
         env.events().publish(
             (EVENT_ISSUER_TRANSFER_CANCELLED, issuer.clone(), namespace.clone(), token.clone()),
@@ -1773,7 +1912,12 @@ impl RevoraRevenueShare {
             .ok_or(RevoraError::NoTransferPending)?;
 
         let current_timestamp = env.ledger().timestamp();
-        if current_timestamp > pending.timestamp.saturating_add(ISSUER_TRANSFER_EXPIRY_SECS) {
+        let effective_expiry = if pending.expiry_secs == 0 {
+            ISSUER_TRANSFER_EXPIRY_SECS
+        } else {
+            pending.expiry_secs
+        };
+        if current_timestamp > pending.timestamp.saturating_add(effective_expiry) {
             return Err(RevoraError::IssuerTransferExpired);
         }
 
@@ -1878,6 +2022,36 @@ impl RevoraRevenueShare {
             .persistent()
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
 
+        // Migrate configuration state linked to the old OfferingId (#1344)
+        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+            env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
+        }
+        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+            env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
+        }
+        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
+            env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
+        }
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        }
+        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+            env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
+        }
+        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+            env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
+        }
+        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
+            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+            env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
+        }
+
         env.storage().persistent().remove(&DataKey::PendingIssuerTransfer(offering_id.clone()));
 
         env.events().publish(
@@ -1979,6 +2153,12 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Paused, &PauseState::NotPaused);
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
+        // Stamp storage layout version for future compatibility checks.
+        env.storage()
+            .persistent()
+            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
 
@@ -2467,6 +2647,23 @@ impl RevoraRevenueShare {
                     // reject report if current concentration exceeds the limit.
                     // Allowed: current <= max_bps. Rejected: current > max_bps.
                     if config.enforce && config.max_bps > 0 {
+                        // Staleness guard: if max_staleness_secs > 0, require a fresh report.
+                        if config.max_staleness_secs > 0 {
+                            let reported_at: Option<u64> = env
+                                .storage()
+                                .persistent()
+                                .get(&DataKey::ConcentrationReportedAt(offering_id.clone()));
+                            match reported_at {
+                                None => return Err(RevoraError::StaleConcentrationData),
+                                Some(ts) => {
+                                    if current_timestamp.saturating_sub(ts)
+                                        > config.max_staleness_secs
+                                    {
+                                        return Err(RevoraError::StaleConcentrationData);
+                                    }
+                                }
+                            }
+                        }
                         let curr_key = DataKey::CurrentConcentration(offering_id.clone());
                         let current: u32 = env.storage().persistent().get(&curr_key).unwrap_or(0);
                         if current > config.max_bps {
@@ -2629,6 +2826,29 @@ impl RevoraRevenueShare {
                 }
                 None => {
                     if override_existing {
+                        env.events().publish(
+                            (
+                                EVENT_REVENUE_REPORT_MISSING_OVERRIDE,
+                                issuer.clone(),
+                                namespace.clone(),
+                                token.clone(),
+                            ),
+                            (amount, period_id),
+                        );
+                        env.events().publish(
+                            (
+                                EVENT_INDEXED_V2,
+                                EventIndexTopicV2 {
+                                    version: 2,
+                                    event_type: EVENT_TYPE_REV_OMISS,
+                                    issuer: issuer.clone(),
+                                    namespace: namespace.clone(),
+                                    token: token.clone(),
+                                    period_id,
+                                },
+                            ),
+                            (amount, period_id, payout_asset.clone()),
+                        );
                         return Err(RevoraError::MissingReportForOverride);
                     }
                     // preserve existing initial-report behavior when override_existing=false
@@ -3806,6 +4026,9 @@ impl RevoraRevenueShare {
     /// ### Parameters
     /// - `max_bps`: The maximum allowed share for a single holder in basis points.
     /// - `enforce`: If true, `report_revenue` will fail if current concentration > `max_bps`.
+    /// - `max_staleness_secs`: When > 0 and `enforce` is true, `report_revenue` rejects if no
+    ///   concentration has been reported or the last report is older than this many seconds.
+    ///   Set to 0 to disable the staleness check.
     ///
     /// ### Constraints
     /// - `max_bps` must be <= 10,000.
@@ -3816,6 +4039,7 @@ impl RevoraRevenueShare {
         token: Address,
         max_bps: u32,
         enforce: bool,
+        max_staleness_secs: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -3845,7 +4069,9 @@ impl RevoraRevenueShare {
 
         if !Self::is_event_only(&env) {
             let key = DataKey::ConcentrationLimit(offering_id);
-            env.storage().persistent().set(&key, &ConcentrationLimitConfig { max_bps, enforce });
+            env.storage()
+                .persistent()
+                .set(&key, &ConcentrationLimitConfig { max_bps, enforce, max_staleness_secs });
         }
 
         Self::emit_v2_event(
@@ -3926,6 +4152,10 @@ impl RevoraRevenueShare {
             env.storage()
                 .persistent()
                 .set(&DataKey::CurrentConcentration(offering_id.clone()), &concentration_bps);
+            env.storage().persistent().set(
+                &DataKey::ConcentrationReportedAt(offering_id.clone()),
+                &env.ledger().timestamp(),
+            );
             env.events().publish(
                 (EVENT_CONCENTRATION_REPORTED, issuer, namespace, token),
                 concentration_bps,
@@ -5253,10 +5483,118 @@ impl RevoraRevenueShare {
 
         Ok(total_payout)
     }
+
+    /// Return a deterministic per-holder distribution proof for a single period.
+    ///
+    /// For each address in `holders` (capped at `MAX_CHUNK_PERIODS`), the contract reads
+    /// the stored `HolderShare`, normalizes the period revenue to 7-decimal canonical units,
+    /// and computes the payout using the offering's persisted `RoundingMode`. The result
+    /// vector preserves the input order exactly, so off-chain indexers can reproduce the
+    /// digest by applying the same ordering.
+    ///
+    /// ### Digest construction
+    /// `SHA-256(XDR(issuer) || XDR(namespace) || XDR(token) || XDR(period_id) || XDR(entries))`
+    /// where `entries` is the `Vec<DistributionEntry>` returned alongside the digest.
+    /// An unknown `period_id` returns zero payouts; callers detect this by checking
+    /// that all `normalized_payout` values are zero.
+    ///
+    /// ### Bounds
+    /// `holders` is silently capped at `MAX_CHUNK_PERIODS` (200).
+    ///
+    /// ### Security
+    /// - Read-only: no storage writes, no auth required.
+    /// - Digest covers contract-computed values only; cannot be forged without
+    ///   changing on-chain `HolderShare` or `PeriodRevenue` state.
+    pub fn prove_distribution_for_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+        holders: Vec<Address>,
+    ) -> (Vec<DistributionEntry>, BytesN<32>) {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Look up period revenue; treat missing period as zero revenue (unknown period).
+        let revenue: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PeriodRevenue(offering_id.clone(), period_id))
+            .unwrap_or(0);
+
+        let decimals = Self::get_payment_token_decimals(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+        );
+        let normalized_revenue = Self::normalize_amount(revenue, decimals);
+
+        let mode =
+            Self::get_rounding_mode(env.clone(), issuer.clone(), namespace.clone(), token.clone());
+
+        // Cap input to MAX_CHUNK_PERIODS to bound compute cost.
+        let cap = core::cmp::min(holders.len(), MAX_CHUNK_PERIODS);
+        let mut entries: Vec<DistributionEntry> = Vec::new(&env);
+        for i in 0..cap {
+            let holder = holders.get(i).unwrap();
+            let share_bps = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0u32);
+            let normalized_payout =
+                Self::compute_share(env.clone(), normalized_revenue, share_bps, mode);
+            entries.push_back(DistributionEntry { holder, share_bps, normalized_payout });
+        }
+
+        // Build digest: SHA-256 over XDR of (issuer, namespace, token, period_id, entries).
+        let mut payload = Bytes::new(&env);
+        payload.append(&issuer.to_xdr(&env));
+        payload.append(&namespace.to_xdr(&env));
+        payload.append(&token.to_xdr(&env));
+        payload.append(&period_id.to_xdr(&env));
+        payload.append(&entries.clone().to_xdr(&env));
+        let digest: BytesN<32> = env.crypto().sha256(&payload).into();
+
+        (entries, digest)
+    }
+
+    /// Return unclaimed period IDs for a holder on an offering.
+    /// Ordering: by deposit index (creation order), deterministic.
+    pub fn get_pending_periods(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Vec<u64> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder);
+        let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+
+        let mut periods = Vec::new(&env);
+        for i in start_idx..period_count {
+            let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);
+            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
+            if period_id == 0 {
+                continue;
+            }
+            periods.push_back(period_id);
+        }
+        periods
+    }
 }
 
 // â”€â”€ Holder shares, claims, admin, governance, and utility methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Plain impl block â€” excluded from the ABI spec to keep spec XDR within limit.
+#[contractimpl]
 impl RevoraRevenueShare {
     ///
     /// The share determines the percentage of a period's revenue the holder can claim.
@@ -5554,34 +5892,6 @@ impl RevoraRevenueShare {
     /// * `max_periods` - The maximum number of periods to claim in this call.
     ///
     /// # Events
-
-    /// Return unclaimed period IDs for a holder on an offering.
-    /// Ordering: by deposit index (creation order), deterministic (#38).
-    pub fn get_pending_periods(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        holder: Address,
-    ) -> Vec<u64> {
-        let offering_id = OfferingId { issuer, namespace, token };
-        let count_key = DataKey::PeriodCount(offering_id.clone());
-        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-
-        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder);
-        let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
-
-        let mut periods = Vec::new(&env);
-        for i in start_idx..period_count {
-            let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);
-            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
-            if period_id == 0 {
-                continue;
-            }
-            periods.push_back(period_id);
-        }
-        periods
-    }
 
     /// Read-only: return a page of pending period IDs for a holder, bounded by `limit`.
     /// Returns `(periods_page, next_cursor)` where `next_cursor` is `Some(next_index)` when more
