@@ -300,6 +300,8 @@ const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 /// Emitted when a period is sealed by `close_period`.
 const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
+/// Emitted by `atomic_close_period` — single boundary event carrying snapshot and accrual sub-hashes.
+const EVENT_PERIOD_SEALED: Symbol = symbol_short!("per_seald");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
@@ -5551,6 +5553,166 @@ impl RevoraRevenueShare {
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
+    }
+
+    /// Atomically seal a period in a single transaction by:
+    ///
+    /// 1. **Finalising the snapshot** — recomputes `SHA-256(index_xdr || holder_xdr ||
+    ///    shares_bps_xdr)` over every applied holder slot and asserts it matches the
+    ///    committed `content_hash`.
+    /// 2. **Committing the accrual index** — derives an accrual sub-hash over
+    ///    `SHA-256(revenue_amount_xdr || payout_asset_xdr)` so indexers can audit the
+    ///    revenue figure without reading raw storage.
+    /// 3. **Sealing the report window** — writes the `ClosedPeriod` key, preventing
+    ///    any further overrides for this period.
+    /// 4. **Emitting a single `period_sealed` boundary event** carrying both sub-hashes
+    ///    so indexers see one event instead of three.
+    ///
+    /// ### Atomicity guarantee
+    ///
+    /// All three writes (snapshot finalization flag, accrual hash, closed-period key)
+    /// happen inside a single Soroban transaction invocation.  If any validation step
+    /// fails (hash mismatch, missing report, already closed, etc.) the function returns
+    /// an error before any write is committed, leaving state unchanged.
+    ///
+    /// ### Ordering invariants
+    ///
+    /// - `commit_snapshot` and `apply_snapshot_shares` must have been called for
+    ///   `snapshot_ref == period_id` before calling this function.
+    /// - `report_revenue` must have been called for `period_id` before calling this
+    ///   function.
+    /// - `atomic_close_period` is idempotent on the snapshot-finalization flag: if the
+    ///   snapshot was already finalized by a prior `finalize_snapshot` call, the hash
+    ///   check is skipped and the flag is left as-is.
+    ///
+    /// ### Parameters
+    /// - `issuer`    — offering issuer; must provide auth.
+    /// - `namespace` — offering namespace.
+    /// - `token`     — offering token.
+    /// - `period_id` — period to seal (must be > 0).
+    ///
+    /// ### Errors
+    /// - `ContractFrozen` / `ContractPaused`  — contract not operational.
+    /// - `OfferingNotFound`                   — offering absent or caller not current issuer.
+    /// - `InvalidPeriodId`                    — `period_id == 0`.
+    /// - `SnapshotNotEnabled`                 — snapshot distribution not enabled.
+    /// - `OutdatedSnapshot`                   — no snapshot entry for this `period_id`.
+    /// - `SnapshotHashMismatch`               — recomputed digest != committed `content_hash`.
+    /// - `MissingReportForOverride`           — no revenue report for this `period_id`.
+    /// - `PeriodAlreadyClosed`                — period already sealed.
+    pub fn atomic_close_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // ── Step 1: snapshot must be enabled ────────────────────────────────
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+            .unwrap_or(false)
+        {
+            return Err(RevoraError::SnapshotNotEnabled);
+        }
+
+        // ── Step 2: period must not already be sealed ────────────────────────
+        let closed_key = DataKey2::ClosedPeriod(offering_id.clone(), period_id);
+        if env.storage().persistent().has(&closed_key) {
+            return Err(RevoraError::PeriodAlreadyClosed);
+        }
+
+        // ── Step 3: finalise snapshot (validate hash, set flag) ──────────────
+        // Load the committed snapshot entry — fails if commit_snapshot was never called.
+        let entry_key = DataKey::SnapshotEntry(offering_id.clone(), period_id);
+        let entry: SnapshotEntry =
+            env.storage().persistent().get(&entry_key).ok_or(RevoraError::OutdatedSnapshot)?;
+
+        if !Self::is_snapshot_finalized(&env, &offering_id, period_id) {
+            let slot_count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SnapshotHolderCount(offering_id.clone(), period_id))
+                .unwrap_or(0);
+
+            let mut digest_input = Bytes::new(&env);
+            for index in 0..slot_count {
+                let (holder, share_bps): (Address, u32) = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SnapshotHolder(offering_id.clone(), period_id, index))
+                    .ok_or(RevoraError::SnapshotHashMismatch)?;
+                digest_input.append(&index.to_xdr(&env));
+                digest_input.append(&holder.to_xdr(&env));
+                digest_input.append(&share_bps.to_xdr(&env));
+            }
+
+            let computed_hash = env.crypto().sha256(&digest_input).to_bytes();
+            if computed_hash != entry.content_hash {
+                return Err(RevoraError::SnapshotHashMismatch);
+            }
+
+            // All validation passed — write the finalization flag.
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotFinalized(offering_id.clone(), period_id), &true);
+        }
+
+        // ── Step 4: accrue index — derive sub-hash from report ───────────────
+        // Verify a revenue report exists for this period.
+        let reports_key = DataKey::RevenueReports(offering_id.clone());
+        let reports: Map<u64, (i128, u64)> = env
+            .storage()
+            .persistent()
+            .get(&reports_key)
+            .ok_or(RevoraError::MissingReportForOverride)?;
+        let (revenue_amount, _) =
+            reports.get(period_id).ok_or(RevoraError::MissingReportForOverride)?;
+
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Accrual sub-hash: SHA-256( revenue_amount_xdr || payout_asset_xdr )
+        let mut accrual_input = Bytes::new(&env);
+        accrual_input.append(&revenue_amount.to_xdr(&env));
+        accrual_input.append(&offering.payout_asset.to_xdr(&env));
+        let accrual_hash: BytesN<32> = env.crypto().sha256(&accrual_input).to_bytes();
+
+        // ── Step 5: seal the period ──────────────────────────────────────────
+        let closed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&closed_key, &closed_at);
+
+        // ── Step 6: emit single boundary event ──────────────────────────────
+        // One event instead of three, carrying both sub-hashes for indexers.
+        env.events().publish(
+            (EVENT_PERIOD_SEALED, issuer, namespace, token),
+            (period_id, entry.content_hash, accrual_hash, closed_at),
+        );
+
+        Ok(())
     }
 }
 
