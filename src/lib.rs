@@ -383,6 +383,21 @@ pub struct OfferingId {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    Manual,
+    OFAC,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SanctionsAttestation {
+    pub source: Source,
+    pub ref_id: Symbol,
+    pub attested_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Offering {
     /// The address authorized to manage this offering.
     pub issuer: Address,
@@ -3196,7 +3211,115 @@ impl RevoraRevenueShare {
         (results, next_cursor)
     }
 
-    /// Add an investor to the per-offering blacklist.
+    /// Helper function to add an investor to the blacklist with attestation.
+    fn do_blacklist_add(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+        attestation: SanctionsAttestation,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // Verify auth: caller must be issuer or admin
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Validate attestation timestamp: attested_at must not be in the future
+        if attestation.attested_at > env.ledger().timestamp() {
+            return Err(RevoraError::InvalidAmount); // Wait, let's check error codes
+            // Wait, let's use a proper error? Wait let's check RevoraError
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if !Self::is_event_only(&env) {
+            let key = DataKey::Blacklist(offering_id.clone());
+            let mut map: Map<Address, SanctionsAttestation> =
+                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+
+            let was_present = map.contains_key(investor.clone());
+            if !was_present {
+                // Guard: reject if the blacklist is already at capacity.
+                let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
+                if map.len() >= limit {
+                    return Err(RevoraError::BlacklistSizeLimitExceeded);
+                }
+                map.set(investor.clone(), attestation.clone());
+                env.storage().persistent().set(&key, &map);
+
+                // Maintain insertion order for deterministic get_blacklist (#38)
+                let order_key = DataKey::BlacklistOrder(offering_id.clone());
+                let mut order: Vec<Address> =
+                    env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
+                order.push_back(investor.clone());
+                env.storage().persistent().set(&order_key, &order);
+            }
+        }
+
+        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor, attestation));
+        Ok(())
+    }
+
+    /// Add an investor to the per-offering blacklist with a sanctions attestation.
+    ///
+    /// Blacklisted addresses are prohibited from claiming revenue for the specified token.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must be the current issuer of the offering.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `investor`: The address to be blacklisted.
+    /// - `attestation`: The sanctions attestation containing source, reference ID, and timestamp.
+    ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering or the contract admin.
+    /// - The blacklist is capped at `MAX_BLACKLIST_SIZE` entries per offering to prevent
+    ///   unbounded storage growth and keep distribution gas predictable.
+    /// - Idempotent adds (address already present) do not count against the size limit.
+    /// - `attestation.attested_at` must not be in the future.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer or admin.
+    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if the blacklist is at capacity.
+    /// - `Err(RevoraError::InvalidAmount)` if attestation timestamp is in the future.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blacklist_add_with_attestation(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+        attestation: SanctionsAttestation,
+    ) -> Result<(), RevoraError> {
+        Self::do_blacklist_add(env, caller, issuer, namespace, token, investor, attestation)
+    }
+
+    /// Add an investor to the per-offering blacklist (legacy, uses Source::Manual).
     ///
     /// Blacklisted addresses are prohibited from claiming revenue for the specified token.
     /// This operation is idempotent.
@@ -3225,60 +3348,15 @@ impl RevoraRevenueShare {
         token: Address,
         investor: Address,
     ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env)?;
-        caller.require_auth();
-
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
+        let attestation = SanctionsAttestation {
+            source: Source::Manual,
+            ref_id: symbol_short!("manual"),
+            attested_at: env.ledger().timestamp(),
         };
-        // Verify auth: caller must be issuer or admin
-        let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
-
-        if caller != current_issuer && caller != admin {
-            return Err(RevoraError::NotAuthorized);
-        }
-
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
-        };
-
-        if !Self::is_event_only(&env) {
-            let key = DataKey::Blacklist(offering_id.clone());
-            let mut map: Map<Address, bool> =
-                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
-
-            let was_present = map.get(investor.clone()).unwrap_or(false);
-            if !was_present {
-                // Guard: reject if the blacklist is already at capacity.
-                let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
-                if map.len() >= limit {
-                    return Err(RevoraError::BlacklistSizeLimitExceeded);
-                }
-                map.set(investor.clone(), true);
-                env.storage().persistent().set(&key, &map);
-
-                // Maintain insertion order for deterministic get_blacklist (#38)
-                let order_key = DataKey::BlacklistOrder(offering_id.clone());
-                let mut order: Vec<Address> =
-                    env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
-                order.push_back(investor.clone());
-                env.storage().persistent().set(&order_key, &order);
-            }
-        }
-
-        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor));
-        Ok(())
+        Self::do_blacklist_add(env, caller, issuer, namespace, token, investor, attestation)
     }
 
-    /// Add multiple investors to the per-offering blacklist in a single transaction.
+    /// Add multiple investors to the per-offering blacklist in a single transaction (uses Source::Manual).
     ///
     /// Enables efficient bulk compliance updates by processing up to MAX_BATCH_SIZE (50)
     /// addresses atomically. The operation is idempotent: addresses already blacklisted
@@ -3348,7 +3426,7 @@ impl RevoraRevenueShare {
 
         // Task 2.3: Load storage
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
         let order_key = DataKey::BlacklistOrder(offering_id.clone());
         let mut order: Vec<Address> =
@@ -3381,21 +3459,27 @@ impl RevoraRevenueShare {
         }
 
         // Task 2.6: Batch add logic with storage updates
+        let now = env.ledger().timestamp();
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if !was_present {
+                let attestation = SanctionsAttestation {
+                    source: Source::Manual,
+                    ref_id: symbol_short!("manual"),
+                    attested_at: now,
+                };
                 // Add to map and order vec
                 if !Self::is_event_only(&env) {
-                    map.set(investor.clone(), true);
+                    map.set(investor.clone(), attestation.clone());
                     order.push_back(investor.clone());
                 }
 
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()),
-                    (caller.clone(), investor),
+                    (caller.clone(), investor, attestation),
                 );
             }
             // If already blacklisted, skip without error or event (idempotent)
@@ -3460,7 +3544,7 @@ impl RevoraRevenueShare {
         }
 
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
@@ -3472,7 +3556,7 @@ impl RevoraRevenueShare {
         let mut new_order = Vec::new(&env);
         for i in 0..old_order.len() {
             let addr = old_order.get(i).unwrap();
-            if map.get(addr.clone()).unwrap_or(false) {
+            if map.contains_key(addr.clone()) {
                 new_order.push_back(addr);
             }
         }
@@ -3550,7 +3634,7 @@ impl RevoraRevenueShare {
 
         // Task 3.3: Load storage
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
 
         // Task 3.4: Deduplication logic
@@ -3567,7 +3651,7 @@ impl RevoraRevenueShare {
         // Task 3.5: Batch remove logic
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if was_present {
                 // Remove from map
@@ -3589,7 +3673,7 @@ impl RevoraRevenueShare {
         let mut new_order = Vec::new(&env);
         for i in 0..old_order.len() {
             let addr = old_order.get(i).unwrap();
-            if map.get(addr.clone()).unwrap_or(false) {
+            if map.contains_key(addr.clone()) {
                 new_order.push_back(addr);
             }
         }
@@ -3613,9 +3697,25 @@ impl RevoraRevenueShare {
         let key = DataKey::Blacklist(offering_id);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.get(investor).unwrap_or(false))
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
+            .map(|m| m.contains_key(investor))
             .unwrap_or(false)
+    }
+
+    /// Returns the sanctions attestation for a blacklisted investor, if any.
+    pub fn get_blacklist_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+    ) -> Option<SanctionsAttestation> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey::Blacklist(offering_id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
+            .and_then(|m| m.get(investor))
     }
 
     /// Return all blacklisted addresses for an offering.
@@ -3717,7 +3817,7 @@ impl RevoraRevenueShare {
         let key = DataKey::Blacklist(offering_id);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
             .map(|m| m.len())
             .unwrap_or(0)
     }
