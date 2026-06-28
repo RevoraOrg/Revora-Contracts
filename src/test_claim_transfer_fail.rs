@@ -226,7 +226,7 @@ fn setup_claim_fail() -> (
         &10_000,
         &fail_token_id,
         &0,
-    );
+    , &None);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
     // Mint to issuer and deposit — transfer direction is issuer→contract, not yet failing
@@ -438,22 +438,24 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Register a second offering with a normal Stellar asset token
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
-
+    let payment_token_b = env.register_stellar_asset_contract_v2(admin_b.clone());
+    let payment_token_admin = token::StellarAssetClient::new(&env, &payment_token_b.address());
+    payment_token_admin.mint(&issuer, &100_000);
 
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
-
+        &payment_token_b.address(),
         &0,
-    );
+    , &None);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
     revora.deposit_revenue(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
-
+        &payment_token_b.address(),
         &100_000,
         &1,
     );

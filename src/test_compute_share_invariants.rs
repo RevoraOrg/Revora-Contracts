@@ -48,6 +48,9 @@
 
 #![cfg(test)]
 
+extern crate std;
+use std::format;
+
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -589,8 +592,8 @@ fn remainder_product_bound_holds_for_all_bps() {
         20_000,
         100_000,
         1_000_000,
-        i128::MAX / 10_000 * 10_000 + 9_999, // Max remainder
-        i128::MIN / 10_000 * 10_000 - 9_999,   // Min remainder
+        (i128::MAX / 10_000 - 1) * 10_000 + 9_999, // Max remainder near MAX
+        (i128::MIN / 10_000 + 1) * 10_000 - 9_999,   // Min remainder near MIN
     ];
 
     let bps_values = [1_u32, 100, 1_000, 5_000, 9_999, 10_000];
@@ -636,7 +639,7 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
     ];
 
     for &amount in &extreme_amounts {
-        for &bps in [1_u32, 5_000, 10_000] {
+        for bps in [1_u32, 5_000, 10_000] {
             let result = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
             // Should never panic and should always satisfy bounds
             assert_bounds(result, amount, &format!("Extreme amount={amount} bps={bps}"));

@@ -21,7 +21,7 @@ fn blacklist_add_many_gas_bound_worst_case() {
 
     // Initialize and register offering
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1000u32, &token, &0_i128);
+    client.register_offering(&issuer, &ns, &token, &1000u32, &token, &0_i128, &None);
 
     // Prefill blacklist to half the default cap (MAX_BLACKLIST_SIZE = 200 -> 100)
     let mut prefilled: Vec<Address> = Vec::new(&env);
