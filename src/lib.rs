@@ -150,7 +150,7 @@ pub enum RevoraError {
     /// Issuer transfer has expired.
     IssuerTransferExpired = 43,
     /// Transfer blocked because the offering has pre-cliff vesting schedules.
-    VestingTransferBlocked = 48,
+    VestingTransferBlocked = 52,
     /// Contract is paused.
     ContractPaused = 44,
     /// Blacklist size limit exceeded.
@@ -176,6 +176,12 @@ pub enum RevoraError {
     ///
     /// Wire value: 51. Stable since v1.
     FeeExceedsHolderShare = 51,
+
+    /// Concentration enforcement requires a fresh `report_concentration`, but the stored
+    /// concentration data is missing or older than the configured staleness window.
+    ///
+    /// Wire value: 53. Stable since v1.
+    StaleConcentrationData = 53,
 }
 
 pub mod vesting;
@@ -184,9 +190,9 @@ pub mod vesting;
 pub mod kani_harness;
 
 #[cfg(test)]
-mod test_compute_share_invariants;
-#[cfg(test)]
 mod test_claim_transfer_fail;
+#[cfg(test)]
+mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -642,11 +648,28 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
+/// Tiered pause state for the contract.
+///
+/// - `NotPaused`  – all operations open.
+/// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
+/// - `HardPaused` – all state-mutating operations blocked, including `claim`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PauseState {
+    NotPaused,
+    SoftPaused,
+    HardPaused,
+}
+
 /// Primary storage keys for core contract state.
 /// Split from the full key set to stay within the Soroban XDR union variant limit (â‰¤50).
+///
+/// Scoped to the crate: storage keys are an internal implementation detail and are not part
+/// of the contract's external interface, so no contract spec entry is generated for them.
+/// This also keeps the enum clear of the 50-case spec union limit as new keys are added.
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub(crate) enum DataKey {
     /// Deprecated shared period tracker retained for backward compatibility with older storage.
     LastPeriodId(OfferingId),
     Blacklist(OfferingId),
@@ -798,6 +821,15 @@ pub enum DataKey2 {
 
     /// Per-offering platform fee model: configurable `fee_bps` routed to a treasury (#468).
     OfferingPlatformFee(OfferingId),
+
+    /// Per-offering minimum revenue threshold below which reports are skipped.
+    MinRevenueThreshold(OfferingId),
+    /// Per-offering cumulative deposited revenue tracker.
+    DepositedRevenue(OfferingId),
+    /// Per-offering investment constraints (min/max stake).
+    InvestmentConstraints(OfferingId),
+    /// Per-offering supply cap (0 = uncapped).
+    SupplyCap(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1620,9 +1652,7 @@ impl RevoraRevenueShare {
         }
 
         let model = PlatformFeeModel { fee_bps, treasury: treasury.clone() };
-        env.storage()
-            .persistent()
-            .set(&DataKey2::OfferingPlatformFee(offering_id), &model);
+        env.storage().persistent().set(&DataKey2::OfferingPlatformFee(offering_id), &model);
         env.events().publish((EVENT_PLAT_FEE_SET, issuer, namespace, token), (fee_bps, treasury));
         Ok(())
     }
@@ -1670,10 +1700,8 @@ impl RevoraRevenueShare {
             return 0;
         }
 
-        let fee_amount = amount
-            .saturating_mul(model.fee_bps as i128)
-            .checked_div(BPS_DENOMINATOR)
-            .unwrap_or(0);
+        let fee_amount =
+            amount.saturating_mul(model.fee_bps as i128).checked_div(BPS_DENOMINATOR).unwrap_or(0);
         if fee_amount <= 0 {
             return 0;
         }
@@ -1828,7 +1856,11 @@ impl RevoraRevenueShare {
 
     /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
     /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
-    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+    pub fn set_storage_layout_version(
+        env: Env,
+        caller: Address,
+        v: u32,
+    ) -> Result<(), RevoraError> {
         let admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         admin.require_auth();
@@ -1966,7 +1998,7 @@ impl RevoraRevenueShare {
         let effective_expiry = if expiry_secs == 0 {
             0
         } else {
-            expiry_secs.max(MIN_ISSUER_TRANSFER_EXPIRY_SECS).min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
+            expiry_secs.clamp(MIN_ISSUER_TRANSFER_EXPIRY_SECS, MAX_ISSUER_TRANSFER_EXPIRY_SECS)
         };
 
         let timestamp = env.ledger().timestamp();
@@ -2168,32 +2200,66 @@ impl RevoraRevenueShare {
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
 
         // Migrate configuration state linked to the old OfferingId (#1344)
-        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+        if let Some(config) = env
+            .storage()
+            .persistent()
+            .get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
             env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
         }
-        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+        if let Some(current) = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
             env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
         }
-        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+        if let Some(mode) = env
+            .storage()
+            .persistent()
+            .get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone()))
+        {
             env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
             env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
         }
-        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
-            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(
+            &DataKey2::InvestmentConstraints(offering_id.clone()),
+        ) {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
         }
-        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+        if let Some(delay) =
+            env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
             env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
         }
-        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+        if let Some(snap_config) =
+            env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
             env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
         }
-        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+        if let Some(snap_ref) =
+            env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
             env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
         }
 
@@ -2299,9 +2365,7 @@ impl RevoraRevenueShare {
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
         // Stamp storage layout version for future compatibility checks.
-        env.storage()
-            .persistent()
-            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
@@ -5699,10 +5763,8 @@ impl RevoraRevenueShare {
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
 
-        env.events().publish(
-            (EVENT_PERIOD_CLOSED, issuer, namespace, token),
-            (period_id, closed_at),
-        );
+        env.events()
+            .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
         Ok(())
     }
@@ -5952,73 +6014,6 @@ impl RevoraRevenueShare {
         let key = DataKey::HolderShare(offering_id, holder);
         env.storage().persistent().get(&key).unwrap_or(0)
     }
-
-    /// @notice Claim accumulated revenue for a holder across multiple unclaimed periods.
-    /// @dev Payouts are calculated based on the holder's share at the time of claim.
-    ///      Capped at MAX_CLAIM_PERIODS (50) per transaction for gas safety.
-    ///      This function enforces strict security invariants for multi-period claims.
-    ///
-    /// @param holder The address of the token holder. Must provide authentication.
-    /// @param issuer The address of the offering issuer.
-    /// @param namespace A symbol identifying the namespace.
-    /// @param token The token representing the offering.
-    /// @param max_periods Maximum number of periods to process (0 = MAX_CLAIM_PERIODS).
-    ///
-    /// @return Ok(i128) The total payout amount on success.
-    /// @return Err(RevoraError::HolderBlacklisted) if the holder is blacklisted.
-    /// @return Err(RevoraError::NoPendingClaims) if no share is set or all periods are claimed.
-    /// @return Err(RevoraError::ClaimDelayNotElapsed) if the next period is still within the claim delay window.
-    ///
-    /// # Idempotency and Safety Invariants
-    ///
-    /// This function provides the following hard guarantees:
-    ///
-    /// 1. **No double-pay**: `LastClaimedIdx` is written to storage only *after* the token
-    ///    transfer succeeds. If the transfer panics (e.g. insufficient contract balance),
-    ///    the index is not advanced and the holder may retry. Soroban's atomic transaction
-    ///    model ensures partial state is never committed.
-    ///
-    /// 2. **Index advances only on processed periods**: The index is set to
-    ///    `last_claimed_idx`, which reflects only periods that passed the delay check.
-    ///    Periods blocked by `ClaimDelaySecs` are not counted; the function returns
-    ///    `ClaimDelayNotElapsed` without writing any state.
-    ///
-    /// 3. **Zero-payout periods advance the index**: A period with `revenue = 0` (or
-    ///    where `revenue * share_bps / 10_000 == 0` due to truncation) still advances
-    ///    `LastClaimedIdx`. No transfer is issued for zero amounts. This prevents
-    ///    permanently stuck indices on dust periods.
-    ///
-    /// 4. **Exhausted state returns `NoPendingClaims`**: Once `LastClaimedIdx >= PeriodCount`,
-    ///    every subsequent call returns `Err(NoPendingClaims)` without touching storage.
-    ///    Callers may safely retry without risk of side effects.
-    ///
-    /// 5. **Per-holder isolation**: Each holder's `LastClaimedIdx` is keyed by
-    ///    `(offering_id, holder)`. One holder's claim progress never affects another's.
-    ///
-    /// 6. **Auth checked first**: `holder.require_auth()` is the first operation.
-    ///    All subsequent checks (blacklist, share, period count) are read-only and
-    ///    produce no state changes on failure.
-    ///
-    /// 7. **Blacklist/whitelist decisiveness during partial sequences**: The blacklist
-    ///    check is performed INSIDE the period iteration loop. If a holder becomes
-    ///    blacklisted mid-sequence during a multi-period claim, the loop breaks immediately
-    ///    and no subsequent periods in the batch are claimed. The index is only advanced
-    ///    for periods successfully processed before the blacklist took effect. This ensures
-    ///    blacklist/whitelist decisions remain decisive even during partial claim sequences.
-    ///
-    /// 8. **Index monotonicity enforced**: The function validates that period IDs are
-    ///    strictly increasing as they are retrieved from `PeriodEntry`. This ensures
-    ///    `LastClaimedIdx` advances only in ways that match the deposited period order,
-    ///    preventing any possibility of skipping periods or claiming out of order.
-    ///
-    /// # Arguments
-    /// * `holder` - The address of the holder claiming revenue.
-    /// * `issuer` - The address of the offering issuer.
-    /// * `namespace` - A symbol identifying the namespace.
-    /// * `token` - The address of the token.
-    /// * `max_periods` - The maximum number of periods to claim in this call.
-    ///
-    /// # Events
 
     /// Read-only: return a page of pending period IDs for a holder, bounded by `limit`.
     /// Returns `(periods_page, next_cursor)` where `next_cursor` is `Some(next_index)` when more

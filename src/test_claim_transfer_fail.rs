@@ -41,8 +41,8 @@
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, token, Address,
-    Env, String,
+    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
+    String,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -181,13 +181,16 @@ fn pending_periods(
     holder: &Address,
 ) -> soroban_sdk::Vec<u64> {
     env.as_contract(revora_id, || {
-        RevoraRevenueShare::get_pending_periods(
+        RevoraRevenueShare::get_pending_periods_page(
             env.clone(),
             issuer.clone(),
             symbol_short!("def"),
             offering_token.clone(),
             holder.clone(),
+            0,
+            50,
         )
+        .0
     })
 }
 
@@ -435,17 +438,17 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (env, revora_id, revora, _fail_token_id, _fail_token, issuer, offering_token_a, holder) =
         setup_claim_fail();
 
-    // Register a second offering with a normal Stellar asset token
+    // Register a second offering backed by a normal (unarmed) token so its claim succeeds.
     let offering_token_b = Address::generate(&env);
-    let admin_b = Address::generate(&env);
-
+    let (token_b_id, token_b) = deploy_failing_token(&env);
+    token_b.mint(&issuer, &1_000_000);
 
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
-
+        &token_b_id,
         &0,
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
@@ -453,7 +456,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
-
+        &token_b_id,
         &100_000,
         &1,
     );

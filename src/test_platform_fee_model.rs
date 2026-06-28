@@ -54,7 +54,7 @@ fn find_plat_fee(env: &Env, start_idx: u32) -> Option<(Address, u32, i128, u64)>
     let all = env.events().all();
     for i in start_idx..all.len() {
         let (_, topics, data) = all.get(i).unwrap();
-        if topics.len() >= 1 {
+        if !topics.is_empty() {
             let t0: Symbol = topics.get(0).unwrap().into_val(env);
             if t0 == plat_fee {
                 let decoded: (Address, u32, i128, u64) = data.into_val(env);
@@ -72,7 +72,7 @@ fn count_plat_fee(env: &Env, start_idx: u32) -> u32 {
     let mut count = 0;
     for i in start_idx..all.len() {
         let (_, topics, _) = all.get(i).unwrap();
-        if topics.len() >= 1 {
+        if !topics.is_empty() {
             let t0: Symbol = topics.get(0).unwrap().into_val(env);
             if t0 == plat_fee {
                 count += 1;
@@ -267,7 +267,11 @@ fn report_revenue_zero_amount_emits_no_plat_fee_event() {
     // Zero revenue is a valid report but yields a zero fee → no event.
     c.client.report_revenue(&c.issuer, &c.ns, &c.token, &c.payout, &0, &1, &false);
 
-    assert_eq!(count_plat_fee(&c.env, before), 0, "zero-revenue report must emit no plat_fee event");
+    assert_eq!(
+        count_plat_fee(&c.env, before),
+        0,
+        "zero-revenue report must emit no plat_fee event"
+    );
 }
 
 #[test]
