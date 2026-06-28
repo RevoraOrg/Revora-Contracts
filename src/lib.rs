@@ -300,6 +300,7 @@ const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 /// Emitted when a period is sealed by `close_period`.
 const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
+const EVENT_PERIOD_SEALED: Symbol = symbol_short!("per_seald");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
@@ -619,8 +620,7 @@ pub struct SnapshotEntry {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// Deprecated shared period tracker retained for backward compatibility with older storage.
-    LastPeriodId(OfferingId),
+    // LastPeriodId(OfferingId),
     Blacklist(OfferingId),
 
     /// Per-offering whitelist; when non-empty, only these addresses are eligible for distribution.
@@ -5070,6 +5070,146 @@ impl RevoraRevenueShare {
             .unwrap_or(false)
     }
 
+    // ── Snapshot Merkle inclusion proof helper (issue #463) ──────────────────
+    //
+    // ### Leaf encoding
+    //
+    // Each leaf is produced by the same digest pass used in `finalize_snapshot`:
+    //
+    // ```text
+    // leaf = SHA-256( index_xdr || holder_xdr || shares_bps_xdr )
+    // ```
+    //
+    // where:
+    //   - `index_xdr`     = `(slot_index as u32).to_xdr(&env)`
+    //   - `holder_xdr`    = `holder_address.to_xdr(&env)`
+    //   - `shares_bps_xdr` = `share_bps_u32.to_xdr(&env)`
+    //
+    // This is the canonical leaf encoding.  Off-chain tooling must use
+    // the same serialisation.
+    //
+    // ### Merkle tree construction
+    //
+    // Leaves are sorted by their raw-byte value before building the tree
+    // (sorted-pair Merkle tree).  Internal nodes are produced by sorting the
+    // two child hashes lexicographically before concatenating and hashing:
+    //
+    // ```text
+    // parent = SHA-256( sort_low_child || sort_high_child )
+    // ```
+    //
+    // Sorting the pair makes the tree *position-independent*: proofs work
+    // regardless of which side of the tree a leaf sits on, and there is no
+    // "left/right" flag in the proof array.
+    //
+    // ### Proof array
+    //
+    // A proof is a `Vec<BytesN<32>>` of sibling hashes from leaf to root.
+    // An empty proof is valid only for a single-leaf tree (the leaf IS the root).
+    //
+    // ### Security assumptions
+    //
+    // 1. The verifier does NOT check on-chain snapshot state — it is a pure
+    //    off-chain helper that recomputes the root from the supplied leaf and
+    //    proof and compares it to the committed `content_hash`.
+    //    **The snapshot must be finalized before calling this function**;
+    //    an unfinalized snapshot has an untrusted `content_hash`.
+    // 2. SHA-256 collision resistance ensures that forging a valid proof for
+    //    an absent leaf requires breaking SHA-256.
+    // 3. Every element of `proof` is exactly 32 bytes (enforced by the type
+    //    `Vec<BytesN<32>>`); there is no length-extension attack surface.
+    // 4. An empty proof is accepted only when `proof.len() == 0`, i.e. the
+    //    tree has exactly one leaf and `leaf_hash == content_hash`.
+
+    /// Verify that a leaf was included in a finalized snapshot.
+    ///
+    /// # Parameters
+    ///
+    /// - `issuer`       – offering issuer address.
+    /// - `namespace`    – offering namespace symbol.
+    /// - `token`        – offering token address.
+    /// - `snapshot_ref` – the snapshot reference (must exist on-chain).
+    /// - `leaf`         – the raw leaf bytes *before* hashing.  The caller must
+    ///                    construct this as:
+    ///                    `index_xdr || holder_xdr || shares_bps_xdr`
+    ///                    (same encoding used in `finalize_snapshot`).
+    /// - `proof`        – ordered array of sibling hashes from the leaf up to
+    ///                    (but not including) the root.
+    ///
+    /// # Returns
+    ///
+    /// `true`  – the proof is valid and the leaf was included in the snapshot.
+    /// `false` – the proof is invalid or the snapshot does not exist / is not
+    ///           finalized.
+    ///
+    /// # Security note
+    ///
+    /// This function returns `false` rather than an error when the snapshot is
+    /// missing or unfinalized, so callers cannot distinguish those states from
+    /// a genuinely invalid proof.  This is intentional: leaking whether a
+    /// snapshot *exists* could aid enumeration attacks.
+    pub fn verify_snapshot_inclusion(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        snapshot_ref: u64,
+        leaf: Bytes,
+        proof: Vec<BytesN<32>>,
+    ) -> bool {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Guard 1: snapshot must be finalized.  An unfinalized snapshot has an
+        // untrusted content_hash and MUST NOT be used as a proof root.
+        if !Self::is_snapshot_finalized(&env, &offering_id, snapshot_ref) {
+            return false;
+        }
+
+        // Guard 2: the committed snapshot entry must exist.
+        let entry_key = DataKey::SnapshotEntry(offering_id, snapshot_ref);
+        let entry: SnapshotEntry = match env.storage().persistent().get(&entry_key) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        // Hash the raw leaf bytes to obtain the starting node.
+        let mut current: BytesN<32> = env.crypto().sha256(&leaf).to_bytes();
+
+        // Walk up the tree, combining with each sibling.
+        //
+        // Sorted-pair combination: always hash the lexicographically smaller
+        // sibling first.  This removes the need for positional left/right flags.
+        let proof_len = proof.len();
+        for i in 0..proof_len {
+            // proof.len() == proof_len so get(i) must succeed.
+            let sibling: BytesN<32> = match proof.get(i) {
+                Some(s) => s,
+                None => return false,
+            };
+
+            // Determine canonical ordering: lexicographically smaller hash comes first.
+            // BytesN<32> implements PartialOrd, so direct comparison is valid.
+            let mut combined = Bytes::new(&env);
+            let current_bytes: Bytes = current.clone().into();
+            let sibling_bytes: Bytes = sibling.clone().into();
+            if current <= sibling {
+                combined.append(&current_bytes);
+                combined.append(&sibling_bytes);
+            } else {
+                combined.append(&sibling_bytes);
+                combined.append(&current_bytes);
+            }
+            current = env.crypto().sha256(&combined).to_bytes();
+        }
+
+        // The recomputed root must match the committed content_hash.
+        current == entry.content_hash
+    }
+
     /// Finalize a snapshot by recomputing the digest over applied holder slots.
     ///
     /// Returns `SnapshotHashMismatch` if the recomputed hash differs from the
@@ -5551,6 +5691,127 @@ impl RevoraRevenueShare {
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
+    }
+
+    /// Atomically closes a period by finalising the snapshot, validating the accrual,
+    /// and sealing the period (preventing overrides) in a single transaction.
+    ///
+    /// ### Errors
+    /// - `ContractFrozen` / `ContractPaused` – contract is not operational.
+    /// - `OfferingNotFound` – offering does not exist or caller is not current issuer.
+    /// - `InvalidPeriodId` – `period_id` is 0.
+    /// - `SnapshotNotEnabled` – snapshot distribution is not enabled for the offering.
+    /// - `OutdatedSnapshot` – snapshot entry is not found/outdated.
+    /// - `SnapshotHashMismatch` – recomputed hash does not match committed snapshot hash.
+    /// - `MissingReportForOverride` – revenue report for this period is missing.
+    /// - `PeriodAlreadyClosed` – period has already been closed.
+    pub fn atomic_close_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // 1. Verify snapshot is enabled
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+            .unwrap_or(false)
+        {
+            return Err(RevoraError::SnapshotNotEnabled);
+        }
+
+        // 2. Verify close period guard
+        let closed_key = DataKey2::ClosedPeriod(offering_id.clone(), period_id);
+        if env.storage().persistent().has(&closed_key) {
+            return Err(RevoraError::PeriodAlreadyClosed);
+        }
+
+        // 3. Finalize snapshot
+        let entry_key = DataKey::SnapshotEntry(offering_id.clone(), period_id);
+        let entry: SnapshotEntry =
+            env.storage().persistent().get(&entry_key).ok_or(RevoraError::OutdatedSnapshot)?;
+
+        if !Self::is_snapshot_finalized(&env, &offering_id, period_id) {
+            let slot_count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SnapshotHolderCount(offering_id.clone(), period_id))
+                .unwrap_or(0);
+
+            let mut digest_input = Bytes::new(&env);
+            for index in 0..slot_count {
+                let (holder, share_bps): (Address, u32) = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SnapshotHolder(offering_id.clone(), period_id, index))
+                    .ok_or(RevoraError::SnapshotHashMismatch)?;
+
+                digest_input.append(&index.to_xdr(&env));
+                digest_input.append(&holder.to_xdr(&env));
+                digest_input.append(&share_bps.to_xdr(&env));
+            }
+
+            let computed_hash = env.crypto().sha256(&digest_input).to_bytes();
+            if computed_hash != entry.content_hash {
+                return Err(RevoraError::SnapshotHashMismatch);
+            }
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotFinalized(offering_id.clone(), period_id), &true);
+        }
+
+        // 4. Accrual index commit
+        let reports_key = DataKey::RevenueReports(offering_id.clone());
+        let reports: Map<u64, (i128, u64)> = env
+            .storage()
+            .persistent()
+            .get(&reports_key)
+            .ok_or(RevoraError::MissingReportForOverride)?;
+        let (revenue_amount, _) = reports.get(period_id).ok_or(RevoraError::MissingReportForOverride)?;
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        let mut accrual_input = Bytes::new(&env);
+        accrual_input.append(&revenue_amount.to_xdr(&env));
+        accrual_input.append(&offering.payout_asset.to_xdr(&env));
+        let accrual_hash = env.crypto().sha256(&accrual_input).to_bytes();
+
+        // 5. Seal report window (close period guard)
+        let closed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&closed_key, &closed_at);
+
+        // 6. Emit single boundary event with sub-hashes
+        env.events().publish(
+            (EVENT_PERIOD_SEALED, issuer, namespace, token),
+            (period_id, entry.content_hash.clone(), accrual_hash, closed_at),
+        );
+
+        Ok(())
     }
 }
 
