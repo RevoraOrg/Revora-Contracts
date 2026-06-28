@@ -239,7 +239,11 @@ pub fn migrate_offering_schedules(
 
     // First pass: validate that no schedule is pre-cliff.
     for beneficiary in beneficiaries.iter() {
-        if let Some(schedule) = env.storage().persistent().get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone())) {
+        if let Some(schedule) = env
+            .storage()
+            .persistent()
+            .get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone()))
+        {
             if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
                 if now < schedule.cliff_ts {
                     return Err(VestingError::SchedulePreCliff);
@@ -250,7 +254,11 @@ pub fn migrate_offering_schedules(
 
     // Second pass: migrate matching schedules and rebuild the beneficiary index.
     for beneficiary in beneficiaries.iter() {
-        if let Some(mut schedule) = env.storage().persistent().get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone())) {
+        if let Some(mut schedule) = env
+            .storage()
+            .persistent()
+            .get::<VestingKey, VestingSchedule>(&VestingKey::Schedule(beneficiary.clone()))
+        {
             if schedule.issuer == offering_id.issuer && schedule.token == offering_id.token {
                 schedule.issuer = new_issuer.clone();
                 env.storage()

@@ -20,8 +20,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    token,
-    Address, Env,
+    token, Address, Env,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -134,8 +133,7 @@ fn override_after_close_returns_period_already_closed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // Attempt override — must be rejected.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -149,9 +147,11 @@ fn initial_report_for_new_period_after_close_is_allowed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // A brand-new period 2 (initial report, not an override) must still be accepted.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
-    assert!(result.is_ok(), "initial report for a new period should succeed after closing period 1");
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
+    assert!(
+        result.is_ok(),
+        "initial report for a new period should succeed after closing period 1"
+    );
 }
 
 #[test]
@@ -206,8 +206,7 @@ fn close_period_does_not_affect_other_periods() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &2));
 
     // Override of period 2 must still succeed.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
     assert!(result.is_ok(), "override of an open period must succeed");
 }
 

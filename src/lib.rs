@@ -150,7 +150,7 @@ pub enum RevoraError {
     /// Issuer transfer has expired.
     IssuerTransferExpired = 43,
     /// Transfer blocked because the offering has pre-cliff vesting schedules.
-    VestingTransferBlocked = 48,
+    VestingTransferBlocked = 31,
     /// Contract is paused.
     ContractPaused = 44,
     /// Blacklist size limit exceeded.
@@ -169,6 +169,12 @@ pub enum RevoraError {
     ///
     /// Wire value: 48. Stable since v1.
     PeriodAlreadyClosed = 48,
+
+    /// Concentration data is too old for the configured max_staleness window.
+    StaleConcentrationData = 34,
+
+    /// Current ledger timestamp is outside configured redemption window.
+    RedemptionWindowClosed = 51,
 }
 
 pub mod vesting;
@@ -177,9 +183,9 @@ pub mod vesting;
 pub mod kani_harness;
 
 #[cfg(test)]
-mod test_compute_share_invariants;
-#[cfg(test)]
 mod test_claim_transfer_fail;
+#[cfg(test)]
+mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -190,6 +196,8 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_redemption;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -316,6 +324,12 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 /// Emitted when `repair_audit_summary` writes a corrected `AuditSummary` to storage.
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 
+/// Emitted when a redemption window is set for an offering.
+const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
+/// Emitted when a holder requests a redemption.
+const EVENT_REDEMPTION_REQUESTED: Symbol = symbol_short!("red_req");
+/// Emitted when an issuer fulfills a holder redemption request.
+const EVENT_REDEMPTION_FULFILLED: Symbol = symbol_short!("red_full");
 /// Missing v1 event symbols (referenced by report_revenue versioned path).
 /// Emitted when payment token decimals are set for an offering.
 
@@ -555,11 +569,30 @@ pub struct AccessWindow {
     pub end_timestamp: u64,
 }
 
+/// Per-holder pending redemption request.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingRedemption {
+    pub shares_bps: u32,
+    pub timestamp: u64,
+}
+
+/// Pause state tier for contract pausing.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PauseState {
+    NotPaused = 0,
+    SoftPaused = 1,
+    HardPaused = 2,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowDataKey {
     Report(OfferingId),
     Claim(OfferingId),
+    Redemption(OfferingId),
 }
 
 #[contracttype]
@@ -657,8 +690,6 @@ pub enum DataKey {
     LastClaimedIdx(OfferingId, Address),
     /// Payment token address for an offering.
     PaymentToken(OfferingId),
-    /// Cached payment token decimals for offering compatibility checks.
-    PaymentTokenDecimals(OfferingId),
     /// Per-offering claim delay in seconds (#27). 0 = immediate claim.
     ClaimDelaySecs(OfferingId),
     /// Ledger timestamp when revenue was deposited for (offering_id, period_id).
@@ -667,8 +698,6 @@ pub enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
-    /// Offering-level frozen flag; when true, offering mutations are disabled.
-    FrozenOffering(OfferingId),
     /// Proposed new admin address (pending two-step rotation).
     PendingAdmin,
 
@@ -767,6 +796,18 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Per-holder pending redemption request.
+    RedemptionRequest(OfferingId, Address),
+
+    /// Per-offering supply cap (i128). 0 = no cap (#96).
+    SupplyCap(OfferingId),
+    /// Cumulative deposited revenue for an offering (i128) (#96).
+    DepositedRevenue(OfferingId),
+    /// Per-offering investment constraints config.
+    InvestmentConstraints(OfferingId),
+    /// Per-offering minimum revenue threshold (i128). 0 = no threshold.
+    MinRevenueThreshold(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1070,7 +1111,7 @@ impl RevoraRevenueShare {
         if env
             .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::FrozenOffering(offering_id.clone()))
+            .get::<DataKey2, bool>(&DataKey2::FrozenOffering(offering_id.clone()))
             .unwrap_or(false)
         {
             return Err(RevoraError::OfferingFrozen);
@@ -1184,6 +1225,19 @@ impl RevoraRevenueShare {
         if let Some(window) = env.storage().persistent().get::<WindowDataKey, AccessWindow>(&key) {
             if !Self::is_window_open(env, &window) {
                 return Err(RevoraError::ClaimWindowClosed);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_redemption_window_open(
+        env: &Env,
+        offering_id: &OfferingId,
+    ) -> Result<(), RevoraError> {
+        let key = WindowDataKey::Redemption(offering_id.clone());
+        if let Some(window) = env.storage().persistent().get::<WindowDataKey, AccessWindow>(&key) {
+            if !Self::is_window_open(env, &window) {
+                return Err(RevoraError::RedemptionWindowClosed);
             }
         }
         Ok(())
@@ -1676,7 +1730,11 @@ impl RevoraRevenueShare {
 
     /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
     /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
-    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+    pub fn set_storage_layout_version(
+        env: Env,
+        caller: Address,
+        v: u32,
+    ) -> Result<(), RevoraError> {
         let admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         admin.require_auth();
@@ -2016,32 +2074,66 @@ impl RevoraRevenueShare {
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
 
         // Migrate configuration state linked to the old OfferingId (#1344)
-        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+        if let Some(config) = env
+            .storage()
+            .persistent()
+            .get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
             env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
         }
-        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+        if let Some(current) = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
             env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
         }
-        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+        if let Some(mode) = env
+            .storage()
+            .persistent()
+            .get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone()))
+        {
             env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
             env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
         }
-        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
-            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(
+            &DataKey2::InvestmentConstraints(offering_id.clone()),
+        ) {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
         }
-        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+        if let Some(delay) =
+            env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
             env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
         }
-        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+        if let Some(snap_config) =
+            env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
             env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
         }
-        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+        if let Some(snap_ref) =
+            env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
             env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
         }
 
@@ -2147,9 +2239,7 @@ impl RevoraRevenueShare {
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
         // Stamp storage layout version for future compatibility checks.
-        env.storage()
-            .persistent()
-            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
@@ -4531,7 +4621,7 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage().persistent().set(&DataKey::PaymentTokenDecimals(offering_id), &decimals);
+        env.storage().persistent().set(&DataKey2::PaymentTokenDecimals(offering_id), &decimals);
         env.events().publish((EVENT_DECIMAL_SET, issuer, namespace, token), decimals);
         Ok(())
     }
@@ -5312,6 +5402,49 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&WindowDataKey::Claim(offering_id))
     }
+
+    /// Configure the redemption window for an offering. If unset, always open.
+    pub fn set_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+        let window = AccessWindow { start_timestamp, end_timestamp };
+        Self::validate_window(&window)?;
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage().persistent().set(&WindowDataKey::Redemption(offering_id), &window);
+        env.events().publish(
+            (EVENT_REDEMPTION_WINDOW_SET, issuer, namespace, token),
+            (start_timestamp, end_timestamp),
+        );
+        Ok(())
+    }
+
+    /// Read configured redemption window (if any) for an offering.
+    pub fn get_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<AccessWindow> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&WindowDataKey::Redemption(offering_id))
+    }
     pub fn claim(
         env: Env,
         holder: Address,
@@ -5533,10 +5666,8 @@ impl RevoraRevenueShare {
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
 
-        env.events().publish(
-            (EVENT_PERIOD_CLOSED, issuer, namespace, token),
-            (period_id, closed_at),
-        );
+        env.events()
+            .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
         Ok(())
     }
@@ -5982,6 +6113,182 @@ impl RevoraRevenueShare {
         }
 
         (total, None)
+    }
+
+    /// Request redemption of a portion of the caller's holder shares.
+    ///
+    /// The holder submits a request specifying `shares_bps` to redeem. Only one
+    /// pending request per holder per offering is allowed. The redemption window
+    /// must be open (if configured). Blacklisted holders are rejected.
+    pub fn request_redemption(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        shares_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        holder.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists
+        Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Check redemption window is open
+        Self::require_redemption_window_open(&env, &offering_id)?;
+
+        // Check holder is not blacklisted
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Check holder has shares to redeem
+        let current_share = Self::get_holder_share_internal(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        );
+        if current_share == 0 {
+            return Err(RevoraError::NoPendingClaims);
+        }
+        if shares_bps == 0 || shares_bps > current_share {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        // Check no pending request already exists
+        let request_key = DataKey2::RedemptionRequest(offering_id.clone(), holder.clone());
+        if env.storage().persistent().has(&request_key) {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Store pending request
+        let pending = PendingRedemption { shares_bps, timestamp: env.ledger().timestamp() };
+        env.storage().persistent().set(&request_key, &pending);
+
+        // Emit event
+        env.events()
+            .publish((EVENT_REDEMPTION_REQUESTED, issuer, namespace, token), (holder, shares_bps));
+        Ok(())
+    }
+
+    /// Fulfill a pending redemption request.
+    ///
+    /// The issuer transfers `amount` of the offering's locked payment token from
+    /// the contract to the holder and reduces the holder's share by the requested
+    /// `shares_bps`. The redemption window must be open. Blacklisted holders are
+    /// rejected even if they had a pending request.
+    pub fn fulfill_redemption(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        amount: i128,
+    ) -> Result<i128, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify caller is the current issuer
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Check redemption window is open
+        Self::require_redemption_window_open(&env, &offering_id)?;
+
+        // Reject blacklisted holders even if they had a pending request
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Validate amount
+        if amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // Read pending request
+        let request_key = DataKey2::RedemptionRequest(offering_id.clone(), holder.clone());
+        let pending: PendingRedemption =
+            env.storage().persistent().get(&request_key).ok_or(RevoraError::NoTransferPending)?;
+
+        // Read holder's current share
+        let current_share = Self::get_holder_share_internal(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        );
+        if current_share == 0 {
+            return Err(RevoraError::NoPendingClaims);
+        }
+
+        // Compute effective redeem bps (capped to what holder actually has)
+        let redeem_bps = core::cmp::min(pending.shares_bps, current_share);
+        let new_share = current_share - redeem_bps;
+
+        // Transfer amount from contract to holder using locked payment token
+        let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
+            .ok_or(RevoraError::PaymentTokenMismatch)?;
+        let contract_addr = env.current_contract_address();
+        if token::Client::new(&env, &payment_token)
+            .try_transfer(&contract_addr, &holder, &amount)
+            .is_err()
+        {
+            return Err(RevoraError::TransferFailed);
+        }
+
+        // Reduce holder's share by the redeemed bps
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+            new_share,
+        )?;
+
+        // Remove the pending request
+        env.storage().persistent().remove(&request_key);
+
+        // Emit fulfillment event
+        env.events().publish(
+            (EVENT_REDEMPTION_FULFILLED, issuer, namespace, token),
+            (holder, redeem_bps, amount),
+        );
+        Ok(amount)
     }
 
     /// Preview the total claimable amount for a holder without mutating state.
