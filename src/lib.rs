@@ -169,6 +169,13 @@ pub enum RevoraError {
     ///
     /// Wire value: 48. Stable since v1.
     PeriodAlreadyClosed = 48,
+
+    /// The requested platform `fee_bps` plus the offering's aggregate holder share
+    /// would exceed 10_000 bps (100%). Fee and holder allocations must always fit
+    /// within the offering's total at the offering level (#468).
+    ///
+    /// Wire value: 51. Stable since v1.
+    FeeExceedsHolderShare = 51,
 }
 
 pub mod vesting;
@@ -190,6 +197,8 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_platform_fee_model;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -326,6 +335,10 @@ const EVENT_CONC_LIMIT_SET: Symbol = symbol_short!("conc_lim");
 const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
+/// Emitted by `set_offering_platform_fee` when a per-offering fee model is configured (#468).
+const EVENT_PLAT_FEE_SET: Symbol = symbol_short!("pfee_set");
+/// Emitted by `report_revenue` when a non-zero platform fee is routed to the treasury (#468).
+const EVENT_PLAT_FEE: Symbol = symbol_short!("plat_fee");
 const BPS_DENOMINATOR: i128 = 10_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
 const STELLAR_CANONICAL_DECIMALS: u32 = 7;
@@ -411,6 +424,21 @@ pub struct ConcentrationLimitConfig {
     /// been reported or the last report is older than this many seconds. 0 = disabled (no staleness
     /// check).
     pub max_staleness_secs: u64,
+}
+
+/// Per-offering platform fee model (#468).
+///
+/// Encodes the programmable platform cut taken on each `report_revenue` call and the
+/// `treasury` address the fee is routed to. `fee_bps` plus the offering's aggregate
+/// holder share must always be `<= 10_000` (enforced in `set_offering_platform_fee`),
+/// so the platform and holders never lay claim to more than 100% of reported revenue.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlatformFeeModel {
+    /// Platform fee in basis points (0 = disabled; no fee deducted and no `plat_fee` event).
+    pub fee_bps: u32,
+    /// Destination address the platform fee is routed to.
+    pub treasury: Address,
 }
 
 /// Per-offering investment constraints (#97). Min/max stake per investor; off-chain enforced.
@@ -767,6 +795,9 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Per-offering platform fee model: configurable `fee_bps` routed to a treasury (#468).
+    OfferingPlatformFee(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1531,6 +1562,127 @@ impl RevoraRevenueShare {
     /// O(1) â€” single persistent storage read.
     pub fn get_platform_fee_per_asset(env: Env, asset: Address) -> u32 {
         env.storage().persistent().get(&DataKey::PlatformFeePerAsset(asset)).unwrap_or(0)
+    }
+
+    // â”€â”€ Platform Fee Model (#468) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Configure the per-offering platform fee model: a programmable `fee_bps` cut routed
+    /// to `treasury` on each `report_revenue` call. Admin-only. (#468)
+    ///
+    /// The fee and the offering's holders share the same 100% (10_000 bps) budget, so this
+    /// rejects any configuration where `fee_bps` plus the offering's aggregate holder share
+    /// would exceed 10_000 bps. Setting `fee_bps = 0` disables the fee (no deduction and no
+    /// `plat_fee` event on subsequent reports) while still recording the `treasury` for clarity.
+    ///
+    /// Emits `EVENT_PLAT_FEE_SET` with topic `(issuer, namespace, token)` and data
+    /// `(fee_bps, treasury)`.
+    ///
+    /// ### Auth
+    /// Contract admin (`require_auth`).
+    ///
+    /// ### Errors
+    /// - `NotInitialized` â€” contract admin is not set.
+    /// - `OfferingNotFound` â€” offering does not exist.
+    /// - `FeeExceedsHolderShare` â€” `fee_bps` + aggregate holder share would exceed 10_000 bps.
+    pub fn set_offering_platform_fee(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        fee_bps: u32,
+        treasury: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Offering must exist before a fee model can be attached to it.
+        if !env.storage().persistent().has(&DataKey::OfferingIssuer(offering_id.clone())) {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Fee bps + holder bps must always sum to at most 10_000 at the offering level.
+        // The aggregate holder share is maintained incrementally by `set_holder_share_internal`.
+        let holder_aggregate_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShareTotal(offering_id.clone()))
+            .unwrap_or(0);
+        if fee_bps.saturating_add(holder_aggregate_bps) > 10_000 {
+            return Err(RevoraError::FeeExceedsHolderShare);
+        }
+
+        let model = PlatformFeeModel { fee_bps, treasury: treasury.clone() };
+        env.storage()
+            .persistent()
+            .set(&DataKey2::OfferingPlatformFee(offering_id), &model);
+        env.events().publish((EVENT_PLAT_FEE_SET, issuer, namespace, token), (fee_bps, treasury));
+        Ok(())
+    }
+
+    /// Return the configured per-offering platform fee model, if any. (#468)
+    ///
+    /// O(1) â€” single persistent storage read. Returns `None` when no fee model is configured.
+    pub fn get_offering_platform_fee(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<PlatformFeeModel> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::OfferingPlatformFee(offering_id))
+    }
+
+    /// Apply the per-offering platform fee for a recorded revenue report. (#468)
+    ///
+    /// When a fee model is configured with a non-zero `fee_bps`, the programmable share of
+    /// `amount` is routed to the treasury and surfaced via `EVENT_PLAT_FEE`. A `fee_bps` of 0
+    /// (or a computed fee of 0, e.g. zero-revenue reports) is a no-op and emits no event, so
+    /// indexers can rely on `plat_fee` being present only when a real fee was taken.
+    ///
+    /// Returns the fee amount routed to the treasury (0 when no fee applies).
+    fn apply_platform_fee(
+        env: &Env,
+        offering_id: &OfferingId,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+        amount: i128,
+        period_id: u64,
+    ) -> i128 {
+        let model: PlatformFeeModel = match env
+            .storage()
+            .persistent()
+            .get(&DataKey2::OfferingPlatformFee(offering_id.clone()))
+        {
+            Some(m) => m,
+            None => return 0,
+        };
+
+        if model.fee_bps == 0 || amount <= 0 {
+            return 0;
+        }
+
+        let fee_amount = amount
+            .saturating_mul(model.fee_bps as i128)
+            .checked_div(BPS_DENOMINATOR)
+            .unwrap_or(0);
+        if fee_amount <= 0 {
+            return 0;
+        }
+
+        env.events().publish(
+            (EVENT_PLAT_FEE, issuer.clone(), namespace.clone(), token.clone()),
+            (model.treasury, model.fee_bps, fee_amount, period_id),
+        );
+        fee_amount
     }
 
     /// Return true if the contract is in event-only mode.
@@ -2965,6 +3117,20 @@ impl RevoraRevenueShare {
             &env,
             (EVENT_REV_INIA_V2, issuer.clone(), namespace.clone(), token.clone()),
             (payout_asset.clone(), amount, period_id, blacklist.clone()),
+        );
+
+        // Platform fee model (#468): once a report is recorded, route the configured
+        // platform cut to the treasury and surface it via `plat_fee`. Reaching this point
+        // means a report was actually recorded (initial or override); the below-threshold
+        // and rejected paths return early above, so no fee is taken on those.
+        Self::apply_platform_fee(
+            &env,
+            &offering_id,
+            &issuer,
+            &namespace,
+            &token,
+            amount,
+            period_id,
         );
 
         if Self::is_event_versioning_enabled(env.clone()) {
