@@ -168,7 +168,8 @@ pub enum RevoraError {
     /// The period has been sealed by `close_period`; no further overrides are accepted.
     ///
     /// Wire value: 48. Stable since v1.
-    PeriodAlreadyClosed = 48,
+    PeriodAlreadyClosed = 49,
+    StaleConcentrationData = 50,
 }
 
 pub mod vesting;
@@ -190,6 +191,8 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_share_conservation_prop;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -265,6 +268,15 @@ pub struct Proposal {
     pub executed: bool,
     pub expiry: u64,
 }
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseState {
+    NotPaused = 0,
+    SoftPaused = 1,
+    HardPaused = 2,
+}
+
 
 const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
 
@@ -723,8 +735,6 @@ pub enum DataKey {
     SnapshotFinalizationRequired,
     /// Latest committed snapshot reference for an offering.
     LastSnapshotCommitRef(OfferingId),
-    /// Whether the snapshot has been finalized successfully.
-    SnapshotFinalized(OfferingId, u64),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -767,6 +777,13 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Whether the snapshot has been finalized successfully.
+    SnapshotFinalized(OfferingId, u64),
+
+    InvestmentConstraints(OfferingId),
+    SupplyCap(OfferingId),
+    MinRevenueThreshold(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -5066,7 +5083,7 @@ impl RevoraRevenueShare {
     fn is_snapshot_finalized(env: &Env, offering_id: &OfferingId, snapshot_ref: u64) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref))
+            .get(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref))
             .unwrap_or(false)
     }
 
@@ -5140,7 +5157,7 @@ impl RevoraRevenueShare {
 
         env.storage()
             .persistent()
-            .set(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
+            .set(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
         env.events().publish((EVENT_SNAP_FINALIZED, issuer, namespace, token), snapshot_ref);
         Ok(())
     }
