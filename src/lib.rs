@@ -169,6 +169,8 @@ pub enum RevoraError {
     ///
     /// Wire value: 48. Stable since v1.
     PeriodAlreadyClosed = 48,
+    /// Category cap reached.
+    CategoryCapReached = 51,
 }
 
 pub mod vesting;
@@ -190,6 +192,10 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_transfer_restrictions;
+#[cfg(test)]
+mod test_transfer_restriction;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -431,6 +437,14 @@ pub struct AuditSummary {
     /// Total number of revenue reports submitted.
     pub report_count: u64,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferRestrictions {
+    pub category: Symbol,
+    pub max_holders: u32,
+}
+
 
 /// Read-only comparison between stored audit state and recomputed report state.
 #[contracttype]
@@ -767,6 +781,13 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Configuration for transfer restrictions.
+    TransferRestrictions(OfferingId, Symbol),
+    /// Current count of holders with >0 shares for a category.
+    CategoryHolderCount(OfferingId, Symbol),
+    /// Which category a holder belongs to.
+    HolderCategory(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1249,6 +1270,36 @@ impl RevoraRevenueShare {
         let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
         if new_total > 10_000 {
             return Err(RevoraError::InvalidShareBps);
+        }
+
+        let is_new_holder = old_share == 0 && share_bps > 0;
+        let is_leaving_holder = old_share > 0 && share_bps == 0;
+
+        if is_new_holder || is_leaving_holder {
+            if let Some(category) = env
+                .storage()
+                .persistent()
+                .get::<_, Symbol>(&DataKey2::HolderCategory(offering_id.clone(), holder.clone()))
+            {
+                let count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                let mut current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+                if is_new_holder {
+                    if let Some(restrictions) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, TransferRestrictions>(&DataKey2::TransferRestrictions(offering_id.clone(), category.clone()))
+                    {
+                        if current_count >= restrictions.max_holders {
+                            return Err(RevoraError::CategoryCapReached);
+                        }
+                    }
+                    current_count += 1;
+                    env.storage().persistent().set(&count_key, &current_count);
+                } else if is_leaving_holder {
+                    env.storage().persistent().set(&count_key, &current_count.saturating_sub(1));
+                }
+            }
         }
 
         // Persist updated holder share and running total.
@@ -4078,6 +4129,105 @@ impl RevoraRevenueShare {
             (EVENT_CONC_LIMIT_SET, issuer, namespace, token),
             (max_bps, enforce),
         );
+
+        Ok(())
+    }
+
+    pub fn set_transfer_restrictions(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        category: Symbol,
+        max_holders: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let key = DataKey2::TransferRestrictions(offering_id, category.clone());
+        let restrictions = TransferRestrictions {
+            category,
+            max_holders,
+        };
+        env.storage().persistent().set(&key, &restrictions);
+        Ok(())
+    }
+
+    pub fn transfer_with_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from: Address,
+        to: Address,
+        amount_bps: u32,
+        category: Symbol,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if from == to {
+            return Ok(());
+        }
+
+        let from_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
+            .unwrap_or(0);
+        if from_share < amount_bps {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        let to_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
+            .unwrap_or(0);
+
+        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
+        if let Some(existing) = existing_cat {
+            if existing != category {
+                if to_share > 0 {
+                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
+                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
+                    env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
+                    
+                    let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                    let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
+                    if let Some(restrictions) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, TransferRestrictions>(&DataKey2::TransferRestrictions(offering_id.clone(), category.clone()))
+                    {
+                        if new_count >= restrictions.max_holders {
+                            env.storage().persistent().set(&old_count_key, &old_count);
+                            return Err(RevoraError::CategoryCapReached);
+                        }
+                    }
+                    env.storage().persistent().set(&new_count_key, &(new_count + 1));
+                }
+                env.storage().persistent().set(&cat_key, &category);
+            }
+        } else {
+            env.storage().persistent().set(&cat_key, &category);
+        }
+
+        Self::set_holder_share_internal(&env, issuer.clone(), namespace.clone(), token.clone(), from.clone(), from_share - amount_bps)?;
+        Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps)?;
 
         Ok(())
     }
