@@ -14,7 +14,7 @@ fn security_doc_sync_returns_expected_markers() {
 
     assert_eq!(payload.get(symbol_short!("ver")).unwrap(), CONTRACT_VERSION);
     assert_eq!(payload.get(symbol_short!("ev_sch")).unwrap(), 1u32);
-    assert_eq!(payload.get(symbol_short!("idx_sch")).unwrap(), 2u32);
+    assert_eq!(payload.get(symbol_short!("idx_sch")).unwrap(), 3u32);
     assert_eq!(
         payload.get(symbol_short!("err_xfer")).unwrap(),
         RevoraError::TransferFailed as u32
