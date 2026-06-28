@@ -173,6 +173,11 @@ pub enum RevoraError {
 
 pub mod vesting;
 
+#[cfg(feature = "kani")]
+pub mod kani_harness;
+
+#[cfg(test)]
+mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]

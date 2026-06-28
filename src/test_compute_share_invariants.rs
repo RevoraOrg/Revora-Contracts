@@ -430,6 +430,44 @@ fn rounding_boundary_negative_half() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Issue #465: i128::MIN — naive multiply must panic, decomposition must not wrap
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn i128_min_naive_multiply_overflow_is_detected() {
+    // Naive `amount * bps` overflows for i128::MIN at full bps; must not silently wrap.
+    assert!(
+        i128::MIN.checked_mul(10_000).is_none(),
+        "i128::MIN * 10_000 must not fit in i128"
+    );
+}
+
+/// Naive multiply reference — panics instead of silently wrapping on overflow.
+fn naive_product_or_panic(amount: i128, bps: u32) -> i128 {
+    amount
+        .checked_mul(bps as i128)
+        .expect("amount * bps overflow: decomposition path must be used instead")
+}
+
+#[test]
+#[should_panic(expected = "amount * bps overflow: decomposition path must be used instead")]
+fn i128_min_naive_multiply_documented_panic() {
+    naive_product_or_panic(i128::MIN, 10_000);
+}
+
+#[test]
+fn i128_min_full_bps_decomposition_is_exact_not_wrapped() {
+    let (_env, c) = client();
+    let result_trunc = c.compute_share(&i128::MIN, &10_000, &RoundingMode::Truncation);
+    let result_round = c.compute_share(&i128::MIN, &10_000, &RoundingMode::RoundHalfUp);
+    assert_eq!(result_trunc, i128::MIN, "decomposition must return exact MIN, not wrapped value");
+    assert_eq!(result_round, i128::MIN, "decomposition must return exact MIN, not wrapped value");
+    assert_bounds(result_trunc, i128::MIN, "i128::MIN full bps Truncation");
+    assert_bounds(result_round, i128::MIN, "i128::MIN full bps RoundHalfUp");
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Issue #373: compute_share RoundHalfUp & Extreme i128 Value Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 

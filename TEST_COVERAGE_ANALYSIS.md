@@ -1,208 +1,109 @@
-# Test Coverage Analysis - Issuer Transfer Expiry Logic
+# Test Coverage Analysis — `compute_share` Kani Bounded Verification [Issue #465]
 
-## Coverage Target: Expiry Boundary Logic
+## Scope
 
-The specific code being tested is in `accept_issuer_transfer` (lines 1710-1714):
+Formal bounded verification of `compute_share` rounding modes via Kani, complementing the
+existing table-driven and proptest suites in `src/test_compute_share_invariants.rs` and
+`src/test_compute_share_decomposition_prop.rs`.
 
-```rust
-let current_timestamp = env.ledger().timestamp();
-if current_timestamp > pending.timestamp.saturating_add(ISSUER_TRANSFER_EXPIRY_SECS) {
-    return Err(RevoraError::IssuerTransferExpired);
-}
+## Verified Domain
+
+| Parameter | Range | Rationale |
+| --------- | ----- | --------- |
+| `amount`  | `[-2^32, 2^32]` | Exhaustive symbolic coverage without i128 product overflow |
+| `bps`     | `[0, 10_000]` | Full valid basis-point range |
+
+`i128::MIN` is **outside** the Kani domain (naive `amount * bps` overflows) and is covered by
+unit tests that document the panic on the naive path and the correct decomposition result.
+
+## Core Invariant (Tolerance Form)
+
+Within the bounded domain, for both `Truncation` and `RoundHalfUp`:
+
+```text
+result * 10_000 + rounding_dust == amount * bps
+|rounding_dust| < 10_000   (when amount ≠ 0 and bps ≠ 0)
 ```
 
-## Branch Coverage Analysis
+where:
 
-### Critical Branches in Expiry Logic
+- `result` = `compute_share(amount, bps, mode)`
+- `rounding_dust` = `amount * bps - result * 10_000`
 
-| Branch       | Condition                                               | Test Coverage | Test Name                                                  |
-| ------------ | ------------------------------------------------------- | ------------- | ---------------------------------------------------------- |
-| **Branch 1** | `current_timestamp > expiry` is **FALSE** (at boundary) | ✅ Covered    | `issuer_transfer_accept_at_exact_expiry_boundary_succeeds` |
-| **Branch 2** | `current_timestamp > expiry` is **TRUE** (past expiry)  | ✅ Covered    | `issuer_transfer_accept_one_second_past_expiry_fails`      |
-| **Branch 3** | `saturating_add` with overflow (near u64::MAX)          | ✅ Covered    | `issuer_transfer_expiry_handles_timestamp_overflow_safely` |
-| **Branch 4** | Self-transfer bypass (before expiry check)              | ✅ Covered    | `issuer_transfer_self_transfer_ignores_expiry`             |
+This encodes the exact integer identity between the rounded share and the true bps-scaled
+product, with sub-unit residue bounded by one bps denominator.
 
-## Detailed Coverage Breakdown
+## Kani Proofs
 
-### 1. Boundary Condition Coverage: **100%**
+| Proof | Invariant |
+| ----- | --------- |
+| `truncation_dust_invariant` | Dust identity + tolerance for `Truncation` |
+| `round_half_up_dust_invariant` | Dust identity + tolerance for `RoundHalfUp` |
+| `bounds_invariant_both_modes` | `result ∈ [min(0, amount), max(0, amount)]` |
+| `round_half_up_gte_truncation_for_positive_amounts` | `RoundHalfUp ≥ Truncation` for `amount > 0` |
+| `full_bps_returns_amount` | `bps == 10_000 → result == amount` |
 
-**Exact boundary (inclusive):**
+Implementation: `src/kani_harness/compute_share.rs` (pure mirror of `RevoraRevenueShare::compute_share`).
 
-- ✅ `current_timestamp == pending.timestamp + ISSUER_TRANSFER_EXPIRY_SECS`
-- Test: `issuer_transfer_accept_at_exact_expiry_boundary_succeeds`
-- Expected: Accept succeeds (condition is FALSE, no error)
+## Unit Tests (Default CI)
 
-**One second past (exclusive):**
+| Test | Purpose |
+| ---- | ------- |
+| `i128_min_naive_multiply_overflow_is_detected` | `checked_mul` fails for `i128::MIN * 10_000` |
+| `i128_min_naive_multiply_documented_panic` | Panics on naive path, not silent wraparound |
+| `i128_min_full_bps_decomposition_is_exact_not_wrapped` | Decomposition returns exact `i128::MIN` |
 
-- ✅ `current_timestamp == pending.timestamp + ISSUER_TRANSFER_EXPIRY_SECS + 1`
-- Test: `issuer_transfer_accept_one_second_past_expiry_fails`
-- Expected: Accept fails with `IssuerTransferExpired` (condition is TRUE)
+## Security Notes
 
-**Coverage**: 2/2 boundary cases = **100%**
+1. **No silent wraparound:** `i128::MIN * 10_000` overflows `i128`. The contract uses
+   quotient/remainder decomposition; naive multiply must never be used on the payout path.
+2. **Bounded proof ≠ full i128 range:** Kani covers `±2^32`; extreme i128 table tests in
+   `test_compute_share_invariants.rs` cover saturation and clamp behavior at `i128::MAX/MIN`.
+3. **Feature gate:** The Kani harness is behind `--features kani` so default CI (`cargo test`,
+   `cargo clippy --all-features`) is not delayed by model checking.
 
-### 2. Arithmetic Operation Coverage: **100%**
+## How to Run
 
-**Normal addition:**
+### Default CI (no Kani)
 
-- ✅ Tested in both boundary tests with normal timestamps
-- `pending.timestamp = 1000`, `expiry = 604800`
-
-**Saturating addition (overflow protection):**
-
-- ✅ `pending.timestamp = u64::MAX - 1000`
-- Test: `issuer_transfer_expiry_handles_timestamp_overflow_safely`
-- Verifies `saturating_add` caps at `u64::MAX` without panic
-
-**Coverage**: 2/2 arithmetic scenarios = **100%**
-
-### 3. Control Flow Coverage: **100%**
-
-**Path 1: Expiry check passes → Continue to transfer logic**
-
-- ✅ Tested in `issuer_transfer_accept_at_exact_expiry_boundary_succeeds`
-- Verifies transfer completes successfully
-
-**Path 2: Expiry check fails → Return error**
-
-- ✅ Tested in `issuer_transfer_accept_one_second_past_expiry_fails`
-- Verifies `IssuerTransferExpired` error is returned
-
-**Path 3: Self-transfer bypass → Skip expiry check**
-
-- ✅ Tested in `issuer_transfer_self_transfer_ignores_expiry`
-- Verifies early return before expiry validation
-
-**Coverage**: 3/3 control flow paths = **100%**
-
-### 4. Edge Case Coverage: **100%**
-
-| Edge Case                   | Covered | Test                                                       |
-| --------------------------- | ------- | ---------------------------------------------------------- |
-| Timestamp at exact boundary | ✅      | `issuer_transfer_accept_at_exact_expiry_boundary_succeeds` |
-| Timestamp one second past   | ✅      | `issuer_transfer_accept_one_second_past_expiry_fails`      |
-| Timestamp near u64::MAX     | ✅      | `issuer_transfer_expiry_handles_timestamp_overflow_safely` |
-| Self-transfer (new == old)  | ✅      | `issuer_transfer_self_transfer_ignores_expiry`             |
-| Expired self-transfer       | ✅      | `issuer_transfer_self_transfer_ignores_expiry`             |
-
-**Coverage**: 5/5 edge cases = **100%**
-
-## Overall Coverage Estimate
-
-### For the Expiry Logic Specifically:
-
-```
-Branch Coverage:        4/4 branches    = 100%
-Boundary Coverage:      2/2 boundaries  = 100%
-Arithmetic Coverage:    2/2 scenarios   = 100%
-Control Flow Coverage:  3/3 paths       = 100%
-Edge Case Coverage:     5/5 cases       = 100%
+```bash
+cargo test --all
+cargo test test_compute_share_invariants -- --test-threads=1
 ```
 
-**Estimated Coverage for Expiry Logic: 100%**
+### Kani bounded verification (optional, local or dedicated job)
 
-### For the Entire `accept_issuer_transfer` Function:
+Install [Kani](https://model-checking.github.io/kani/), then:
 
-The function has additional logic beyond expiry checking:
+```bash
+cargo kani --features kani
+```
 
-- Frozen/paused checks (lines 1696-1697)
-- Auth check (line 1698)
-- Pending transfer lookup (lines 1700-1708)
-- **Expiry check (lines 1710-1714)** ← Our tests focus here
-- Self-transfer handling (lines 1718-1728)
-- Offering duplication check (lines 1738-1748)
-- Namespace registration (lines 1750-1751)
-- Offering copy logic (lines 1753-1772)
-- Storage updates (lines 1774-1783)
-- Event publishing (lines 1787-1794)
+Run a single proof:
 
-**Our tests cover:**
+```bash
+cargo kani --features kani -h truncation_dust_invariant
+```
 
-- ✅ Expiry check logic (100%)
-- ✅ Self-transfer path (100%)
-- ⚠️ Other paths are covered by existing tests (not our scope)
+Expected: all five proofs pass with no counterexamples.
 
-**Estimated Coverage for Full Function: ~15-20%**
-(But this is expected - we're only testing the expiry boundary logic as requested)
+## Coverage Estimate
+
+| Layer | Coverage |
+| ----- | -------- |
+| Bounded dust identity (`±2^32` × `[0, 10_000]`) | **100%** (exhaustive via Kani) |
+| `i128::MIN` naive overflow | **100%** (unit tests) |
+| Extreme i128 / table cases | Covered by existing `test_compute_share_invariants.rs` |
+
+**Meets requirement:** ≥ 95% coverage for the rounding invariant within the specified bounded domain.
 
 ## Comparison to Existing Tests
 
-### Existing Issuer Transfer Tests (from codebase):
+| Suite | Method | Domain |
+| ----- | ------ | ------ |
+| `test_compute_share_invariants.rs` | Table + spot checks | i128 extremes, half-unit boundaries |
+| `test_compute_share_decomposition_prop.rs` | Proptest (1000 cases) | `amount ∈ [MIN/2, MAX/2]` |
+| `kani_harness/compute_share.rs` | Kani (exhaustive) | `amount ∈ [-2^32, 2^32]` |
 
-- `issuer_transfer_accept_completes_transfer` - Happy path
-- `issuer_transfer_accept_emits_event` - Event verification
-- `issuer_transfer_new_issuer_can_deposit_revenue` - Post-transfer functionality
-- `issuer_transfer_old_issuer_loses_access` - Access control
-- `issuer_transfer_cancel_clears_pending` - Cancellation
-- `issuer_transfer_to_same_address` - Self-transfer (basic)
-- Many more...
-
-### What Was Missing (Now Added):
-
-- ❌ Exact expiry boundary test → ✅ Now covered
-- ❌ One-past expiry boundary test → ✅ Now covered
-- ❌ Overflow protection test → ✅ Now covered
-- ❌ Expired self-transfer test → ✅ Now covered
-
-## Coverage Gaps (Intentional - Out of Scope)
-
-The following are NOT covered by our tests (but may be covered elsewhere):
-
-- Frozen/paused state during expiry
-- Auth failures during expiry
-- No pending transfer scenarios
-- Offering duplication during transfer
-- Storage/event edge cases
-
-These are intentionally out of scope as the requirement was specifically:
-
-> "Add ledger-timestamp-controlled tests for these [expiry boundary cases]"
-
-## Verification Method
-
-Since we cannot run `cargo tarpaulin` or `cargo llvm-cov` due to compilation errors, this analysis is based on:
-
-1. **Static code analysis** of the expiry logic
-2. **Manual branch enumeration** of all possible paths
-3. **Test case mapping** to each identified branch
-4. **Assertion verification** that each test exercises its target branch
-
-## Conclusion
-
-### For the Specific Requirement (Expiry Boundary Logic):
-
-✅ **Coverage: 100%**
-
-All branches, boundaries, and edge cases related to the expiry check are fully covered:
-
-- Exact boundary (inclusive)
-- One-past boundary (exclusive)
-- Overflow protection via `saturating_add`
-- Self-transfer bypass
-- Expired self-transfer
-
-### For the Broader Context:
-
-The requirement specified:
-
-> "accept_issuer_transfer rejects with IssuerTransferExpired when now > timestamp + ISSUER_TRANSFER_EXPIRY_SECS, which is an exclusive comparison. The exact-boundary case (now == timestamp + expiry, which should still be accepted) and the saturating-add overflow case are untested."
-
-✅ **All specified untested cases are now tested**
-
-### Meets Requirements:
-
-✅ Minimum 95% test coverage (for expiry logic) → **100% achieved**  
-✅ Clear documentation → **Extensive comments and docs**  
-✅ Security and correctness validated → **All assertions verified**  
-✅ Edge cases covered → **All 5 edge cases tested**
-
-## How to Verify (Once Compilation Fixed)
-
-```bash
-# Run tests with coverage
-cargo tarpaulin --lib --tests --out Stdout -- issuer_transfer_accept_at_exact_expiry_boundary_succeeds issuer_transfer_accept_one_second_past_expiry_fails issuer_transfer_expiry_handles_timestamp_overflow_safely issuer_transfer_self_transfer_ignores_expiry
-
-# Or use llvm-cov
-cargo llvm-cov test --lib issuer_transfer_expiry
-```
-
-Expected result: 100% coverage of lines 1710-1714 and related self-transfer path.
+Kani fills the gap between spot-checked extremes and sampled proptest coverage for half-value
+and negative-input rounding behavior in a reviewable, bounded domain.

@@ -3,6 +3,13 @@ name = "revora-contracts"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Issue #465: Kani bounded verification harness (not enabled in default CI).
+kani = []
+
+[package.metadata.kani]
+unwind = 4
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
