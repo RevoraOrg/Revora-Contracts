@@ -2,61 +2,60 @@
 
 ## Summary
 
-This change hardens payment token locking so the canonical payout token is explicit from offering configuration and queryable before deposit, while remaining backward-compatible with existing storage.
+`PaymentToken` is now locked only by the first **successful** `deposit_revenue`
+or `deposit_revenue_with_snapshot` call for an offering.
+
+This hardening restores the storage model documented in the contract:
+
+- `PaymentToken(OfferingId)` records the canonical payout token only after success
+- `PeriodRevenue(OfferingId, period_id)` records one successful deposit per period
+- `PeriodEntry(OfferingId, index)` enumerates only successfully deposited periods
+
+There is no fallback from `PaymentToken` to `Offering.payout_asset` during
+deposit processing or `get_payment_token` reads.
 
 ## Behavior
 
-- Each offering's payment token is canonically locked to its configured `payout_asset`.
-- `get_payment_token` exposes that lock immediately, even before the first deposit.
-- If no explicit `PaymentToken` storage entry exists yet, the contract falls back to `payout_asset`.
-- On the first successful deposit with the canonical token, the lock entry is persisted.
-- `deposit_revenue` and `deposit_revenue_with_snapshot` must use the locked token.
-- `get_payment_token` exposes the locked token for review and integrations.
+- `get_payment_token` returns `None` if the offering is unknown or if the offering exists but has not yet recorded a successful deposit.
+- The first successful deposit writes `PaymentToken = payment_token`.
+- Subsequent deposits must use that exact token or fail with
+  `RevoraError::PaymentTokenMismatch`.
+- Duplicate period deposits fail with `RevoraError::PeriodAlreadyDeposited`.
+- Failed deposits do not write `PaymentToken`, `PeriodRevenue`, `PeriodEntry`,
+  `PeriodCount`, or `LastPeriodId`.
 
 ## Security Assumptions
 
-1. Single canonical payout asset per offering:
-- Revenue deposits and claims must use one token only.
-- This prevents asset-mixing across periods for the same offering.
+1. Payment-token locking is success-based:
+- A token is canonical only after a transfer-backed deposit succeeds.
+- Validation failures or transfer failures must not partially initialize lock state.
 
-2. Offering configuration is the trust boundary:
-- The issuer chooses `payout_asset` during `register_offering`.
-- After registration, the contract treats that asset as immutable payment-token policy.
+2. Asset identity is explicit:
+- The contract never silently coerces `payment_token` from `payout_asset`.
+- Integrators must pass the intended payout token on the first successful deposit.
 
-3. Backward compatibility for older storage:
-- If an older offering does not yet have an explicit `PaymentToken` entry, the contract treats `payout_asset` as the canonical lock.
-- When a matching deposit occurs, the lock entry is backfilled.
+3. Retry safety is required:
+- A failed first deposit for `period_id = N` must leave `N` reusable for a correct retry.
+- This prevents accidental `InvalidPeriodId` or `PaymentTokenMismatch` outcomes on
+  correct follow-up sequencing.
 
-4. Fail closed on mismatch:
-- A deposit using any other token returns `RevoraError::PaymentTokenMismatch`.
-- No period state is written when this happens.
-
-## Interface
-
-- `get_payment_token(issuer, namespace, token) -> Option<Address>`
-
-Returns:
-- `Some(address)` for known offerings
-- `None` if the offering does not exist
-
-## Developer Notes
-
-- Claims now resolve payment token via the same canonical lock path instead of assuming a previously written storage key.
-- This removes ambiguity for integrations and avoids missing-key edge cases.
+4. Duplicate periods fail closed:
+- Once `PeriodRevenue(offering, period_id)` exists, the same `period_id` is always
+  rejected as already deposited.
 
 ## Test Coverage
 
-Added deterministic coverage for:
-- lock visibility immediately after registration
-- lock preservation across successful deposits
-- lock preservation across snapshot deposits
-- unknown-offering lookup behavior
-- missing-auth registration leaves no lock behind
+Covered in `src/test.rs`:
 
-## Review Scope
+- `register_offering_does_not_lock_payment_token_before_first_deposit`
+- `failed_first_deposit_does_not_lock_payment_token_or_consume_period`
+- `first_deposit_uses_registered_payment_token_lock`
+- `second_deposit_rejects_wrong_payment_token_without_mutating_state`
+- `deposit_revenue_fails_for_duplicate_period`
+- zero-amount and invalid-period rejection without lock mutation
 
-Changes are limited to:
-- `src/lib.rs`
-- `src/test.rs`
-- `src/test_auth.rs`
-- this document
+## Review Notes
+
+- `PaymentTokenMismatch` is now reserved for a real post-lock mismatch.
+- Correct integrator sequencing cannot trigger that error accidentally before any
+  successful deposit has established the lock.

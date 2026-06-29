@@ -1,166 +1,70 @@
 # Negative Amount Validation Matrix
 
 **Feature ID:** #163  
-**Contract:** RevoraRevenueShare  
-**Status:** Implemented
+**Contract:** `RevoraRevenueShare`  
+**Status:** Updated for the current branch
 
-## Overview
+## Scope
 
-The Negative Amount Validation Matrix provides a centralized, deterministic framework for validating `i128` amount values across all contract operations. It ensures consistent handling of edge cases (zero, positive, negative, boundary values) and emits structured events on validation failures for monitoring and debugging.
+This checklist covers the current public Revora entrypoints that accept signed amount-like values and should reject invalid negative inputs with `RevoraError::InvalidAmount`.
 
-## Security Assumptions
+It is intentionally Revora-specific:
 
-1. **No Trust Without Validation:** All amount parameters from external callers are treated as untrusted and must pass validation before use.
-2. **Fail-Safe Defaults:** Invalid amounts always fail in the direction that prevents potential fund loss (e.g., deposits require positive amounts).
-3. **Overflow Protection:** All arithmetic uses checked operations; the validation matrix uses saturating comparisons where overflow is possible.
-4. **Auditability:** Validation failures emit structured events (`amt_valid`) with amount, error code, and reason for off-chain monitoring.
+- `register_offering` validates `supply_cap`
+- `report_revenue` validates `amount`
+- `deposit_revenue` validates `amount`
+- `deposit_revenue_with_snapshot` validates both `amount` and `snapshot_reference`
+- `set_investment_constraints` validates `min_stake`, `max_stake`, and the `min <= max` invariant
+- `set_min_revenue_threshold` validates `min_amount`, including update transitions
 
 ## Validation Categories
 
-| Category | Requirement | Valid Values | Invalid Values | Error |
-|----------|-------------|--------------|----------------|-------|
+| Category | Requirement | Valid examples | Invalid examples | Error |
+|----------|-------------|----------------|------------------|-------|
 | `RevenueDeposit` | `> 0` | `1`, `1000`, `i128::MAX` | `0`, `-1`, `i128::MIN` | `InvalidAmount` |
 | `RevenueReport` | `>= 0` | `0`, `1`, `1000` | `-1`, `i128::MIN` | `InvalidAmount` |
-| `HolderShare` | `>= 0` | `0`, `500`, `10000` | `-1`, `i128::MIN` | `InvalidAmount` |
 | `MinRevenueThreshold` | `>= 0` | `0`, `100`, `1000` | `-1`, `i128::MIN` | `InvalidAmount` |
 | `SupplyCap` | `>= 0` | `0`, `1_000_000` | `-1`, `i128::MIN` | `InvalidAmount` |
 | `InvestmentMinStake` | `>= 0` | `0`, `100`, `1000` | `-1`, `i128::MIN` | `InvalidAmount` |
-| `InvestmentMaxStake` | `>= 0` | `0`, `10000` | `-1`, `i128::MIN` | `InvalidAmount` |
-| `SnapshotReference` | `> 0` | `1`, `100`, `9999` | `0`, `-1`, `i128::MIN` | `InvalidAmount` |
-| `PeriodId` | `>= 0` | `0`, `1`, `100` | `-1`, `i128::MIN` | `InvalidPeriodId` |
-| `Simulation` | Any i128 | `-1`, `0`, `1`, `i128::MIN`, `i128::MAX` | (none) | (none) |
+| `InvestmentMaxStake` | `>= 0` | `0`, `10_000` | `-1`, `i128::MIN` | `InvalidAmount` |
+| `SnapshotReference` | `> 0` | `1`, `100`, `9999` | `0` | `InvalidAmount` |
 
-## Entry Points Using the Matrix
+## Public Entry Checklist
 
-| Entry Point | Parameter(s) | Category |
-|-------------|--------------|----------|
-| `register_offering` | `supply_cap` | `SupplyCap` |
-| `deposit_revenue` | `amount` | `RevenueDeposit` |
-| `deposit_revenue_with_snapshot` | `amount` | `RevenueDeposit` |
-| `deposit_revenue_with_snapshot` | `snapshot_reference` | `SnapshotReference` |
-| `report_revenue` | `amount` | `RevenueReport` |
-| `set_investment_constraints` | `min_stake` | `InvestmentMinStake` |
-| `set_investment_constraints` | `max_stake` | `InvestmentMaxStake` |
-| `set_min_revenue_threshold` | `min_amount` | `MinRevenueThreshold` |
+| Entrypoint | Parameter | Expected behavior | Covered by |
+|------------|-----------|-------------------|------------|
+| `register_offering` | `supply_cap` | Reject negative caps; do not register offering | `register_offering_rejects_negative_supply_cap_values` |
+| `report_revenue` | `amount` | Reject negative reports; do not mutate audit summary | `report_revenue_rejects_negative_amount_boundaries_without_audit_mutation` |
+| `deposit_revenue` | `amount` | Reject zero/negative deposits; do not create period state | `deposit_revenue_rejects_non_positive_amounts_without_mutating_period_state` |
+| `deposit_revenue_with_snapshot` | `amount` | Reject zero/negative deposits; do not create period state or snapshot state | `deposit_revenue_with_snapshot_rejects_non_positive_amounts_without_state_changes` |
+| `deposit_revenue_with_snapshot` | `snapshot_reference` | Reject `0`; leave snapshot cursor unchanged | `deposit_revenue_with_snapshot_rejects_zero_snapshot_reference_without_state_changes` |
+| `set_investment_constraints` | `min_stake` | Reject negative minimum stake | `set_investment_constraints_rejects_negative_min_stake` |
+| `set_investment_constraints` | `max_stake` | Reject negative maximum stake | `set_investment_constraints_rejects_negative_max_stake` |
+| `set_investment_constraints` | `min_stake > max_stake` | Reject invalid range; preserve previous config | `set_investment_constraints_rejects_invalid_range_without_overwriting_previous_config` |
+| `set_min_revenue_threshold` | `min_amount` | Reject negative threshold updates; preserve previous threshold | `set_min_revenue_threshold_rejects_negative_transition_without_overwriting_previous_value` |
 
-## Additional Validation Rules
+## Fee-Related Note
 
-### Stake Range Validation
-`set_investment_constraints` also validates that `min_stake <= max_stake` when `max_stake > 0`.
+The current branch does not expose a public fee setter that returns `InvalidAmount`.
 
-```rust
-validate_stake_range(min_stake, max_stake) -> Result<(), RevoraError>
-```
+The only public fee-related amount helper is:
 
-**Rule:** `max_stake > 0 && min_stake > max_stake` → `Err(InvalidAmount)`
+| Entrypoint | Parameter | Behavior |
+|------------|-----------|----------|
+| `calculate_fee_for_asset` | `amount` | Pure quote helper; documented outside the rejection matrix because it does not return `Result` or mutate state |
 
-### Snapshot Monotonicity
-`deposit_revenue_with_snapshot` validates that new snapshot references are strictly increasing.
+## Security Assumptions
 
-```rust
-validate_snapshot_monotonic(new_ref, last_ref) -> Result<(), RevoraError>
-```
+1. SDK wrappers may accidentally pass signed `i128` values where integrators intended unsigned economics.
+2. Rejected negative paths must fail before any token movement, period creation, snapshot cursor update, or config overwrite.
+3. Threshold and investment-constraint failures must preserve the last valid configuration.
+4. Zero is only allowed where the contract semantics explicitly permit it, such as `report_revenue` and disabling `min_revenue_threshold`.
 
-**Rule:** `new_ref <= last_ref` → `Err(OutdatedSnapshot)`
+## Test Location
 
-## Event Emissions
+- Consolidated regression file: `src/invalid_amount_matrix_tests.rs`
+- Supporting validation helper: `src/lib.rs` -> `AmountValidationMatrix`
 
-On validation failure, the contract emits an `amt_valid` event:
+## Risk Note
 
-```
-topic: (EVENT_AMOUNT_VALIDATION_FAILED, issuer, namespace, token)
-data: (amount, error_code, reason_symbol)
-```
-
-**Reason Symbols:**
-- `must_be_pos`: Amount must be strictly positive
-- `no_neg_rept`: Negative revenue report not allowed
-- `no_neg_share`: Negative holder share not allowed
-- `no_neg_thr`: Negative threshold not allowed
-- `no_neg_cap`: Negative supply cap not allowed
-- `no_neg_min`: Negative minimum stake not allowed
-- `no_neg_max`: Negative maximum stake not allowed
-- `snap_must_pos`: Snapshot reference must be positive
-- `no_neg_per`: Negative period ID not allowed
-
-## API
-
-### Core Validation
-
-```rust
-AmountValidationMatrix::validate(amount, category) -> Result<(), (RevoraError, Symbol)>
-```
-
-### Stake Range
-
-```rust
-AmountValidationMatrix::validate_stake_range(min, max) -> Result<(), RevoraError>
-```
-
-### Snapshot Monotonicity
-
-```rust
-AmountValidationMatrix::validate_snapshot_monotonic(new_ref, last_ref) -> Result<(), RevoraError>
-```
-
-### Detailed Result
-
-```rust
-AmountValidationMatrix::validate_detailed(amount, category) -> AmountValidationResult
-```
-
-### Batch Validation
-
-```rust
-AmountValidationMatrix::validate_batch(amounts, category) -> Option<usize>
-// Returns index of first failure, or None if all pass
-```
-
-### Function Mapping (for debugging)
-
-```rust
-AmountValidationMatrix::category_for_function("deposit_revenue") -> Some(AmountValidationCategory::RevenueDeposit)
-```
-
-## Test Coverage
-
-The implementation includes comprehensive tests covering:
-
-- [x] All categories accept valid boundary values (0, 1, i128::MAX)
-- [x] All categories reject invalid boundary values (-1, i128::MIN) as appropriate
-- [x] Stake range validation (min <= max)
-- [x] Snapshot monotonicity (strictly increasing)
-- [x] Batch validation (first/middle/last failures)
-- [x] Detailed validation result structure
-- [x] Function name mapping
-- [x] Integration tests with actual contract entry points
-- [x] Event emission on validation failure
-
-**Test Module:** `src/test.rs` → `mod negative_amount_validation_matrix`
-
-## Abuse/Failure Paths
-
-| Attack Vector | Mitigation |
-|--------------|------------|
-| Negative deposit amounts | `RevenueDeposit` requires `> 0`; tokens cannot be created from nothing |
-| Negative revenue reports | `RevenueReport` requires `>= 0`; prevents fund extraction via negative adjustments |
-| Negative supply caps | `SupplyCap` requires `>= 0`; prevents invalid cap configurations |
-| Snapshot regression | `SnapshotReference` requires `> 0` and strict monotonicity |
-| Invalid stake ranges | Range validation ensures `min <= max` |
-| Integer overflow in comparisons | Uses saturating arithmetic where needed |
-
-## Constants
-
-```rust
-const EVENT_AMOUNT_VALIDATION_FAILED: Symbol = symbol_short!("amt_valid");
-```
-
-## Migration Notes
-
-This feature is additive and backward-compatible. Existing validations are now centralized through the matrix but produce identical error codes for the same failure modes.
-
-## References
-
-- Issue #163: Implement Negative Amount Validation Matrix
-- Issue #35: Input validation for amounts and period IDs
-- Soroban SDK: `i128` signed integer type
+The remaining risk is documentation drift, not arithmetic ambiguity: if README tables or wrapper SDKs disagree with the contract's signedness rules, integrators can accidentally treat rejected negative paths as valid business inputs. This checklist and the consolidated tests are meant to keep that drift visible in review.

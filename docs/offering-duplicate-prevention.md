@@ -19,11 +19,9 @@ Prevents:
 - Replay-style abuse
 
 ## Implementation Details
-Duplicate detection is performed using:
+`env.storage().persistent().has(&DataKey::OfferingIssuer(offering_id))`
 
-`get_offering(env, issuer, namespace, token)`
-
-If an existing offering is found, storage write is skipped.
+This O(1) check ensures that any logical duplicate (same issuer, namespace, and token) is detected before any storage writes occur.
 
 ## Testing
 - Existing test suite is preserved

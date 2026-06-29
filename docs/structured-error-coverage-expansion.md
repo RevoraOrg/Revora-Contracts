@@ -27,7 +27,7 @@ condition, and a dedicated test in `src/structured_error_tests.rs`.
 | 6 | `NoPendingClaims` | 6 | `claim` | `share_bps == 0` or all periods claimed |
 | 7 | `HolderBlacklisted` | 7 | `claim` | Holder is blacklisted |
 | 8 | `InvalidShareBps` | 8 | `set_holder_share` | `share_bps > 10_000` |
-| 9 | `PaymentTokenMismatch` | 9 | `deposit_revenue` | `payment_token` != offering's `payout_asset` |
+| 9 | `PaymentTokenMismatch` | 9 | `deposit_revenue` | `payment_token` != token locked by the first successful deposit |
 | 10 | `ContractFrozen` | 10 | All state-mutating entrypoints | `DataKey::Frozen` is `true` |
 | 11 | `ClaimDelayNotElapsed` | 11 | `claim` | Deposit time + delay > `now` |
 | 12 | `SnapshotNotEnabled` | 12 | `deposit_revenue_with_snapshot` | Snapshots not enabled |

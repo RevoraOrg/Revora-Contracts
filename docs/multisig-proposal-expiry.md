@@ -2,71 +2,46 @@
 
 ## Overview
 
-The contract includes a minimal multisig admin module used for sensitive administrative changes (e.g. freezing the contract, rotating owners, changing threshold, changing proposal duration).
+Multisig proposals carry an on-chain `expiry` timestamp.
 
-Each multisig proposal has a deterministic `expiry` timestamp stored on-chain. After expiry, the proposal can no longer be approved or executed.
+- Expired proposals cannot be approved.
+- Expired proposals cannot be executed.
+- Executed proposals cannot run again.
 
-## Storage and Types
+Related: [Duplicate approval guards](./multisig-duplicate-approval-guards.md).
 
-- Proposals are stored in persistent storage under `DataKey::MultisigProposal(u32)`.
-- Proposal payload is represented by:
-  - `ProposalAction` (the requested admin change)
-  - `Proposal` (proposal metadata including approvals and expiry)
+## Expiry Model
 
-The `Proposal` struct includes:
+`propose_action` computes:
 
-- `id: u32`
-- `action: ProposalAction`
-- `proposer: Address`
-- `approvals: Vec<Address>`
-- `executed: bool`
-- `expiry: u64`
+- `expiry = ledger_timestamp + proposal_duration`
 
-## Expiry Semantics
+`init_multisig` stores `proposal_duration` in `DataKey::MultisigProposalDuration` and rejects `proposal_duration == 0` with `RevoraError::InvalidAmount`.
 
-### How expiry is computed
-
-When creating a proposal via `propose_action`, expiry is calculated as:
-
-- `now = env.ledger().timestamp()`
-- `expiry = now + proposal_duration`
-
-The implementation uses checked arithmetic (`checked_add`) and fails if the addition would overflow.
-
-`proposal_duration` is set during `init_multisig` and can later be updated through a multisig proposal (`ProposalAction::SetProposalDuration`).
-
-### When a proposal is considered expired
-
-A proposal is considered expired when:
+A proposal is expired when:
 
 - `env.ledger().timestamp() >= proposal.expiry`
 
-This boundary is intentional and deterministic. If `now == expiry`, the proposal is already expired.
+The `now == expiry` boundary is intentionally expired.
 
-### What expiry blocks
+## Runtime Outcomes
 
-If a proposal is expired, the following entrypoints return `Err(RevoraError::ProposalExpired)`:
+- `approve_action` on expired proposal: `Err(RevoraError::ProposalExpired)`
+- `execute_action` on expired proposal: `Err(RevoraError::ProposalExpired)`
+- `execute_action` on already executed proposal: `Err(RevoraError::LimitReached)`
 
-- `approve_action`
-- `execute_action`
+Auth failures are host-level panics from `require_auth`, not contract `RevoraError` returns.
 
-`get_proposal` remains readable regardless of expiry.
+## Tests
 
-## Security Assumptions and Abuse Paths
-
-- Expiry prevents execution of stale proposals after long inactivity or after off-chain coordination context has changed.
-- Expiry does not delete proposal data. Proposals remain in storage for auditability.
-- An attacker cannot extend the life of an already-created proposal. Updating `MultisigProposalDuration` only affects proposals created after the update.
-- Expiry is based on ledger timestamp. This assumes the ledger timestamp is the authoritative time source for the chain.
-
-## Test Coverage
-
-Deterministic tests validate expiry behavior at the exact boundary (`now == expiry`):
-
-- Approval fails at expiry.
-- Execution fails at expiry.
-
-See `src/test.rs`:
+Implemented adversarial coverage in `src/test.rs`:
 
 - `multisig_approve_fails_after_expiry_boundary`
 - `multisig_execute_fails_after_expiry_boundary`
+- `multisig_execute_twice_fails`
+
+## Security Notes
+
+- Expiry blocks stale governance execution after long inactivity.
+- Expiry does not delete proposal data; historical records remain queryable.
+- Changing proposal duration affects only future proposals.

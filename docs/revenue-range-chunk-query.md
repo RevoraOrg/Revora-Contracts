@@ -58,3 +58,17 @@ loop {
 ## Security Assumptions
 - **Read-Only**: This function does not modify state and is safe to call from any context.
 - **No Auth Required**: Revenue data is public to all participants in the Revora ecosystem; therefore, no `require_auth` is enforced on this query.
+
+## Tests & Notes
+
+Automated tests were added to validate deterministic, bounded cursor iteration and edge cases:
+
+- `get_revenue_range_chunk_matches_full_sum` — sums a full range by iterating in chunks and compares to the unbounded `get_revenue_range` result.
+- `get_revenue_range_chunk_inverted_range_returns_zero` — validates that `from > to` returns `(0, None)`.
+- `get_revenue_range_chunk_cap_clamps_and_returns_next_start` — ensures `max_periods=0` normalizes to `MAX_CHUNK_PERIODS` (200) and next cursor points to the remaining period.
+- `get_revenue_range_chunk_chunked_iteration_off_by_one_sequence` — verifies cursor progression and off-by-one behavior for small ranges.
+
+Running `cargo test` and `cargo clippy` in the Soroban/Rust environment should produce green tests for these additions. Security considerations:
+
+- The function is read-only and deterministic; attackers cannot manipulate returned cursors because the function uses only input ranges and stored per-period revenue values.
+- Capping `max_periods` prevents denial-of-service via unbounded reads. Ensure indexers respect returned `next_start` and loop until `None`.

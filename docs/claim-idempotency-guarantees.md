@@ -88,10 +88,16 @@ None of these checks write state. A caller that fails any check may retry after 
 
 ## Test Coverage
 
-All invariants above are covered by `src/test.rs :: mod claim_idempotency`:
+All invariants above are covered by tests in `src/test.rs` (search for `claim_idempotency`):
 
 | Test | Invariant |
 |------|-----------|
+| `claim_idempotency_retry_after_full_claim_returns_no_pending` | 1, 4 |
+| `claim_idempotency_cursor_does_not_regress_after_partial_claim` | 1, 2 |
+| `claim_idempotency_no_new_periods_returns_no_pending` | 4 |
+| `claim_idempotency_backfill_deposit_order_cursor_monotonic` | 2, 4 |
+| `claim_idempotency_per_holder_cursor_isolation` | 5 |
+| `claim_idempotency_new_deposit_after_exhaustion_claimable_once` | 1, 4 |
 | `exhausted_claim_returns_no_pending_claims_without_side_effects` | 4 |
 | `delay_blocked_claim_leaves_index_unchanged` | 2 |
 | `zero_payout_period_advances_index_no_transfer` | 3 |

@@ -1,0 +1,78 @@
+﻿cargo :    Compiling 
+proc-macro2 v1.0.69
+At line:1 char:1
++ cargo check 2> 
+cargo_errors.txt
++ ~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: (   Compiling    
+ proc-macro2 v1.0.6    
+9:String) [], Remo    
+teException
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+   Compiling serde 
+v1.0.192
+   Compiling typenum 
+v1.19.0
+   Compiling 
+serde_json v1.0.108
+   Compiling 
+generic-array v0.14.9
+    Checking const-oid 
+v0.9.6
+    Checking subtle 
+v2.6.1
+    Checking cfg-if 
+v1.0.4
+error: linker 
+`link.exe` not found
+  |
+  = note: program not 
+found
+
+note: the msvc targets 
+depend on the msvc 
+linker but `link.exe` 
+was not found
+
+note: please ensure 
+that Visual Studio 
+2017 or later, or 
+Build Tools for Visual 
+Studio were installed 
+with the Visual C++ 
+option.
+
+note: VS Code is a 
+different product, and 
+is not sufficient.
+
+error: could not 
+compile `serde` (build 
+script) due to 1 
+previous error
+warning: build failed, 
+waiting for other jobs 
+to finish...
+error: could not 
+compile `serde_json` 
+(build script) due to 
+1 previous error
+error: could not 
+compile `proc-macro2` 
+(build script) due to 
+1 previous error
+error: could not 
+compile 
+`generic-array` (build 
+script) due to 1 
+previous error
+error: could not 
+compile `typenum` 
+(build script) due to 
+1 previous error

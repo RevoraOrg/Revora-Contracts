@@ -1,9 +1,15 @@
-# Contract Fuzz Harness
+# Revora Fuzzing & Stress Harness
 
-## Overview
+This document describes the automated stress testing story for the Revora-Contracts suite.
 
-The Contract Fuzz Harness provides production-grade property-based and boundary-sweep testing for the Revora revenue-share contract. It lives in `src/test.rs` under the `fuzz_harness` module and is backed by composable strategies in `src/proptest_helpers.rs`.
+## Execution
+- **Standard Unit Tests:** `cargo test`
+- **Harden/Stress Tests (CI-Safe):** `cargo test --features stress-tests`
 
+## Security Invariants
+1. **Loop Bounding:** Input parameters like `period_id` are gated (max 1000) to prevent CPU instruction exhaustion.
+2. **Panic-Free Execution:** The harness verifies that edge-case inputs return `Result::Err` rather than panicking.
+3. **Deterministic Seeds:** Fixed seeds are used in CI to ensure reproducibility of failures.
 The harness covers three layers:
 
 1. Deterministic boundary sweeps — explicit `[i128::MIN, -1, 0, 1, i128::MAX]` inputs exercised in unit tests.
@@ -40,11 +46,11 @@ Each path below is explicitly tested:
 - `i128::MIN` and `i128::MIN + 1` as deposit/report amounts → `InvalidAmount`
 - `-1` as deposit/report amount → `InvalidAmount`
 - `0` as deposit amount → `InvalidAmount`
-- `0` as report amount → `InvalidAmount`
+- `0` as report amount → accepted audit entry (no transfer), still subject to threshold/override rules
 - `period_id == 0` → `InvalidPeriodId`
 - `bps = 10_001`, `bps = u32::MAX` → `InvalidRevenueShareBps`
 - `share_bps = 10_001` → `InvalidShareBps`
-- Duplicate period without `override_existing=true` → `PeriodAlreadyDeposited`
+- Duplicate report period without `override_existing=true` → `rev_rej` event, no state change
 - `report_revenue` on non-existent offering → `OfferingNotFound`
 - Claim by blacklisted holder → `HolderBlacklisted`
 - Any mutation while frozen → `ContractFrozen`

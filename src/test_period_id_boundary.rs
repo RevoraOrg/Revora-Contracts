@@ -92,6 +92,66 @@ fn report_revenue_zero_period_id_rejected() {
     assert!(client.get_audit_summary(&issuer, &symbol_short!("def"), &token).is_none());
 }
 
+/// `deposit_revenue` with non-sequential period (gap) must return `InvalidPeriodId`.
+#[test]
+fn deposit_revenue_gap_period_rejected() {
+    let (_env, client, issuer, offering_token, payment_token) = setup_funded();
+
+    // Deposit period 1
+    client
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &offering_token,
+            &payment_token,
+            &1_000,
+            &1,
+        )
+        .unwrap();
+
+    // Try to deposit period 3 (gap)
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &1_000,
+        &3,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+}
+
+/// `report_revenue` with non-sequential period (gap) must return `InvalidPeriodId`.
+#[test]
+fn report_revenue_gap_period_rejected() {
+    let (_env, client, issuer, offering_token, _payment_token) = setup_funded();
+
+    // Report period 1
+    client
+        .report_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &offering_token,
+            &offering_token,
+            &1_000,
+            &1,
+            &false,
+        )
+        .unwrap();
+
+    // Try to report period 3 (gap)
+    let result = client.try_report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &offering_token,
+        &1_000,
+        &3,
+        &false,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+}
+
 /// `deposit_revenue` with period_id=0 must return `InvalidPeriodId`.
 #[test]
 fn deposit_revenue_zero_period_id_rejected() {
@@ -128,9 +188,9 @@ fn report_revenue_period_id_one_accepted() {
     assert!(result.is_ok());
 }
 
-/// period_id=u64::MAX is accepted by `report_revenue`.
+/// period_id=u64::MAX is rejected by `report_revenue` (gap disallowed).
 #[test]
-fn report_revenue_period_id_max_accepted() {
+fn report_revenue_period_id_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
@@ -147,12 +207,12 @@ fn report_revenue_period_id_max_accepted() {
         &u64::MAX,
         &false,
     );
-    assert!(result.is_ok());
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
-/// period_id=u64::MAX-1 is accepted by `report_revenue`.
+/// period_id=u64::MAX-1 is rejected by `report_revenue` (gap disallowed).
 #[test]
-fn report_revenue_period_id_near_max_accepted() {
+fn report_revenue_period_id_near_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
@@ -169,7 +229,7 @@ fn report_revenue_period_id_near_max_accepted() {
         &(u64::MAX - 1),
         &false,
     );
-    assert!(result.is_ok());
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
 /// period_id=1 (minimum valid) is accepted by `deposit_revenue`.
@@ -189,9 +249,9 @@ fn deposit_revenue_period_id_one_accepted() {
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 1);
 }
 
-/// period_id=u64::MAX is accepted by `deposit_revenue`.
+/// period_id=u64::MAX is rejected by `deposit_revenue` (gap disallowed).
 #[test]
-fn deposit_revenue_period_id_max_accepted() {
+fn deposit_revenue_period_id_max_rejected() {
     let (env, client, issuer, offering_token, payment_token) = setup_funded();
 
     let result = client.try_deposit_revenue(
@@ -202,8 +262,8 @@ fn deposit_revenue_period_id_max_accepted() {
         &1_000,
         &u64::MAX,
     );
-    assert!(result.is_ok());
-    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 1);
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 0);
 }
 
 // ── Duplicate period_id handling ──────────────────────────────────────────────
@@ -236,6 +296,36 @@ fn deposit_revenue_duplicate_period_rejected() {
 
     // Period count must remain 1
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 1);
+}
+
+/// `deposit_revenue` with duplicate period must return `PeriodAlreadyDeposited`
+/// even if it's technically also a non-sequential period (e.g. depositing 1 again when last is 1).
+#[test]
+fn deposit_revenue_duplicate_next_period_rejected() {
+    let (_env, client, issuer, offering_token, payment_token) = setup_funded();
+
+    // Deposit period 1
+    client
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &offering_token,
+            &payment_token,
+            &1_000,
+            &1,
+        )
+        .unwrap();
+
+    // Try to deposit period 1 again
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &1_000,
+        &1,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 }
 
 /// Reporting the same period_id twice without override flag emits a rejected event but does not
@@ -540,23 +630,42 @@ fn sequential_period_ids_stored_in_order() {
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 3);
 }
 
-/// Depositing periods out of order (3, 1, 2) must still be accepted and count correctly.
+/// Depositing periods out of order must be rejected (gaps disallowed).
 #[test]
-fn out_of_order_period_ids_accepted() {
+fn out_of_order_period_ids_rejected() {
     let (env, client, issuer, offering_token, payment_token) = setup_funded();
 
-    for p in [3u64, 1u64, 2u64] {
-        client
-            .deposit_revenue(
-                &issuer,
-                &symbol_short!("def"),
-                &offering_token,
-                &payment_token,
-                &500,
-                &p,
-            )
-            .unwrap();
-    }
+    // period 1 succeeds
+    client
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &offering_token,
+            &payment_token,
+            &500,
+            &1u64,
+        )
+        .unwrap();
 
-    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 3);
+    // period 3 fails (gap)
+    let res = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &500,
+        &3u64,
+    );
+    assert_eq!(res, Err(Ok(RevoraError::InvalidPeriodId)));
+
+    // period 1 fails (non-increasing)
+    let res2 = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &500,
+        &1u64,
+    );
+    assert_eq!(res2, Err(Ok(RevoraError::InvalidPeriodId)));
 }

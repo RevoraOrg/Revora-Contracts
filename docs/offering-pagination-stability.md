@@ -35,6 +35,7 @@ The Revora Revenue Share contract provides deterministic, stable pagination for 
 
 *   **Read-Only Safety**: Paginated getters are read-only and do not mutate state. They can be safely called via `simulateTransaction` without gas costs for the user.
 *   **Immutability**: Offerings, periods, and issuers are generally append-only. Whitelist/Blacklist can be modified, but their ordering mechanisms (Address keys for Whitelist, Order Vec for Blacklist) remain stable.
+*   **Bounded Reads**: Pagination is strictly capped to `MAX_PAGE_LIMIT` (20) to prevent indexer crashes and unbounded memory consumption during iteration. A limit of `0` will default to `MAX_PAGE_LIMIT`. A limit `> 20` will be capped to `20`.
 
 ## Developer Notes
 

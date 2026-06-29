@@ -5,7 +5,7 @@
 The Revora Revenue Share contract maintains a per-offering `AuditSummary` cache that tracks:
 
 - `total_revenue` — cumulative revenue reported across all periods.
-- `report_count` — number of distinct periods that have been initially reported.
+- `report_count` — number of distinct persisted periods currently present in `RevenueReports`.
 
 This cache is a **derived view** of the authoritative `RevenueReports` map. The reconciliation capability lets operators verify the cache is accurate and repair it if drift is detected.
 
@@ -20,6 +20,7 @@ The `AuditSummary` is updated incrementally on every `report_revenue` call. Thre
 | Initial report (new period) | Inserts `(amount, timestamp)` | `total_revenue += amount`, `report_count += 1` |
 | Override (`override_existing=true`) | Replaces existing `(old, ts)` with `(new, ts)` | `total_revenue += (new - old)`, count unchanged |
 | Rejected (`override_existing=false`, period exists) | No change | No change |
+| Below threshold (`amount < min_amount`, new period only) | No change | No change |
 
 A bug in earlier versions of the contract applied the audit update **unconditionally and twice** — once before the event-only guard and once inside it — causing double-counting in normal (non-event-only) mode. Additionally, overrides incorrectly added the new amount on top of the old one instead of computing the net delta.
 
@@ -31,13 +32,15 @@ These bugs are fixed in this implementation. The reconciliation functions provid
 
 1. **`RevenueReports` is the source of truth.** The map stores the actual per-period amounts. `AuditSummary` is a cache derived from it. If they diverge, the map wins.
 
-2. **`reconcile_audit_summary` is read-only.** It requires no authentication and never mutates state. Any caller (including off-chain indexers) may call it safely.
+2. **Initial reports and corrections have distinct events.** Integrators should treat `rev_init` as an insertion and `rev_ovrd` as a replacement delta. `rev_rep` is an accepted-call receipt, not a standalone source for corrected totals.
 
-3. **`repair_audit_summary` requires issuer or admin auth.** This prevents arbitrary callers from triggering unnecessary storage writes. The function is idempotent — calling it when the summary is already correct is safe.
+3. **`reconcile_audit_summary` is read-only.** It requires no authentication and never mutates state. Any caller (including off-chain indexers) may call it safely.
 
-4. **Overflow is handled with saturation.** If `computed_total_revenue` would overflow `i128`, it saturates at `i128::MAX` and `is_saturated` is set to `true`. A saturated result always sets `is_consistent = false`.
+4. **`repair_audit_summary` requires issuer or admin auth.** This prevents arbitrary callers from triggering unnecessary storage writes. The function is idempotent — calling it when the summary is already correct is safe.
 
-5. **Frozen contract blocks repair.** `repair_audit_summary` respects the `ContractFrozen` guard. `reconcile_audit_summary` does not mutate state and is always callable.
+5. **Overflow is handled with saturation.** If `computed_total_revenue` would overflow `i128`, it saturates at `i128::MAX` and `is_saturated` is set to `true`. A saturated result always sets `is_consistent = false`.
+
+6. **Frozen contract blocks repair.** `repair_audit_summary` respects the `ContractFrozen` guard. `reconcile_audit_summary` does not mutate state and is always callable.
 
 ---
 
@@ -55,7 +58,6 @@ pub struct AuditSummary {
 ```
 
 ### `reconcile_audit_summary(issuer, namespace, token) → AuditReconciliationResult`
-
 Read-only. Compares the stored `AuditSummary` against the authoritative `RevenueReports` map.
 
 ```rust
@@ -100,6 +102,7 @@ Rewrites the `AuditSummary` by recomputing it from the `RevenueReports` map.
 | Reconcile called with no reports | Returns `{0, 0, 0, 0, true, false}` |
 | Override with same amount | Delta = 0; summary unchanged |
 | Rejected report | No mutation to summary |
+| Below-threshold new report | Emits `rev_below`; no mutation to summary or report cursor |
 | Repair called twice | Idempotent; second call produces same result |
 | Overflow in computed total | `is_saturated=true`, `is_consistent=false` |
 
@@ -129,13 +132,14 @@ if !result.is_consistent {
 
 ## Test Coverage
 
-All tests are in `src/test.rs` under the `audit_reconciliation` module. Coverage includes:
+Focused coverage for this path lives in `src/audit_summary_tests.rs`. Coverage includes:
 
 - Correct summary after single and multiple initial reports
 - Override: delta applied, count not incremented
 - Override increasing, decreasing, and same-amount cases
 - Multiple overrides converge correctly
 - Rejected report leaves summary unchanged
+- Below-threshold new reports leave both summary and report ordering unchanged
 - `reconcile_audit_summary` returns consistent on clean state
 - `reconcile_audit_summary` returns consistent after override
 - Empty offering returns zeroes and `is_consistent=true`

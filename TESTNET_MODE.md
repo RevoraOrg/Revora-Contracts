@@ -1,5 +1,24 @@
 # Testnet Mode Feature
 
+## 🚨 CRITICAL SECURITY WARNING
+
+**TESTNET MODE IS EXTREMELY DANGEROUS FOR PRODUCTION USE**
+
+Testnet mode relaxes validations that protect investor funds. **Enabling testnet mode on production/mainnet contracts can lead to catastrophic fund loss.**
+
+### Production Safety Requirements
+- **NEVER enable testnet mode on mainnet/production contracts**
+- **Always verify `is_testnet_mode()` returns `false` before production deployment**
+- **Admin must ensure testnet mode is disabled before going live**
+- **Integrators must check `is_testnet_mode()` in their client code**
+
+### What Testnet Mode Does
+When enabled, testnet mode **bypasses these critical safety checks**:
+1. **Revenue Share Validation**: Allows `revenue_share_bps > 10000` (100%+ distributions)
+2. **Concentration Enforcement**: Ignores holder concentration limits that prevent manipulation
+
+**These relaxations can allow malicious actors to drain all funds from the contract.**
+
 ## Overview
 
 The testnet mode feature provides a configuration flag that enables simplified behavior for testnet and development deployments. When enabled, certain strict validations are relaxed to facilitate testing and experimentation without compromising production safety.
@@ -95,19 +114,56 @@ contract.report_revenue(&issuer, &token, &1_000_000, &1);
 
 ## Security Considerations
 
-### Admin-Only Access
+### 🚨 FUND LOSS RISK
+Testnet mode bypasses validations designed to protect investor funds. Enabling it on production contracts can result in:
+- **Over-distribution**: `revenue_share_bps > 10000` allows distributions exceeding 100%
+- **Concentration manipulation**: Bypassed enforcement allows unlimited holder concentration
+- **Fund drainage**: Malicious issuers could extract all contract funds
 
+### Admin-Only Access
 - Only the contract admin can toggle testnet mode
 - Requires `set_admin()` to be called first
 - Admin authorization is enforced via `require_auth()`
 
 ### Production Safety
-
-- Testnet mode is **disabled by default**
+- **Testnet mode is disabled by default**
 - Must be explicitly enabled by admin
 - Can be toggled on/off at any time
 - Mode changes emit events for auditability
+- **CRITICAL**: Always verify `is_testnet_mode() == false` before production use
+## Integrator Requirements
 
+### Mandatory Production Checks
+All integrators and frontends **MUST** implement these checks:
+
+```rust
+// ALWAYS check testnet mode before using the contract
+let is_testnet = contract.is_testnet_mode();
+if is_testnet {
+    panic!("CRITICAL: Contract has testnet mode enabled - DO NOT USE FOR PRODUCTION");
+}
+```
+
+### Client Library Integration
+```rust
+pub fn connect_to_revora_contract(contract_id: &str) -> Result<RevoraClient> {
+    let client = RevoraClient::new(contract_id);
+    
+    // Mandatory safety check
+    if client.is_testnet_mode()? {
+        return Err(Error::TestnetModeEnabled);
+    }
+    
+    Ok(client)
+}
+```
+
+### Deployment Verification
+Before deploying to production:
+1. Deploy contract
+2. Verify `is_testnet_mode()` returns `false`
+3. Document the check in deployment scripts
+4. Include in security audits
 ### Unaffected Operations
 
 The following operations work identically in both modes:
@@ -192,7 +248,7 @@ DataKey::TestnetMode -> bool
 - **Storage key**: `src/lib.rs` - `DataKey::TestnetMode`
 - **Event symbol**: `src/lib.rs` - `EVENT_TESTNET_MODE`
 - **Functions**: `src/lib.rs` - `set_testnet_mode()`, `is_testnet_mode()`
-- **Modified flows**: `register_offering()`, `report_revenue()`
+- **Modified flows**: `register_offering()` (reads `Self::is_testnet_mode(env.clone())` to gate BPS validation), `report_revenue()` (reads same flag to gate concentration enforcement)
 - **Tests**: `src/test.rs` - Testnet mode section
 
 ## Limitations

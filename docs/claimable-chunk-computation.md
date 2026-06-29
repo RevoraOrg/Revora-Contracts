@@ -45,3 +45,17 @@ The contract test suite now includes deterministic checks for:
 - blacklist-gated preview results
 - claim-window-gated preview results
 - max chunk cap normalization
+
+### Table-Driven Invariant Tests
+
+Comprehensive table-driven tests in `chunking_tests.rs` verify:
+
+- **Cursor idempotency**: Repeated queries with the same cursor yield identical results
+- **Chunk summation parity**: Summing chunked claims equals the full claimable amount
+- **Delay barrier parity**: Chunked claims respect delay barriers identically to full claims
+- **Blacklist effects**: Blacklisted holders receive zero from both chunked and full previews
+- **Claim window restrictions**: Closed claim windows yield zero for both preview methods
+- **Partial claim handling**: Last claimed index is correctly respected across chunks
+- **Zero share scenarios**: Holders with zero share receive zero claimable amounts
+- **Chunk size edge cases**: Zero chunk sizes and oversized chunks are handled correctly
+- **All periods claimed**: When all periods are claimed, no further claimable amounts exist

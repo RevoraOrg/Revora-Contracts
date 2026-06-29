@@ -1,67 +1,77 @@
-# Compute Share Overflow Protection
+# compute_share — Overflow Protection & Invariant Proof [RC26Q2-C02]
 
-## Summary
+## Function Signature
 
-`compute_share` is used to derive holder payouts from `(amount, share_bps)`.
-This hardening removes silent overflow-to-zero behavior and replaces it with an overflow-resistant decomposition that is deterministic and bounded.
+```rust
+pub fn compute_share(
+    _env: Env,
+    amount: i128,
+    revenue_share_bps: u32,   // basis points, 0–10_000
+    mode: RoundingMode,        // Truncation | RoundHalfUp
+) -> i128
+```
 
-## Threat Model
+## Invariants
 
-Potential abuse and failure modes addressed:
+| # | Invariant | Formal statement |
+|---|---|---|
+| 1 | **Bounds** | `result ∈ [min(0, amount), max(0, amount)]` |
+| 2 | **No overflow** | No panic, no wrap for any valid i128 input |
+| 3 | **Zero identity** | `bps = 0 ∨ amount = 0 → result = 0` |
+| 4 | **Full share** | `bps = 10_000 → result = amount` |
+| 5 | **Over-bps guard** | `bps > 10_000 → result = 0` |
+| 6 | **Rounding direction** | `RoundHalfUp ≥ Truncation` for positive amounts |
 
-- Arithmetic overflow in `amount * bps` for large `i128` amounts.
-- Inconsistent rounding behavior at boundary values.
-- Accidental over-distribution due to intermediate overflow artifacts.
+## Why Overflow Cannot Occur
 
-Non-goals:
+The implementation decomposes `amount` as `q * 10_000 + r`:
 
-- Changing payout policy semantics.
-- Changing authorization boundaries.
-- Expanding scope beyond contract-side arithmetic safety.
+```
+q = amount / 10_000        |q| ≤ i128::MAX / 10_000
+r = amount % 10_000        |r| < 10_000
+bps ≤ 10_000
 
-## Security Assumptions
+r * bps  →  |r * bps| < 10_000 × 10_000 = 10^8   (fits i128 trivially)
+q * bps  →  checked_mul with saturating fallback   (never wraps)
+base + remainder_share  →  checked_add with saturating fallback
+final clamp to [min(0,amount), max(0,amount)]      (bounds invariant)
+```
 
-- `revenue_share_bps` is expected to be in `[0, 10_000]`.
-- Values above `10_000` are treated as invalid and return `0`.
-- Revenue reporting paths are expected to be non-negative, but the helper remains total for signed `i128` and enforces output bounds for both signs.
+The clamp is the last line of defence: even if saturation produced an
+out-of-range intermediate, the result is forced back into the valid range.
 
-## Implementation Strategy
+## Representative Test Ranges
 
-Instead of computing:
+| amount | bps | Truncation | RoundHalfUp | Notes |
+|---|---|---|---|---|
+| `i128::MAX` | 10_000 | `i128::MAX` | `i128::MAX` | Full share at max |
+| `i128::MAX` | 5_000 | `i128::MAX / 2` | `≥ i128::MAX / 2` | 50% at max |
+| `i128::MAX` | 1 | `> 0` | `> 0` | 0.01% at max |
+| `i128::MIN` | 10_000 | `i128::MIN` | `i128::MIN` | Full share at min |
+| `i128::MIN` | 5_000 | `≤ 0` | `≤ 0` | 50% at min |
+| `i128::MIN` | 1 | `< 0` | `< 0` | 0.01% at min |
+| `1` | 5_000 | `0` | `1` | Rounding boundary |
+| `-1` | 5_000 | `0` | `-1` | Negative rounding boundary |
+| `3` | 5_000 | `1` | `2` | 1.5 rounds up |
+| any | 10_001 | `0` | `0` | Over-bps guard |
 
-- `share = (amount * bps) / 10_000`
+## Security Note
 
-the function computes using decomposition:
+`compute_share` is called in every claim payout path. An overflow or
+out-of-bounds result would allow a holder to claim more than their entitled
+share, potentially draining the contract. The decomposition approach
+eliminates the intermediate `amount * bps` product that would overflow for
+large i128 values, and the final clamp enforces the bounds invariant
+unconditionally.
 
-- `amount = q * 10_000 + r`
-- `share = q * bps + (r * bps) / 10_000`
+## Test Coverage
 
-Properties:
+All invariants are verified in `src/test_compute_share_invariants.rs`:
 
-- `r` is bounded to `(-10_000, 10_000)`, so `r * bps` is always safe in `i128`.
-- The result is clamped to `[min(0, amount), max(0, amount)]`.
-- Rounding behavior remains deterministic for both modes:
-  - `Truncation`
-  - `RoundHalfUp`
-
-## Deterministic Test Coverage
-
-The test suite now includes explicit overflow-protection cases:
-
-- `compute_share_max_amount_full_bps_is_exact`
-- `compute_share_max_amount_half_bps_rounding_is_deterministic`
-- `compute_share_min_amount_full_bps_is_exact`
-- `compute_share_extreme_inputs_remain_bounded`
-
-These tests validate:
-
-- Exactness at full share (`10_000 bps`) for `i128::MAX` and `i128::MIN`.
-- Stable rounding at large odd values.
-- Bound invariants under extreme signed inputs.
-
-## Review Notes
-
-- No auth logic was changed.
-- No storage schema was changed.
-- No event schema was changed.
-- The change is localized to arithmetic safety and corresponding tests.
+- Table-driven cases for both `Truncation` and `RoundHalfUp`
+- i128 extreme values: `i128::MAX`, `i128::MIN`, `i128::MIN + 1`, `i128::MAX / 2`
+- Zero identity for all bps values
+- Over-bps guard for `bps > 10_000` including `u32::MAX`
+- Full share (`bps = 10_000`) for all extreme amounts
+- Rounding boundary: exact half-unit cases for positive and negative amounts
+- Cross-mode invariant: `RoundHalfUp ≥ Truncation` for a matrix of positive amounts × bps

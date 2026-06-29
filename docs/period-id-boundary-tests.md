@@ -90,7 +90,17 @@ Self::require_positive_amount(amount)?;
 | `report_revenue_accepts_period_id_one` | `period_id == 1` (min valid) | `Ok` |
 | `report_revenue_accepts_period_id_max` | `period_id == u64::MAX` | `Ok` |
 | `report_revenue_accepts_period_id_near_max` | `period_id == u64::MAX - 1` | `Ok` |
+| `report_revenue_gap_period_rejected` | `period_id == 3` after `1` (gap) | `Err(InvalidPeriodId)` |
 | `report_revenue_zero_period_id_does_not_mutate_state` | `period_id == 0` rejected, no state change | revenue == 0, events == 1 |
+
+### `deposit_revenue` — period_id validation
+
+| Test | Scenario | Expected |
+|------|----------|----------|
+| `deposit_revenue_zero_period_id_rejected` | `period_id == 0` | `Err(InvalidPeriodId)` |
+| `deposit_revenue_gap_period_rejected` | `period_id == 3` after `1` (gap) | `Err(InvalidPeriodId)` |
+| `deposit_revenue_duplicate_period_rejected` | `period_id == 42` twice | `Err(PeriodAlreadyDeposited)` |
+| `deposit_revenue_duplicate_next_period_rejected` | `period_id == 1` twice (last is 1) | `Err(PeriodAlreadyDeposited)` |
 
 ### `report_revenue` — amount validation
 

@@ -23,6 +23,14 @@ fn security_doc_sync_returns_expected_markers() {
         payload.get(symbol_short!("err_auth")).unwrap(),
         RevoraError::NotAuthorized as u32
     );
+    assert_eq!(
+        payload.get(symbol_short!("err_frz")).unwrap(),
+        RevoraError::ContractFrozen as u32
+    );
+    assert_eq!(
+        payload.get(symbol_short!("err_amt")).unwrap(),
+        RevoraError::InvalidAmount as u32
+    );
 }
 
 #[test]
@@ -36,7 +44,8 @@ fn security_doc_sync_is_deterministic() {
     assert_eq!(first, second);
 
     // Ensure key set size is stable for doc tooling.
-    assert_eq!(first.len(), 6);
+    // 3 base markers + 35 error variants = 38
+    assert_eq!(first.len(), 38);
 
     let _issuer = Address::generate(&env);
 }

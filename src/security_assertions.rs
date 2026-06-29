@@ -21,7 +21,6 @@
 /// - Assertions are deterministic (no state-dependent randomness)
 /// - Assertions are testable in isolation
 /// - Clear error messages aid debugging and forensic analysis
-use alloc::{format, string::String};
 use core::fmt::Debug;
 
 use crate::RevoraError;
@@ -541,11 +540,8 @@ pub mod abort_handling {
     ) -> Result<(), &'static str> {
         match result {
             Err(actual) if actual == expected_error => Ok(()),
-            Err(actual) => Err(format!("Expected {:?} but got {:?}", expected_error, actual)),
-            Ok(ok) => Err(format!(
-                "Expected error {:?} but operation succeeded: {:?}",
-                expected_error, ok
-            )),
+            Err(_actual) => Err("expected error did not match actual error"),
+            Ok(_ok) => Err("expected operation to fail but it succeeded"),
         }
     }
 

@@ -1,6 +1,6 @@
 # Security Doc Sync
 
-Issue: #194
+Issue: #194, #255
 
 ## Summary
 
@@ -15,12 +15,44 @@ Implemented in:
 `get_security_doc_sync() -> Map<Symbol, u32>`
 
 Returned keys:
-- `ver`: contract version
-- `ev_sch`: versioned revenue-event schema version
-- `idx_sch`: indexed event topic schema version
-- `err_xfer`: transfer failure error code
-- `err_auth`: authorization error code
-- `err_sig`: signature replay error code
+- `ver`: contract version (currently 4)
+- `ev_sch`: event schema version
+- `idx_sch`: indexer schema version
+- `err_sh_bps`: InvalidRevenueShareBps
+- `err_limit`: LimitReached
+- `err_conc`: ConcentrationLimitExceeded
+- `err_no_off`: OfferingNotFound
+- `err_dep`: PeriodAlreadyDeposited
+- `err_no_clm`: NoPendingClaims
+- `err_bl`: HolderBlacklisted
+- `err_ish_bps`: InvalidShareBps
+- `err_ptm`: PaymentTokenMismatch
+- `err_frz`: ContractFrozen
+- `err_dly`: ClaimDelayNotElapsed
+- `err_snap_e`: SnapshotNotEnabled
+- `err_snap_o`: OutdatedSnapshot
+- `err_asset`: PayoutAssetMismatch
+- `err_tx_p`: IssuerTransferPending
+- `err_tx_n`: NoTransferPending
+- `err_tx_u`: UnauthorizedTransferAccept
+- `err_meta_l`: MetadataTooLarge
+- `err_auth`: NotAuthorized
+- `err_init`: NotInitialized
+- `err_amt`: InvalidAmount
+- `err_per`: InvalidPeriodId
+- `err_cap`: SupplyCapExceeded
+- `err_meta_f`: MetadataInvalidFormat
+- `err_win_r`: ReportingWindowClosed
+- `err_win_c`: ClaimWindowClosed
+- `err_sig_e`: SignatureExpired
+- `err_sig_r`: SignatureReplay
+- `err_sig_k`: SignerKeyNotRegistered
+- `err_prop`: ProposalExpired
+- `err_xfer`: TransferFailed
+- `err_ver`: AlreadyAtTargetVersion
+- `err_mig`: MigrationDowngradeNotAllowed
+- `err_rot_s`: AdminRotationSameAddress
+- `err_rot_p`: AdminRotationPending
 
 ## Why
 

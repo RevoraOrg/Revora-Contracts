@@ -37,6 +37,12 @@ When `init_multisig` is called, the following checks are sequentially evaluated:
 4. **Duplicate Prevention** (`RevoraError::LimitReached`)
    The `owners` array is scanned for duplicates. If any two indices contain the same exact address, initialization aborts.
 
+5. **Duration Validity** (`RevoraError::InvalidAmount`)
+   - The `proposal_duration` must be greater than 0 seconds.
+   - The `proposal_duration` must not exceed `MAX_PROPOSAL_DURATION` (365 days = 31,536,000 seconds).
+   - Zero-duration would cause immediate proposal expiry; excessive duration creates operational risk.
+   - Duration is persisted to `MultisigProposalDuration` storage key for use by `propose_action`.
+
 ## Event Emission
 Once all state modifications succeed, the contract emits an `ms_init` (`EVENT_MULTISIG_INIT`) event containing:
 - Topic 0: `ms_init`
@@ -44,3 +50,32 @@ Once all state modifications succeed, the contract emits an `ms_init` (`EVENT_MU
 - Data: A tuple of `(owners_count: u32, threshold: u32)`
 
 This provides off-chain indexers deterministic proof of the exact configuration successfully agreed upon.
+
+## Security Risks and Mitigations
+
+### Risk 1: Uninitialized Duration
+**Impact**: If `proposal_duration` is not stored during `init_multisig`, all subsequent `propose_action` calls will fail with `NotInitialized`, permanently bricking the multisig governance.
+
+**Mitigation**: Duration is now validated and persisted during initialization. The `MultisigProposalDuration` storage key is set atomically with other multisig state.
+
+### Risk 2: Zero or Excessive Duration
+**Impact**: 
+- Zero duration: Proposals expire immediately upon creation, making governance impossible.
+- Excessive duration (e.g., 100 years): Stuck proposals cannot be cleaned up, creating ledger bloat and operational confusion.
+
+**Mitigation**: Duration is bounded to [1, 365 days] range via validation in `init_multisig`.
+
+### Risk 3: Misconfigured Threshold
+**Impact**: Threshold > owners or threshold = 0 makes it impossible to ever reach quorum, permanently locking the multisig.
+
+**Mitigation**: Validated during initialization; threshold must be in [1, owners.len()].
+
+### Risk 4: Duplicate Owners
+**Impact**: A single entity could satisfy the threshold by signing multiple times with the same address, defeating multisig security assumptions.
+
+**Mitigation**: O(N²) duplicate check during initialization. This is computationally acceptable due to the `MAX_MULTISIG_OWNERS = 20` bound.
+
+### Risk 5: Too Many Owners
+**Impact**: An unbounded owner list could cause gas exhaustion during duplicate checks or proposal operations.
+
+**Mitigation**: Hard limit of 20 owners enforced. This ensures predictable gas costs for all multisig operations.

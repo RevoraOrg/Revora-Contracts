@@ -1,87 +1,59 @@
-# Share Sum Invariant Checks
+# Share Sum Invariant Checks [RC26Q2-C50]
 
-## Overview
-
-Every offering maintains a **running aggregate** of all holder share allocations in basis points (bps). The invariant is:
-
-```
-sum(HolderShare[offering][h] for all h) ≤ 10 000
-```
-
-10 000 bps = 100 %. The contract enforces this on every write to `set_holder_share` and `meta_set_holder_share`. A write that would push the aggregate above the ceiling is rejected with `RevoraError::ShareSumExceeded` (code 30) before any state is mutated.
+> **Doc-parity note (PR #299):** A previous version of this document described a
+> `TotalShareBps` running-sum counter, a `ShareSumExceeded` error (code 30), a
+> `get_total_share_bps` query, and `share_sum` events. **None of those exist in
+> the current implementation.** This document has been updated to reflect the
+> actual on-chain invariants. See the Security / Risk section at the bottom for
+> the implications.
 
 ---
 
-## Motivation
+## Actual Invariants (as implemented)
 
-Without an aggregate cap, an issuer could accidentally (or maliciously) allocate more than 100 % of revenue to holders. This would cause the contract to attempt to transfer more tokens than were deposited, leading to either a failed transfer or, in a buggy implementation, an under-funded payout pool. The invariant prevents this class of error entirely at the write layer.
+### Per-holder cap
 
----
+```
+HolderShare[offering][holder] ∈ [0, 10_000]
+```
 
-## Storage
+`set_holder_share` and `set_holder_share_internal` reject any `share_bps > 10_000`
+with `RevoraError::InvalidShareBps` (code 8) before writing to storage.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `DataKey::TotalShareBps(OfferingId)` | `u32` | Running sum of all holder `share_bps` for the offering. Absent = 0. |
+### Per-offering aggregate cap (enforced on-chain)
 
-The key is scoped to `OfferingId { issuer, namespace, token }`, so two offerings never share a counter.
+The contract now persists a per-offering running total of all persisted
+`HolderShare` entries and enforces that the aggregate stays within `10_000`
+(100%). Attempts to set a holder's share that would make the offering's total
+exceed `10_000` bps are rejected with `RevoraError::InvalidShareBps` (code 8).
+
+This guard is performed atomically during `set_holder_share` and when applying
+committed snapshot batches via `apply_snapshot_shares`.
+
+### Payout arithmetic
+
+`claim()` computes each period's payout as:
+
+```
+payout = normalized_revenue * share_bps / 10_000   (integer truncation)
+```
+
+This is direct integer division, not `compute_share`. Because `share_bps ≤ 10_000`
+and `normalized_revenue ≥ 0`, the result is always in `[0, normalized_revenue]`
+for a single holder. However, if the issuer has allocated more than 10 000 bps
+across all holders, the **sum of all payouts can exceed the deposited amount**,
+draining the contract's token balance.
 
 ---
 
 ## Affected Entrypoints
 
-| Entrypoint | Invariant check |
+| Entrypoint | What is enforced |
 |------------|-----------------|
-| `set_holder_share` | Reads old share for holder, computes delta, rejects if `old_sum - old_share + new_share > 10 000`. |
-| `meta_set_holder_share` | Delegates to `set_holder_share_internal`; same check applies. |
-
-Read-only entrypoints (`get_holder_share`, `get_total_share_bps`, `simulate_distribution`, `claim`) are not affected.
-
----
-
-## Algorithm
-
-```
-old_share  = HolderShare[offering][holder]  // 0 if unset
-old_sum    = TotalShareBps[offering]        // 0 if unset
-new_sum    = old_sum - old_share + new_share
-
-if new_sum > 10_000:
-    return Err(ShareSumExceeded)            // no state mutation
-
-HolderShare[offering][holder] = new_share
-TotalShareBps[offering]       = new_sum
-```
-
-Saturating arithmetic is used for the subtraction (`saturating_sub`) to guard against any hypothetical state corruption where `old_share > old_sum`.
-
----
-
-## Events
-
-Two events are emitted on every successful `set_holder_share` call:
-
-| Event symbol | Topics | Payload | When |
-|---|---|---|---|
-| `share_set` | `(issuer, namespace, token)` | `(holder, share_bps)` | Per-holder share stored. |
-| `share_sum` | `(issuer, namespace, token)` | `(previous_total_bps: u32, new_total_bps: u32)` | Aggregate updated. |
-
-The `share_sum` event lets off-chain indexers track the aggregate without re-reading all holder shares.
-
----
-
-## Public Query
-
-```rust
-pub fn get_total_share_bps(
-    env: Env,
-    issuer: Address,
-    namespace: Symbol,
-    token: Address,
-) -> u32
-```
-
-Returns the current aggregate for an offering. Returns 0 if no shares have been set. This is a read-only view; it cannot be manipulated directly.
+| `set_holder_share` | `share_bps ≤ 10_000` per holder; aggregate `sum(holder_bps) ≤ 10_000` enforced. |
+| `meta_set_holder_share` | Delegates to `set_holder_share_internal`; same per-holder and aggregate caps. |
+| `batch_set_holder_shares` | Validates each entry `≤ 10_000` before any write (fail-fast). |
+| `claim` | Computes `revenue * share_bps / 10_000`; no cross-holder sum check. |
 
 ---
 
@@ -89,61 +61,67 @@ Returns the current aggregate for an offering. Returns 0 if no shares have been 
 
 | Code | Name | Meaning |
 |------|------|---------|
-| 30 | `ShareSumExceeded` | The requested share would push the per-offering aggregate above 10 000 bps. Reduce another holder's share first. |
+| 8 | `InvalidShareBps` | `share_bps > 10_000` for a single holder. |
+
+> **Note:** Error code 30 is `ProposalExpired` (multisig), not a share-sum error.
 
 ---
 
 ## Security Assumptions
 
-1. **Single write path.** `TotalShareBps` is only written by `set_holder_share_internal`. All public entrypoints that modify holder shares call this helper, so there is no bypass.
+1. **Issuer responsibility for sum.** The contract trusts the issuer to allocate
+   shares that sum to at most 10 000 bps across all holders. Over-allocation is
+   not blocked on-chain; it is an off-chain operational concern.
 
-2. **Atomic check-then-write.** The invariant check and the storage writes happen in the same Soroban transaction. There is no TOCTOU window.
+2. **Per-holder cap is always enforced.** No single holder can be set above
+   10 000 bps regardless of testnet mode or any other flag.
 
-3. **Issuer auth required.** `set_holder_share` requires `issuer.require_auth()`. An attacker cannot set shares for an offering they do not control.
+3. **Issuer auth required.** `set_holder_share` requires `issuer.require_auth()`.
+   An attacker cannot set shares for an offering they do not control.
 
-4. **Scoped per offering.** The aggregate counter is keyed by `OfferingId { issuer, namespace, token }`. Shares in one offering cannot affect the counter of another.
+4. **Scoped per offering.** `HolderShare` is keyed by
+   `OfferingId { issuer, namespace, token }`. Shares in one offering cannot
+   affect another.
 
-5. **No on-chain enforcement of minimum sum.** The contract does not require the sum to equal exactly 10 000. An issuer may allocate less than 100 % (e.g., to retain a platform fee portion off-chain). This is intentional.
-
-6. **Testnet mode does not bypass this check.** Unlike `revenue_share_bps` validation, the share-sum invariant is always enforced regardless of testnet mode.
-
----
-
-## Abuse / Failure Paths
-
-| Scenario | Outcome |
-|----------|---------|
-| Issuer sets one holder to 10 000 bps, then tries to add a second holder | `ShareSumExceeded` on the second call; first holder's share is unchanged. |
-| Issuer sets holder A to 9 000, then tries to set holder B to 1 001 | `ShareSumExceeded`; aggregate stays at 9 000. |
-| Issuer updates holder A from 5 000 → 3 000, then sets holder B to 7 000 | Accepted; aggregate = 10 000. |
-| Issuer sets holder A to 0 (removes contribution) | Accepted; aggregate decreases by the old value. |
-| Two offerings for the same issuer/token in different namespaces | Each has its own counter; they are fully isolated. |
+5. **Atomic write.** The validation and storage write happen in the same Soroban
+   transaction; there is no TOCTOU window for the per-holder cap check.
 
 ---
 
-## Integration Notes
+## Risk Note
 
-- Before calling `set_holder_share`, integrators should call `get_total_share_bps` to check available headroom: `headroom = 10_000 - get_total_share_bps(...)`.
-- When redistributing shares (e.g., after a token transfer), reduce outgoing holders first, then increase incoming holders, to avoid transient `ShareSumExceeded` errors.
-- The `simulate_distribution` entrypoint does not enforce the invariant (it is read-only and accepts arbitrary `holder_shares` inputs). Use it for previews only.
+Because there is no on-chain aggregate cap, an issuer who sets N holders each
+to `10_000 / N + 1` bps will cause the sum of payouts to exceed the deposited
+tranche. The contract will attempt to transfer more tokens than it holds, and
+the token transfer will fail with `RevoraError::TransferFailed`. No funds are
+lost (the transfer reverts), but holders may be unable to claim until the issuer
+corrects the share allocations.
+
+**Mitigation (off-chain):** Before calling `set_holder_share`, integrators
+should maintain their own running sum and ensure it stays ≤ 10 000 bps:
+
+```
+headroom = 10_000 - sum(current_share_bps for all holders in offering)
+assert new_share_bps <= headroom
+```
+
+When redistributing shares (e.g., after a token transfer), reduce outgoing
+holders first, then increase incoming holders, to keep the off-chain sum valid.
 
 ---
 
 ## Test Coverage
 
-Tests are in `src/test.rs` under the `// ── Share-sum invariant tests ──` section:
+Tests are in `src/test.rs` under the `// ── Share-sum adversarial tests (#299) ──` section:
 
 | Test | What it verifies |
 |------|-----------------|
-| `share_sum_starts_at_zero` | Initial state is 0. |
-| `share_sum_reflects_single_holder` | Single holder sets aggregate correctly. |
-| `share_sum_accumulates_across_holders` | Multiple holders sum correctly. |
-| `share_sum_at_ceiling_is_accepted` | Exactly 10 000 is accepted. |
-| `share_sum_rejects_overflow_by_one` | 10 001 is rejected with `ShareSumExceeded`. |
-| `share_sum_unchanged_after_rejected_write` | Failed write does not mutate state. |
-| `share_sum_delta_on_update` | Update uses delta, not replacement. |
-| `share_sum_reduce_then_add_succeeds` | Reducing one holder makes room for another. |
-| `share_sum_zero_share_removes_contribution` | Setting share to 0 decrements aggregate. |
-| `share_sum_is_scoped_per_offering` | Two offerings have independent counters. |
-| `share_sum_event_emitted_on_set` | `share_sum` event is emitted on every write. |
-| `share_sum_abuse_second_holder_after_full_allocation` | All overflow attempts are blocked. |
+| `share_bps_per_holder_cap_enforced` | `share_bps > 10_000` is rejected with `InvalidShareBps`. |
+| `share_bps_exactly_10000_accepted` | Exactly 10 000 bps is accepted per holder. |
+| `multi_holder_over_allocation_transfer_fails` | Sum > 10 000 bps causes `TransferFailed` at claim time. |
+| `multi_holder_exact_10000_sum_pays_correctly` | Sum = 10 000 bps distributes the full deposited amount. |
+| `multi_holder_under_allocation_pays_partial` | Sum < 10 000 bps leaves remainder in contract. |
+| `multi_holder_roundhalfup_sum_bounded` | RoundHalfUp across many holders never exceeds deposit. |
+| `adversarial_many_holders_max_bps_each` | 10 holders at 10 000 bps each: first claim succeeds, contract drains, subsequent claims fail. |
+| `share_bps_zero_holder_gets_no_payout` | Holder with 0 bps cannot claim. |
+| `share_bps_update_to_zero_removes_payout` | Updating share to 0 stops future payouts. |
