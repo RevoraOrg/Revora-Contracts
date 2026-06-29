@@ -45,6 +45,18 @@ use soroban_sdk::{
     Bytes, BytesN, Env, IntoVal, Map, Symbol, Vec,
 };
 
+#[soroban_sdk::contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum DistributionError {
+    DistributionDeferred = 456,
+}
+
+#[soroban_sdk::contracttype]
+pub enum DeferredDataKey {
+    DeferredReports(u32),
+}
+
 // Issue #109 â€” Revenue report correction and audit-summary reconciliation are
 // implemented in this file. See `report_revenue`, `reconcile_audit_summary`,
 // and `repair_audit_summary`.
@@ -177,9 +189,9 @@ pub mod vesting;
 pub mod kani_harness;
 
 #[cfg(test)]
-mod test_compute_share_invariants;
-#[cfg(test)]
 mod test_claim_transfer_fail;
+#[cfg(test)]
+mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -1676,7 +1688,11 @@ impl RevoraRevenueShare {
 
     /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
     /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
-    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+    pub fn set_storage_layout_version(
+        env: Env,
+        caller: Address,
+        v: u32,
+    ) -> Result<(), RevoraError> {
         let admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         admin.require_auth();
@@ -2016,32 +2032,66 @@ impl RevoraRevenueShare {
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
 
         // Migrate configuration state linked to the old OfferingId (#1344)
-        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+        if let Some(config) = env
+            .storage()
+            .persistent()
+            .get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
             env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
         }
-        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+        if let Some(current) = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
             env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
         }
-        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+        if let Some(mode) = env
+            .storage()
+            .persistent()
+            .get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone()))
+        {
             env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
             env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
         }
-        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
-            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(
+            &DataKey2::InvestmentConstraints(offering_id.clone()),
+        ) {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
         }
-        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+        if let Some(delay) =
+            env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
             env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
         }
-        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+        if let Some(snap_config) =
+            env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
             env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
         }
-        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+        if let Some(snap_ref) =
+            env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
             env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
         }
 
@@ -2147,9 +2197,7 @@ impl RevoraRevenueShare {
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
         // Stamp storage layout version for future compatibility checks.
-        env.storage()
-            .persistent()
-            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
@@ -5533,10 +5581,8 @@ impl RevoraRevenueShare {
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
 
-        env.events().publish(
-            (EVENT_PERIOD_CLOSED, issuer, namespace, token),
-            (period_id, closed_at),
-        );
+        env.events()
+            .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
         Ok(())
     }

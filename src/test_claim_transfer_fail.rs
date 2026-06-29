@@ -439,24 +439,9 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
 
-
-    revora.register_offering(
-        &issuer,
-        &symbol_short!("def"),
-        &offering_token_b,
-        &10_000,
-
-        &0,
-    );
+    revora.register_offering(&issuer, &symbol_short!("def"), &offering_token_b, &10_000, &0);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
-    revora.deposit_revenue(
-        &issuer,
-        &symbol_short!("def"),
-        &offering_token_b,
-
-        &100_000,
-        &1,
-    );
+    revora.deposit_revenue(&issuer, &symbol_short!("def"), &offering_token_b, &100_000, &1);
 
     // Claim on offering A fails (failing token)
     let r_a = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token_a, &50);
