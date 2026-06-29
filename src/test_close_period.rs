@@ -223,3 +223,101 @@ fn close_period_wrong_issuer_returns_not_found() {
     let result = client.try_close_period(&attacker, &ns, &token, &1);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
+
+// ── Gas-bound tests: linear-in-holders cost ──────────────────────────────────
+
+/// Helper to compute CPU instruction delta of `close_period` call.
+fn measure_cpu_for_n_holders(n: u32) -> u64 {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &offering_token, &10_000, &payment_token, &0);
+
+    for _ in 0..n {
+        let holder = Address::generate(&env);
+        client.set_holder_share(&issuer, &ns, &offering_token, &holder, &1);
+    }
+
+    let before = env.budget().cpu_instruction_count();
+    client.close_period(&issuer, &ns, &offering_token, &1);
+    let after = env.budget().cpu_instruction_count();
+    after.saturating_sub(before)
+}
+
+/// Compute R² (coefficient of determination) for a linear fit of (x,y) points.
+fn r_squared(points: &[(f64, f64)]) -> f64 {
+    let n = points.len() as f64;
+    if n < 2 {
+        return 0.0;
+    }
+
+    let mean_y = points.iter().map(|(_, y)| y).sum::<f64>() / n;
+    let ss_total: f64 = points.iter().map(|(_, y)| (y - mean_y).powi(2)).sum();
+    if ss_total == 0.0 {
+        return 1.0;
+    }
+
+    let sum_x = points.iter().map(|(x, _)| x).sum::<f64>();
+    let sum_y = points.iter().map(|(_, y)| y).sum::<f64>();
+    let sum_x_sq = points.iter().map(|(x, _)| x.powi(2)).sum::<f64>();
+    let sum_xy = points.iter().map(|(x, y)| x * y).sum::<f64>();
+
+    let slope_numerator = n * sum_xy - sum_x * sum_y;
+    let slope_denominator = n * sum_x_sq - sum_x.powi(2);
+    if slope_denominator == 0.0 {
+        return 0.0;
+    }
+
+    let slope = slope_numerator / slope_denominator;
+    let intercept = (sum_y - slope * sum_x) / n;
+
+    let ss_residual: f64 = points.iter()
+        .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
+        .sum();
+
+    1.0 - (ss_residual / ss_total)
+}
+
+/// Test that close_period cost grows linearly with holder count (R² > 0.98).
+#[test]
+fn close_period_cpu_grows_linearly_with_holders() {
+    let test_counts = [1u32, 10u32, 100u32, 1000u32];
+    let mut points = Vec::new();
+
+    for n in test_counts {
+        let cpu = measure_cpu_for_n_holders(n) as f64;
+        points.push((n as f64, cpu));
+    }
+
+    let r2 = r_squared(&points);
+    assert!(r2 > 0.98, "R² = {:.4} is below threshold of 0.98", r2);
+}
+
+/// Test that zero-holder offering closes with constant cost.
+#[test]
+fn close_period_zero_holders_has_constant_cost() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let ns = symbol_short!("ns");
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &ns, &token, &10_000, &payment_token, &0);
+
+    let before = env.budget().cpu_instruction_count();
+    client.close_period(&issuer, &ns, &token, &1);
+    let after = env.budget().cpu_instruction_count();
+
+    assert!(after - before > 0, "CPU cost must be positive");
+    // Assert that cost is within a reasonable constant bound
+    assert!(after - before < 5_000_000, "CPU cost {} exceeded constant bound", after - before);
+}

@@ -157,6 +157,8 @@ pub enum RevoraError {
     BlacklistSizeLimitExceeded = 45,
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
+    /// Total supply shares would exceed the offering's max total supply shares.
+    MaxTotalSupplySharesExceeded = 51,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     /// This prevents falling through to initial-report handling when the period cursor has no
@@ -767,6 +769,15 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Per-offering supply cap (revenue deposit limit).
+    SupplyCap(OfferingId),
+    /// Per-offering total deposited revenue.
+    DepositedRevenue(OfferingId),
+    /// Per-offering max total supply shares (share unit cap).
+    MaxTotalSupplyShares(OfferingId),
+    /// Per-offering total issued shares (sum of holder shares in units).
+    TotalSharesIssued(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -831,6 +842,9 @@ pub enum AmountValidationCategory {
     /// Generic distribution simulation: any i128 is valid (can be negative for modeling).
     /// Reason: Simulation-only, no state mutation.
     Simulation,
+    /// Max total supply shares configuration: must be non-negative (>= 0).
+    /// Reason: Zero cap means unlimited; negative cap is invalid.
+    MaxTotalSupplyShares,
 }
 
 /// Result of amount validation with detailed classification.
@@ -937,6 +951,11 @@ impl AmountValidationMatrix {
                 }
             }
             AmountValidationCategory::Simulation => {}
+            AmountValidationCategory::MaxTotalSupplyShares => {
+                if amount < 0 {
+                    return Err((RevoraError::InvalidAmount, symbol_short!("no_neg")));
+                }
+            }
         }
         Ok(())
     }
@@ -1011,6 +1030,7 @@ impl AmountValidationMatrix {
             "set_min_revenue_threshold" => Some(AmountValidationCategory::MinRevenueThreshold),
             "set_investment_constraints" => Some(AmountValidationCategory::InvestmentMinStake),
             "simulate_distribution" => Some(AmountValidationCategory::Simulation),
+            "set_max_total_supply_shares" => Some(AmountValidationCategory::MaxTotalSupplyShares),
             _ => None,
         }
     }
@@ -1236,6 +1256,23 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
+        // Check max total supply shares cap
+        let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
+        let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
+        if max_shares > 0 {
+            let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
+            let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
+            let old_share: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+            if new_total_shares > max_shares {
+                return Err(RevoraError::MaxTotalSupplySharesExceeded);
+            }
+        }
+
         // Maintain a running total of persisted holder shares for this offering.
         let total_key = DataKey::HolderShareTotal(offering_id.clone());
         let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
@@ -1250,6 +1287,12 @@ impl RevoraRevenueShare {
         if new_total > 10_000 {
             return Err(RevoraError::InvalidShareBps);
         }
+
+        // Update total shares issued
+        let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
+        let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
+        let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+        env.storage().persistent().set(&total_shares_key, &new_total_shares);
 
         // Persist updated holder share and running total.
         env.storage()
@@ -1412,6 +1455,43 @@ impl RevoraRevenueShare {
     pub fn get_supply_cap(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey2::SupplyCap(offering_id)).unwrap_or(0)
+    }
+
+    pub fn set_max_total_supply_shares(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        max_total_supply_shares: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if let Err((err, _)) =
+            AmountValidationMatrix::validate(max_total_supply_shares, AmountValidationCategory::MaxTotalSupplyShares)
+        {
+            return Err(err);
+        }
+
+        let offering_id = OfferingId { issuer, namespace, token };
+        let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id);
+        if max_total_supply_shares > 0 {
+            env.storage().persistent().set(&max_shares_key, &max_total_supply_shares);
+        } else {
+            env.storage().persistent().remove(&max_shares_key);
+        }
+        Ok(())
+    }
+
+    pub fn get_max_total_supply_shares(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::MaxTotalSupplyShares(offering_id)).unwrap_or(0)
+    }
+
+    pub fn get_total_shares_issued(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id)).unwrap_or(0)
     }
 
     // â”€â”€ Fee BPS Configuration (#98) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2349,6 +2429,7 @@ impl RevoraRevenueShare {
         revenue_share_bps: u32,
         payout_asset: Address,
         supply_cap: i128,
+        max_total_supply_shares: i128,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -2357,6 +2438,13 @@ impl RevoraRevenueShare {
         // Negative Amount Validation Matrix: SupplyCap requires >= 0 (#163)
         if let Err((err, _)) =
             AmountValidationMatrix::validate(supply_cap, AmountValidationCategory::SupplyCap)
+        {
+            return Err(err);
+        }
+
+        // Negative Amount Validation Matrix: MaxTotalSupplyShares requires >= 0
+        if let Err((err, _)) =
+            AmountValidationMatrix::validate(max_total_supply_shares, AmountValidationCategory::MaxTotalSupplyShares)
         {
             return Err(err);
         }
@@ -2418,6 +2506,11 @@ impl RevoraRevenueShare {
         if supply_cap > 0 {
             let cap_key = DataKey2::SupplyCap(offering_id.clone());
             env.storage().persistent().set(&cap_key, &supply_cap);
+        }
+
+        if max_total_supply_shares > 0 {
+            let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
+            env.storage().persistent().set(&max_shares_key, &max_total_supply_shares);
         }
 
         Self::emit_v2_event(
@@ -4952,6 +5045,35 @@ impl RevoraRevenueShare {
             .get(&DataKey::SnapshotHolderCount(offering_id.clone(), snapshot_ref))
             .unwrap_or(0);
 
+        // Check max total supply shares cap first
+        let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
+        let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
+        let mut temp_total_shares: i128 = if max_shares > 0 {
+            env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id.clone())).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut temp_deltas: Vec<(Address, i128)> = Vec::new(&env);
+
+        // First pass: calculate deltas and check cap
+        if max_shares > 0 {
+            for i in 0..batch_len {
+                let (holder, share_bps) = holders.get(i).unwrap();
+                let old_share: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                    .unwrap_or(0);
+                let delta = (share_bps as i128) - (old_share as i128);
+                temp_total_shares = temp_total_shares.saturating_add(delta);
+                temp_deltas.push_back((holder.clone(), delta));
+            }
+            if temp_total_shares > max_shares {
+                return Err(RevoraError::MaxTotalSupplySharesExceeded);
+            }
+        }
+
+        // Now apply the changes
         for i in 0..batch_len {
             let (holder, share_bps) = holders.get(i).unwrap();
             let slot = start_index.saturating_add(i);
@@ -4985,6 +5107,24 @@ impl RevoraRevenueShare {
 
             current_total = new_total;
             added_bps = added_bps.saturating_add(share_bps);
+        }
+
+        // Update total shares issued
+        if max_shares > 0 {
+            env.storage().persistent().set(&DataKey2::TotalSharesIssued(offering_id.clone()), &temp_total_shares);
+        } else {
+            // If no cap, still track total shares
+            let mut total_shares: i128 = env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id.clone())).unwrap_or(0);
+            for i in 0..batch_len {
+                let (holder, share_bps) = holders.get(i).unwrap();
+                let old_share: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                    .unwrap_or(0);
+                total_shares = total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+            }
+            env.storage().persistent().set(&DataKey2::TotalSharesIssued(offering_id.clone()), &total_shares);
         }
 
         // Update snapshot metadata.
