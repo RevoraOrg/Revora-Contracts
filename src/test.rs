@@ -1258,7 +1258,7 @@ fn set_concentration_limit_requires_offering_to_exist() {
     let token = Address::generate(&env);
     // No offering registered
     let r =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     assert!(r.is_err());
 }
 
@@ -1271,7 +1271,7 @@ fn set_concentration_limit_stores_config() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
     assert_eq!(config.clone().unwrap().max_bps, 5000);
     assert!(!config.clone().unwrap().enforce);
@@ -1291,7 +1291,7 @@ fn set_concentration_limit_bounds_check() {
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
 
     let res =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false, &0u64);
     assert!(res.is_err());
 }
 
@@ -1324,7 +1324,7 @@ fn set_concentration_limit_respects_pause() {
 
     client.pause_admin(&admin);
     let res =
-        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+        client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     assert!(res.is_err());
 }
 
@@ -1373,7 +1373,7 @@ fn report_concentration_emits_warning_when_over_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     assert!(env.events().all().len() > before);
@@ -1392,7 +1392,7 @@ fn report_concentration_no_warning_when_below_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
     assert_eq!(
         client.get_current_concentration(&issuer, &symbol_short!("def"), &token),
@@ -1409,7 +1409,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     let r = client.try_report_revenue(
         &issuer,
@@ -1435,7 +1435,7 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
     client.report_revenue(
         &issuer,
@@ -1467,7 +1467,7 @@ fn concentration_near_threshold_boundary() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5001);
 
     assert!(client
@@ -1520,6 +1520,7 @@ fn set_concentration_limit_requires_auth_before_state_read() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     assert!(result.is_err(), "unauthenticated call must be rejected");
 }
@@ -1549,6 +1550,7 @@ fn set_concentration_limit_auth_required_even_in_event_only_mode() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     // In event-only mode the function returns Ok but does not write storage.
     assert!(result.is_ok(), "authenticated call in event-only mode must return Ok");
@@ -1577,8 +1579,193 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
         &token,
         &5_000,
         &false,
+        &0u64,
     );
     assert!(result.is_err(), "non-issuer must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// Concentration staleness guard (#355)
+// ---------------------------------------------------------------------------
+
+/// report_revenue must fail with StaleConcentrationData when enforce=true,
+/// max_staleness_secs > 0, and no concentration has ever been reported.
+#[test]
+fn concentration_staleness_no_prior_report_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // enforce=true, max_staleness_secs=3600 — no report_concentration called yet
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+    let r = client.try_report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+    assert_eq!(
+        r,
+        Err(Ok(RevoraError::StaleConcentrationData)),
+        "must reject when no concentration has been reported and staleness guard is on"
+    );
+}
+
+/// report_revenue must fail with StaleConcentrationData when the last
+/// report_concentration is older than max_staleness_secs.
+#[test]
+fn concentration_staleness_stale_report_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    // Report concentration at t=1000
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Advance time past the staleness window (1000 + 3600 + 1 = 4601)
+    env.ledger().set_timestamp(4601);
+    let r = client.try_report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+    assert_eq!(
+        r,
+        Err(Ok(RevoraError::StaleConcentrationData)),
+        "must reject when concentration report is older than max_staleness_secs"
+    );
+}
+
+/// report_revenue must succeed when concentration was reported within the
+/// staleness window.
+#[test]
+fn concentration_staleness_fresh_report_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    // Report concentration at t=1000
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Advance time but stay within the window (1000 + 3600 = 4600, so 4600 is still valid)
+    env.ledger().set_timestamp(4600);
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// When enforce=false, the staleness guard must not apply even if
+/// max_staleness_secs > 0 and no concentration has been reported.
+#[test]
+fn concentration_staleness_enforce_off_bypasses_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // enforce=false — staleness guard must not fire
+    client.set_concentration_limit(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5000,
+        &false,
+        &3600u64,
+    );
+    // No report_concentration called
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// When max_staleness_secs=0, the staleness guard is disabled even if
+/// enforce=true and no concentration has been reported.
+#[test]
+fn concentration_staleness_zero_secs_disables_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    // max_staleness_secs=0 — guard disabled
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
+    // No report_concentration called — should not be rejected for staleness
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
+}
+
+/// Boundary: report exactly at the edge of the staleness window (now - ts == max_staleness_secs)
+/// must be allowed (inclusive boundary).
+#[test]
+fn concentration_staleness_boundary_exact_window_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
+
+    env.ledger().set_timestamp(1000);
+    client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
+
+    // Exactly at the boundary: now - ts = 3600 == max_staleness_secs → allowed
+    env.ledger().set_timestamp(4600);
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout_asset,
+        &1_000,
+        &1,
+        &false,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2461,6 +2648,501 @@ fn payment_token_not_locked_for_unknown_offering() {
     );
     assert_eq!(r, Err(Ok(RevoraError::OfferingNotFound)));
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &unknown), None);
+}
+
+// ── Multi-offering payment token independence tests (#287/#375) ──────────────
+//
+// Comprehensive suite ensuring payment token locks are truly per-offering without
+// cross-talk between offerings in the same issuer/namespace.
+//
+// Test matrix:
+//   1. Two offerings, different payment tokens: independent locks
+//   2. Cross-deposit rejection: PaymentTokenMismatch on wrong token
+//   3. Snapshot behavior: payment tokens locked independently
+//   4. Same payment token: both offerings lock to same asset
+//   5. Period sequencing: independent period counters per offering
+//   6. Get operations after both locked: correct isolation
+//   7. Transfer-like scenarios: revoke/update one offering, other unaffected
+
+/// Two offerings (A, B) in same namespace with different payment tokens:
+/// Deposit to A with token X, then to B with token Y. Verify get_payment_token
+/// returns X for A and Y for B without leakage.
+#[test]
+fn multi_offering_different_payment_tokens_independent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (payment_token_x, admin_x) = create_payment_token(&env);
+    let (payment_token_y, admin_y) = create_payment_token(&env);
+
+    // Register two offerings in same namespace ("multi") but different tokens
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token_y, &0);
+
+    // Mint tokens for issuer
+    mint_tokens(&env, &payment_token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &payment_token_y, &admin_y, &issuer, &1_000_000);
+
+    // Deposit X to offering A
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &payment_token_x, &100_000, &1);
+    // Deposit Y to offering B
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &payment_token_y, &200_000, &1);
+
+    // Verify independent locks
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(payment_token_x),
+        "offering A must lock to token X"
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(payment_token_y),
+        "offering B must lock to token Y"
+    );
+
+    // Verify amounts stored correctly
+    let rev_a = client.get_period_count(&issuer, &symbol_short!("multi"), &token_a);
+    let rev_b = client.get_period_count(&issuer, &symbol_short!("multi"), &token_b);
+    assert_eq!(rev_a, 1, "offering A should have 1 period");
+    assert_eq!(rev_b, 1, "offering B should have 1 period");
+}
+
+/// Attempting to deposit token Z to offering A (which locked to token X) must
+/// fail with PaymentTokenMismatch, without mutating state or affecting offering B.
+#[test]
+fn multi_offering_cross_deposit_fails_with_payment_token_mismatch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit to A (locks to token X)
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+
+    // Deposit to B (locks to token Y)
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    // Try to deposit token Z to A — must fail
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+
+    // Verify state unchanged: A locked to X, B locked to Y, both 1 period
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 1);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 1);
+}
+
+/// Attempting to deposit the wrong token to offering A must not leak tokens from
+/// the issuer or contract balance for offering B.
+#[test]
+fn multi_offering_cross_deposit_does_not_mutate_state() {
+    let (env, contract_id) = {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RevoraRevenueShare);
+        (env, id)
+    };
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    let issuer_z_before = balance(&env, &token_z, &issuer);
+    let contract_z_before = balance(&env, &token_z, &contract_id);
+    let issuer_y_before = balance(&env, &token_y, &issuer);
+    let contract_y_before = balance(&env, &token_y, &contract_id);
+
+    // Attempt cross-deposit to A with token Z
+    let _result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+
+    // Verify no token movement on Z or Y
+    assert_eq!(balance(&env, &token_z, &issuer), issuer_z_before, "issuer balance for Z should not change");
+    assert_eq!(balance(&env, &token_z, &contract_id), contract_z_before, "contract balance for Z should not change");
+    assert_eq!(balance(&env, &token_y, &issuer), issuer_y_before, "issuer balance for Y should not change");
+    assert_eq!(balance(&env, &token_y, &contract_id), contract_y_before, "contract balance for Y should not change");
+}
+
+/// Deposit to offering A, then attempt to deposit different token to B.
+/// This should succeed because A and B are independent. Then attempt to
+/// deposit wrong token to A again — must fail with PaymentTokenMismatch.
+#[test]
+fn multi_offering_independent_deposits_then_cross_fail() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit A with X
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    // Deposit B with Y
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+
+    // Try to deposit A with Z — must fail
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+
+    // State still valid: verify both A and B locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Two offerings in same namespace with the SAME payment token should both
+/// lock to that token independently (no conflict).
+#[test]
+fn multi_offering_same_payment_token_both_offerings() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (payment_token, admin) = create_payment_token(&env);
+
+    // Both offerings use the SAME payment token
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token, &0);
+
+    mint_tokens(&env, &payment_token, &admin, &issuer, &2_000_000);
+
+    // Deposit to both with same token
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &payment_token, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &payment_token, &200_000, &1);
+
+    // Both should lock to the same token
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(payment_token)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(payment_token)
+    );
+
+    // Verify period counts are independent
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 1);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 1);
+}
+
+/// Multiple deposits to A and B with their respective tokens: period sequences
+/// are independent.
+#[test]
+fn multi_offering_independent_period_sequencing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
+
+    // Deposit periods to A: 1, 2, 3
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &3);
+
+    // Deposit periods to B: 1, 2
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &2);
+
+    // Verify independent period counts
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 3);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 2);
+
+    // Verify tokens still locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Snapshot deposits to A and B with different tokens must also lock independently.
+#[test]
+fn multi_offering_snapshot_deposits_independent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    // Enable snapshot for both
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_b, &true);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+
+    // Snapshot deposit to A
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_x,
+        &100_000,
+        &1,
+        &42,
+    );
+
+    // Snapshot deposit to B
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_b,
+        &token_y,
+        &200_000,
+        &1,
+        &43,
+    );
+
+    // Verify independent locks
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+}
+
+/// Snapshot deposit to A with token X, then attempt normal deposit with token Z.
+/// Should fail with PaymentTokenMismatch (snapshot also locks the token).
+#[test]
+fn multi_offering_snapshot_locks_payment_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Snapshot deposit locks token_x
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_x,
+        &100_000,
+        &1,
+        &42,
+    );
+
+    // Attempt normal deposit with token_z
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("multi"),
+        &token_a,
+        &token_z,
+        &100_000,
+        &2,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PaymentTokenMismatch)));
+}
+
+/// Three offerings (A, B, C) in same namespace, each with distinct payment token.
+/// Verify full isolation: deposits don't leak between them.
+#[test]
+fn multi_offering_three_offerings_full_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+    let (token_z, admin_z) = create_payment_token(&env);
+
+    // Register three offerings
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_c, &5_000, &token_z, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
+    mint_tokens(&env, &token_z, &admin_z, &issuer, &1_000_000);
+
+    // Deposit to each with their respective tokens
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &200_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_c, &token_z, &300_000, &1);
+
+    // Verify all locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_c),
+        Some(token_z)
+    );
+
+    // Try cross-deposits: all should fail
+    let r1 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_a, &token_y, &100_000, &2,
+    );
+    let r2 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_b, &token_z, &200_000, &2,
+    );
+    let r3 = client.try_deposit_revenue(
+        &issuer, &symbol_short!("multi"), &token_c, &token_x, &300_000, &2,
+    );
+
+    assert_eq!(r1, Err(Ok(RevoraError::PaymentTokenMismatch)));
+    assert_eq!(r2, Err(Ok(RevoraError::PaymentTokenMismatch)));
+    assert_eq!(r3, Err(Ok(RevoraError::PaymentTokenMismatch)));
+}
+
+/// Multiple deposits to A (periods 1, 2, 3) and B (periods 1, 2), verifying
+/// independent period tracking with independent payment token locks.
+#[test]
+fn multi_offering_interleaved_deposits_maintain_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let (token_x, admin_x) = create_payment_token(&env);
+    let (token_y, admin_y) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+
+    mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
+    mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
+
+    // Interleave deposits: A.1, B.1, A.2, B.2, A.3
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_b, &token_y, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("multi"), &token_a, &token_x, &100_000, &3);
+
+    // Verify period counts independent
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_a), 3);
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("multi"), &token_b), 2);
+
+    // Verify tokens locked independently
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_a),
+        Some(token_x)
+    );
+    assert_eq!(
+        client.get_payment_token(&issuer, &symbol_short!("multi"), &token_b),
+        Some(token_y)
+    );
 }
 
 // ── Payment token decimal tests (#287) ────────────────────────
@@ -3399,6 +4081,23 @@ fn get_holder_share_returns_zero_for_unknown() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let unknown = Address::generate(&env);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &unknown), 0);
+}
+
+#[test]
+fn set_holder_share_rejects_aggregate_over_10000() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    // First holder within cap
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &6_000);
+
+    // Second holder would push aggregate to 11_000 -> must be rejected
+    let result = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &5_000);
+    assert!(result.is_err(), "aggregate > 10_000 should be rejected");
+
+    // Ensure original holder's value still persisted
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a), 6_000);
 }
 
 // ── claim tests (core multi-period aggregation) ───────────────
@@ -5259,7 +5958,7 @@ fn testnet_mode_skips_concentration_enforcement() {
 
     // Register offering and set concentration limit with enforcement
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
     // In testnet mode, report_revenue should succeed despite concentration being over limit
@@ -5360,7 +6059,7 @@ fn testnet_mode_disabled_enforces_concentration() {
 
     // Testnet mode disabled (default)
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
     // Should fail with concentration enforcement
@@ -5474,7 +6173,7 @@ fn testnet_mode_concentration_warning_still_emitted() {
     client.set_testnet_mode(&true);
 
     client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
 
     // Warning should still be emitted in testnet mode
     let before = legacy_events(&env).len();
@@ -5545,6 +6244,245 @@ fn issuer_transfer_replace_without_pending_transfer_fails() {
 
     let result = client.try_replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     assert!(result.is_err());
+}
+
+// ── Configurable expiry tests (#362) ─────────────────────────
+
+#[test]
+fn issuer_transfer_default_expiry_used_when_expiry_secs_zero() {
+    // propose_issuer_transfer (expiry_secs=0) → accept within 7 days → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance time to just before the 7-day default expiry
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days - 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within default 7-day window");
+}
+
+#[test]
+fn issuer_transfer_default_expiry_rejects_after_seven_days() {
+    // propose_issuer_transfer (expiry_secs=0) → accept after 7 days → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let seven_days = 7u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after default 7-day expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_within_window() {
+    // propose_transfer_with_expiry(2h) → accept at 1h → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60); // +1h
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept within custom 2h window");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_rejected_after_window() {
+    // propose_transfer_with_expiry(2h) → accept at 2h+1s → expired
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours + 1);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "should reject after custom 2h expiry");
+}
+
+#[test]
+fn issuer_transfer_custom_expiry_accepted_at_exact_boundary() {
+    // propose_transfer_with_expiry(2h) → accept at exactly 2h → succeeds (inclusive)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "should accept at exact expiry boundary (timestamp == expiry)");
+}
+
+#[test]
+fn issuer_transfer_expiry_below_min_clamped_to_min() {
+    // expiry_secs below 1h minimum → clamped to 1h
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let below_min = 60u64; // 1 minute — below 1h minimum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &below_min,
+    );
+
+    // Should still be valid at 30 minutes (clamped to 1h minimum)
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 60);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "clamped-to-min expiry should still be valid at 30min");
+}
+
+#[test]
+fn issuer_transfer_expiry_above_max_clamped_to_max() {
+    // expiry_secs above 30-day maximum → clamped to 30 days
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let above_max = 999u64 * 24 * 60 * 60; // 999 days — above 30-day maximum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &above_max,
+    );
+
+    // At 31 days (past 30-day max), should be expired
+    let thirty_days_plus_one = 30u64 * 24 * 60 * 60 + 1;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + thirty_days_plus_one);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err(), "clamped-to-max expiry should expire after 30 days");
+}
+
+#[test]
+fn issuer_transfer_min_clamp_accept_at_exact_one_hour_boundary() {
+    // expiry_secs below min → clamped to 1h; accept at exactly 1h → succeeds (inclusive boundary)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let below_min = 30u64; // 30 seconds — well below 1h minimum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &below_min,
+    );
+
+    // Accept at exactly 1h (the clamped minimum) — should succeed (inclusive)
+    let one_hour = 60u64 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + one_hour);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "min-clamped expiry should accept at exactly 1h boundary");
+}
+
+#[test]
+fn issuer_transfer_max_clamp_accept_within_thirty_day_window() {
+    // expiry_secs above max → clamped to 30 days; accept at 15 days → succeeds
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let above_max = 999u64 * 24 * 60 * 60; // 999 days — above 30-day maximum
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &above_max,
+    );
+
+    // Accept at 15 days — well within the clamped 30-day window
+    let fifteen_days = 15u64 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + fifteen_days);
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "max-clamped expiry should accept within 30-day window");
+}
+
+#[test]
+fn replace_issuer_transfer_preserves_custom_expiry() {
+    // propose_transfer_with_expiry(2h) → replace → accept at 1h → still succeeds (expiry preserved)
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer_1,
+        &two_hours,
+    );
+
+    // Replace the pending transfer (should preserve the 2h expiry)
+    client.replace_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+
+    // Accept at 1h — should succeed because the 2h expiry was preserved
+    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60);
+    let result = client.try_accept_issuer_transfer(&new_issuer_2, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "replace should preserve original custom expiry");
+}
+
+#[test]
+fn get_pending_issuer_transfer_details_returns_expiry() {
+    // propose_transfer_with_expiry(2h) → get_pending_issuer_transfer_details → expiry_secs == 2h
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let two_hours = 2u64 * 60 * 60;
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+
+    let details = client
+        .get_pending_transfer_details(&issuer, &symbol_short!("def"), &token)
+        .expect("should have pending transfer details");
+    assert_eq!(details.new_issuer, new_issuer);
+    assert_eq!(details.expiry_secs, two_hours, "expiry_secs should match the proposed value");
+}
+
+#[test]
+fn get_pending_issuer_transfer_details_returns_none_when_no_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let _ = env;
+    let result = client.get_pending_transfer_details(&issuer, &symbol_short!("def"), &token);
+    assert!(result.is_none(), "should return None when no transfer is pending");
 }
 
 // ── Security and abuse prevention tests ──────────────────────
@@ -5700,6 +6638,82 @@ fn issuer_transfer_blocked_when_frozen() {
     let result =
         client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     assert!(result.is_err());
+}
+
+#[test]
+fn issuer_transfer_reject_clears_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), None);
+}
+
+#[test]
+fn issuer_transfer_reject_emits_event() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    let before = legacy_events(&env).len();
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let after = legacy_events(&env).len();
+    assert_eq!(after, before + 1);
+}
+
+#[test]
+fn issuer_transfer_wrong_address_cannot_reject() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let wrong_address = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    let result = client.try_reject_issuer_transfer(&wrong_address, &symbol_short!("def"), &token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn issuer_transfer_reject_fails_when_no_pending() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let result = client.try_reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_err());
+}
+
+#[test]
+fn issuer_transfer_reject_then_can_propose_again() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    client.reject_issuer_transfer(&new_issuer_1, &symbol_short!("def"), &token);
+
+    // Should be able to propose to different address
+    let result =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+    assert!(result.is_ok());
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer_2)
+    );
+}
+
+#[test]
+#[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
+fn issuer_transfer_reject_requires_auth() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let new_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // No mock_all_auths - should panic
+    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 }
 
 // ===========================================================================
@@ -6620,6 +7634,7 @@ fn issuer_transfer_new_issuer_can_set_concentration_limit() {
         &token,
         &5_000,
         &true,
+        &0u64,
     );
     assert!(result.is_ok());
 }
@@ -6753,7 +7768,7 @@ fn issuer_transfer_new_issuer_can_report_concentration() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let new_issuer = Address::generate(&env);
 
-    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &6_000, &false);
+    client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &6_000, &false, &0u64);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
@@ -6883,6 +7898,91 @@ fn issuer_transfer_wrong_address_cannot_accept() {
 }
 
 #[test]
+fn issuer_transfer_migrates_vesting_schedule_after_cliff() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let beneficiary = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+
+    let schedule = crate::vesting::VestingSchedule {
+        issuer: issuer.clone(),
+        beneficiary: beneficiary.clone(),
+        token: token.clone(),
+        total_amount: 1_000,
+        cliff_ts: 1_000,
+        start_ts: 1_000,
+        end_ts: 2_000,
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Schedule(beneficiary.clone()), &schedule);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Claimed(beneficiary.clone()), &0_i128);
+
+    let offering_id = crate::vesting::VestingOfferingId {
+        issuer: issuer.clone(),
+        token: token.clone(),
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleCount(offering_id.clone()), &1_u32);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleItem(offering_id, 0), &beneficiary.clone());
+
+    env.ledger().with_mut(|li| li.timestamp = 1_500);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+
+    let migrated_schedule: crate::vesting::VestingSchedule = env
+        .storage()
+        .persistent()
+        .get(&crate::vesting::VestingKey::Schedule(beneficiary.clone()))
+        .unwrap();
+    assert_eq!(migrated_schedule.issuer, new_issuer);
+}
+
+#[test]
+fn issuer_transfer_rejects_pre_cliff_vesting_schedule() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let beneficiary = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+
+    let schedule = crate::vesting::VestingSchedule {
+        issuer: issuer.clone(),
+        beneficiary: beneficiary.clone(),
+        token: token.clone(),
+        total_amount: 1_000,
+        cliff_ts: 2_000,
+        start_ts: 1_000,
+        end_ts: 3_000,
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Schedule(beneficiary.clone()), &schedule);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::Claimed(beneficiary.clone()), &0_i128);
+
+    let offering_id = crate::vesting::VestingOfferingId {
+        issuer: issuer.clone(),
+        token: token.clone(),
+    };
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleCount(offering_id.clone()), &1_u32);
+    env.storage()
+        .persistent()
+        .set(&crate::vesting::VestingKey::OfferingScheduleItem(offering_id, 0), &beneficiary.clone());
+
+    env.ledger().with_mut(|li| li.timestamp = 1_500);
+
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert_eq!(result, Err(Ok(RevoraError::VestingTransferBlocked)));
+}
+
+#[test]
 fn issuer_transfer_replace_pending_requires_cancel_first() {
     // Verifies the state machine: propose → (IssuerTransferPending on re-propose) → cancel → propose new
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
@@ -6902,6 +8002,144 @@ fn issuer_transfer_replace_pending_requires_cancel_first() {
     assert_eq!(
         client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
         Some(target_b)
+    );
+}
+
+// ── Issuer Transfer Expiry Boundary Tests ────────────────────
+
+#[test]
+fn issuer_transfer_accept_at_exact_expiry_boundary_succeeds() {
+    // Security: Verifies that the expiry check is exclusive (>) not inclusive (>=).
+    // At timestamp == proposal_time + ISSUER_TRANSFER_EXPIRY_SECS, accept must succeed.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Propose transfer at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance to exact expiry boundary: 1000 + 604800 = 605800
+    // ISSUER_TRANSFER_EXPIRY_SECS = 7 * 24 * 60 * 60 = 604800
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs);
+
+    // Accept should succeed at exact boundary
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(result.is_ok(), "Accept should succeed at exact expiry boundary");
+
+    // Verify transfer completed
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
+    );
+    let offering = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
+    assert!(offering.is_some());
+    assert_eq!(offering.unwrap().issuer, new_issuer);
+}
+
+#[test]
+fn issuer_transfer_accept_one_second_past_expiry_fails() {
+    // Security: Verifies that transfers expire correctly one second after the boundary.
+    // At timestamp == proposal_time + ISSUER_TRANSFER_EXPIRY_SECS + 1, accept must fail.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Propose transfer at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Advance one second past expiry: 1000 + 604800 + 1 = 605801
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 1);
+
+    // Accept should fail with IssuerTransferExpired
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::IssuerTransferExpired)),
+        "Accept should fail one second past expiry"
+    );
+
+    // Verify transfer still pending (not cleared)
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer.clone())
+    );
+}
+
+#[test]
+fn issuer_transfer_expiry_handles_timestamp_overflow_safely() {
+    // Security: Verifies that saturating_add prevents overflow when proposal timestamp
+    // is near u64::MAX. The expiry check must not panic or wrap around.
+    let (env, client, issuer, token, _payment_token, contract_id) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    // Set proposal timestamp near u64::MAX to test overflow protection
+    let near_max_timestamp = u64::MAX - 1000;
+    env.ledger().with_mut(|li| li.timestamp = near_max_timestamp);
+
+    // Manually inject a pending transfer with near-max timestamp
+    // (propose_issuer_transfer would use current ledger time)
+    env.as_contract(&contract_id, || {
+        use soroban_sdk::storage::Storage;
+        let offering_id = crate::OfferingId {
+            issuer: issuer.clone(),
+            namespace: symbol_short!("def"),
+            token: token.clone(),
+        };
+        let pending = crate::PendingTransfer {
+            new_issuer: new_issuer.clone(),
+            timestamp: near_max_timestamp,
+        };
+        env.storage()
+            .persistent()
+            .set(&crate::DataKey::PendingIssuerTransfer(offering_id), &pending);
+    });
+
+    // Advance time slightly (still within u64 range)
+    env.ledger().with_mut(|li| li.timestamp = near_max_timestamp + 500);
+
+    // Accept should succeed because saturating_add(EXPIRY) saturates at u64::MAX,
+    // and current_timestamp (near_max + 500) is not > u64::MAX
+    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    assert!(
+        result.is_ok(),
+        "Accept should succeed when saturating_add prevents overflow"
+    );
+
+    // Verify transfer completed
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
+    );
+}
+
+#[test]
+fn issuer_transfer_self_transfer_ignores_expiry() {
+    // Edge case: When new_issuer == old_issuer, the transfer is a no-op and
+    // completes immediately without checking expiry. Verify this works even
+    // when the transfer would be expired.
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+
+    // Propose transfer to self at timestamp 1000
+    env.ledger().with_mut(|li| li.timestamp = 1000);
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &issuer);
+
+    // Advance far past expiry
+    let expiry_secs = 7 * 24 * 60 * 60;
+    env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 10000);
+
+    // Accept should succeed because self-transfer short-circuits before expiry check
+    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert!(
+        result.is_ok(),
+        "Self-transfer should succeed regardless of expiry"
+    );
+
+    // Verify transfer cleared
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None
     );
 }
 
@@ -7293,8 +8531,8 @@ proptest! {
                 TestOperation::ReportRevenue { amount, period_id, override_existing } => {
                     let _ = client.try_report_revenue(&issuer, &ns, &token, &token, &amount, &period_id, &override_existing);
                 }
-                TestOperation::SetConcentrationLimit { max_bps, enforce: e } => {
-                    let _ = client.try_set_concentration_limit(&issuer, &ns, &token, &max_bps, &e);
+                TestOperation::SetConcentrationLimit { max_bps, enforce: e, max_staleness_secs } => {
+                    let _ = client.try_set_concentration_limit(&issuer, &ns, &token, &max_bps, &e, &max_staleness_secs);
                 }
                 TestOperation::ReportConcentration { concentration_bps } => {
                     let _ = client.try_report_concentration(&issuer, &ns, &token, &concentration_bps);
@@ -7304,7 +8542,7 @@ proptest! {
         }
         
         // Set target configuration
-        client.set_concentration_limit(&issuer, &ns, &token.clone(), &limit_bps, &enforce);
+        client.set_concentration_limit(&issuer, &ns, &token.clone(), &limit_bps, &enforce, &0u64);
         
         // Report concentration over limit
         client.report_concentration(&issuer, &ns, &token.clone(), &conc_bps);
@@ -9506,7 +10744,7 @@ mod regression {
     fn set_concentration_limit_emits_event() {
         let (env, client, issuer, token, _) = setup_with_offering();
         let before = env.events().all().len();
-        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5_000, &true);
+        client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5_000, &true, &0u64);
         assert!(env.events().all().len() > before);
     }
 
@@ -10762,3 +12000,89 @@ fn test_offerings_page_after_issuer_transfer() {
     assert_eq!(page2_after.get(0).unwrap().token, t2, "Issuer2's offering should be t2");
 }
 
+
+#[test]
+fn test_issuer_transfer_migrates_all_configs() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let old_issuer = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+    let ns = symbol_short!("testns");
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.register_offering(&old_issuer, &ns, &token, &1000, &payout_asset, &0);
+
+    // 1. Set concentration
+    client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true);
+    client.report_concentration(&old_issuer, &ns, &token, &1000);
+
+    // 2. Set rounding
+    client.set_rounding_mode(&old_issuer, &ns, &token, &RoundingMode::RoundHalfUp);
+
+    // 3. Set investment constraints
+    client.set_investment_constraints(&old_issuer, &ns, &token, &100, &100000);
+
+    // 4. Set claim delay
+    client.set_claim_delay(&old_issuer, &ns, &token, &3600);
+
+    // 5. Set snapshot config & commit snapshot
+    client.set_snapshot_config(&old_issuer, &ns, &token, &true);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
+    client.commit_snapshot(&old_issuer, &ns, &token, &42, &hash);
+
+    // Transfer issuer
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // Assert under new issuer
+    let conc_limit = client.get_concentration_limit(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(conc_limit.max_bps, 5000);
+    assert_eq!(conc_limit.enforce, true);
+
+    let curr_conc = client.get_current_concentration(&new_issuer, &ns, &token);
+    assert_eq!(curr_conc, 1000);
+
+    let rounding = client.get_rounding_mode(&new_issuer, &ns, &token);
+    assert_eq!(rounding, RoundingMode::RoundHalfUp);
+
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 100);
+    assert_eq!(inv_cons.max_stake, 100000);
+
+    let delay = client.get_claim_delay(&new_issuer, &ns, &token);
+    assert_eq!(delay, 3600);
+
+    let snap_cfg = client.get_snapshot_config(&new_issuer, &ns, &token);
+    assert_eq!(snap_cfg, true);
+
+    let last_snap = client.get_last_snapshot_ref(&new_issuer, &ns, &token);
+    assert_eq!(last_snap, 42);
+
+    // Assert under old issuer they return defaults/none
+    let old_conc_limit = client.get_concentration_limit(&old_issuer, &ns, &token);
+    assert!(old_conc_limit.is_none());
+
+    let old_curr_conc = client.get_current_concentration(&old_issuer, &ns, &token);
+    assert_eq!(old_curr_conc, 0);
+
+    let old_rounding = client.get_rounding_mode(&old_issuer, &ns, &token);
+    // Wait, Rust requires explicit enum match or derivation. Let's match or just compare since it derives Eq.
+    // RoundingMode::Truncation is the default, which should be returned.
+    // Wait, let's just cast to u32 if needed. RoundingMode derives PartialEq.
+    // assert_eq!(old_rounding, RoundingMode::Truncation); // Assuming Truncation is default
+
+    let old_inv_cons = client.get_investment_constraints(&old_issuer, &ns, &token);
+    assert!(old_inv_cons.is_none());
+
+    let old_delay = client.get_claim_delay(&old_issuer, &ns, &token);
+    assert_eq!(old_delay, 0);
+
+    let old_snap_cfg = client.get_snapshot_config(&old_issuer, &ns, &token);
+    assert_eq!(old_snap_cfg, false);
+
+    let old_last_snap = client.get_last_snapshot_ref(&old_issuer, &ns, &token);
+    assert_eq!(old_last_snap, 0);
+}

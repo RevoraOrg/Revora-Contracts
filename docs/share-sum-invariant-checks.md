@@ -20,12 +20,15 @@ HolderShare[offering][holder] ∈ [0, 10_000]
 `set_holder_share` and `set_holder_share_internal` reject any `share_bps > 10_000`
 with `RevoraError::InvalidShareBps` (code 8) before writing to storage.
 
-### No running-sum enforcement
+### Per-offering aggregate cap (enforced on-chain)
 
-The contract does **not** track the aggregate of all holder shares for an
-offering. An issuer can set multiple holders each to 10 000 bps (100 %) without
-the contract rejecting the writes. The sum of all holder shares is an off-chain
-concern.
+The contract now persists a per-offering running total of all persisted
+`HolderShare` entries and enforces that the aggregate stays within `10_000`
+(100%). Attempts to set a holder's share that would make the offering's total
+exceed `10_000` bps are rejected with `RevoraError::InvalidShareBps` (code 8).
+
+This guard is performed atomically during `set_holder_share` and when applying
+committed snapshot batches via `apply_snapshot_shares`.
 
 ### Payout arithmetic
 
@@ -47,8 +50,8 @@ draining the contract's token balance.
 
 | Entrypoint | What is enforced |
 |------------|-----------------|
-| `set_holder_share` | `share_bps ≤ 10_000` per holder; no aggregate check. |
-| `meta_set_holder_share` | Delegates to `set_holder_share_internal`; same per-holder cap. |
+| `set_holder_share` | `share_bps ≤ 10_000` per holder; aggregate `sum(holder_bps) ≤ 10_000` enforced. |
+| `meta_set_holder_share` | Delegates to `set_holder_share_internal`; same per-holder and aggregate caps. |
 | `batch_set_holder_shares` | Validates each entry `≤ 10_000` before any write (fail-fast). |
 | `claim` | Computes `revenue * share_bps / 10_000`; no cross-holder sum check. |
 

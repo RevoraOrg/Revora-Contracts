@@ -394,6 +394,7 @@ fn set_concentration_limit_wrong_issuer_no_mutation() {
         &token,
         &1_000u32,
         &true,
+        &0u64,
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
     assert!(
@@ -706,6 +707,7 @@ fn cross_offering_concentration_limit_wrong_issuer() {
         &token_b,
         &5_000u32,
         &false,
+        &0u64,
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
     assert!(
@@ -889,6 +891,7 @@ fn set_concentration_limit_blocked_when_frozen() {
         &token,
         &2_000u32,
         &true,
+        &0u64,
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     assert!(
@@ -1025,6 +1028,7 @@ fn issuer_can_configure_offering_settings() {
         &token,
         &3_000u32,
         &false,
+        &0u64,
     );
     let cfg = client
         .get_concentration_limit(&issuer, &symbol_short!("def"), &token)

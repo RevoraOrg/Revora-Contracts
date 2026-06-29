@@ -34,7 +34,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `blacklist_remove` | `caller: Address`, `token: Address`, `investor: Address` | — | issuer | Remove investor from blacklist. Only the current issuer can perform this action. Idempotent. |
 | `is_blacklisted` | `token: Address`, `investor: Address` | `bool` | — | Whether investor is blacklisted for token. |
 | `get_blacklist` | `token: Address` | `Vec<Address>` | — | All blacklisted addresses for token. |
-| `set_concentration_limit` | `issuer: Address`, `token: Address`, `max_bps: u32`, `enforce: bool` | `Result<(), RevoraError>` | issuer | Set per-offering max single-holder concentration (bps). 0 = disabled. If `enforce` is true, `report_revenue` fails when reported concentration > `max_bps`. Offering must exist. |
+| `set_concentration_limit` | `issuer: Address`, `token: Address`, `max_bps: u32`, `enforce: bool`, `max_staleness_secs: u64` | `Result<(), RevoraError>` | issuer | Set per-offering max single-holder concentration (bps). 0 = disabled. If `enforce` is true, `report_revenue` fails when reported concentration > `max_bps`. When `max_staleness_secs > 0` and `enforce` is true, `report_revenue` also fails if no concentration has been reported or the last report is older than `max_staleness_secs` seconds. Offering must exist. |
 | `report_concentration` | `issuer: Address`, `token: Address`, `concentration_bps: u32` | `Result<(), RevoraError>` | issuer | Report current top-holder concentration (bps). Emits `conc_warn` if over configured limit. |
 | `get_concentration_limit` | `issuer: Address`, `token: Address` | `Option<ConcentrationLimitConfig>` | — | Get concentration limit config for offering. |
 | `get_current_concentration` | `issuer: Address`, `token: Address` | `Option<u32>` | — | Last reported concentration (bps) for offering. |
@@ -45,6 +45,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `set_min_revenue_threshold` | `issuer: Address`, `token: Address`, `min_amount: i128` | `Result<(), RevoraError>` | issuer | Per-offering minimum revenue for new periods. When a new `report_revenue` call is below the threshold, the contract emits `rev_below` and skips report/audit state updates. Stored periods can still be corrected explicitly with `override_existing=true`. |
 | `get_min_revenue_threshold` | `issuer: Address`, `token: Address` | `i128` | — | Minimum revenue threshold for offering (0 = none). |
 | `compute_share` | `amount: i128`, `revenue_share_bps: u32`, `mode: RoundingMode` | `i128` | — | Compute share of amount at given bps with given rounding. Bounds: 0 ≤ result ≤ amount. |
+| `prove_distribution_for_period` | `issuer: Address`, `namespace: Symbol`, `token: Address`, `period_id: u64`, `holders: Vec<Address>` | `(Vec<DistributionEntry>, BytesN<32>)` | — | Return a deterministic per-holder distribution proof for a single period. See [Distribution Proofs](#distribution-proofs) below. |
 | `propose_issuer_transfer` | `token: Address`, `new_issuer: Address` | `Result<(), RevoraError>` | current issuer | Propose transferring issuer control to a new address. First step of two-step transfer. |
 | `accept_issuer_transfer` | `token: Address` | `Result<(), RevoraError>` | proposed new issuer | Accept a pending issuer transfer. Completes the transfer and grants full control to new issuer. |
 | `cancel_issuer_transfer` | `token: Address` | `Result<(), RevoraError>` | current issuer | Cancel a pending issuer transfer before it's accepted. |
@@ -56,7 +57,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 ### Types
 
 - **Offering:** `{ issuer: Address, token: Address, revenue_share_bps: u32 }`
-- **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool }` — per-offering concentration guardrail.
+- **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool, max_staleness_secs: u64 }` — per-offering concentration guardrail. When `enforce` is true and `max_staleness_secs > 0`, `report_revenue` rejects with `StaleConcentrationData` if no concentration has been reported or the last report is older than `max_staleness_secs` seconds.
 - **AuditSummary:** `{ total_revenue: i128, report_count: u64 }` — per-offering audit log summary.
 - **RoundingMode:** `Truncation` (0) or `RoundHalfUp` (1) — used by `compute_share` and per-offering default.
 
@@ -75,6 +76,7 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
 | 25 | `ReportingWindowClosed` | Current ledger timestamp is outside the configured reporting window; `report_revenue` rejected. |
 | 26 | `ClaimWindowClosed` | Current ledger timestamp is outside the configured claiming window; `claim` rejected. |
+| 49 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -86,6 +88,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `rev_init` | `(issuer, token), (amount, period_id, blacklist_vec)` | First persisted report for a period. |
 | `rev_ovrd` | `(issuer, token), (new_amount, period_id, old_amount, blacklist_vec)` | Accepted correction of an existing persisted period (`override_existing=true`). |
 | `rev_rej` | `(issuer, token), (attempted_amount, period_id, existing_amount, blacklist_vec)` | Duplicate report attempt for an existing period when `override_existing=false`; no state change. |
+| `rev_omiss` | (`issuer, token`), (`attempted_amount, period_id`) | Rejected override attempt when `override_existing=true` is used for a period with no prior report. |
 | `rev_rep` | `(issuer, token), (amount, period_id, blacklist_vec)` | Receipt for an accepted persisted report call (initial or override). Use `rev_init` plus `rev_ovrd` to reconstruct audit totals. |
 | `bl_add` | `(token, caller), investor` | After `blacklist_add`. |
 | `bl_rem` | `(token, caller), investor` | After `blacklist_remove`. |
@@ -112,11 +115,58 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 - **Off-chain:** Prefer small page sizes and bounded blacklist sizes for predictable gas. See storage/gas tests in `src/test.rs` for stress behavior.
 - **Holder concentration:** Concentration is not computed on-chain (no token balance reads). Issuer or indexer calls `report_concentration(issuer, token, bps)` with the current top-holder share in bps; the contract stores it and enforces or warns based on `set_concentration_limit`. Use `try_report_revenue` when enforcement may be enabled.
 - **Rounding:** Use `compute_share(amount, revenue_share_bps, mode)` for consistent distribution math. Per-offering default is `get_rounding_mode(issuer, token)` (Truncation if unset). Sum of shares must not exceed total; both modes keep result in [0, amount].
+- **Distribution proofs:** Use `prove_distribution_for_period(issuer, namespace, token, period_id, holders)` to obtain a contract-computed, verifiable per-holder payout vector and a SHA-256 digest. Off-chain indexers can call this endpoint and compare the returned digest against their own reconstruction to detect drift from contract math. See [Distribution Proofs](#distribution-proofs) below.
 - **Issuer Transfer:** See [ISSUER_TRANSFER.md](./ISSUER_TRANSFER.md) for comprehensive documentation on securely transferring issuer control via the two-step propose/accept flow.
 - **Payment token locking:** Once an offering's payout asset is set at registration, all deposits must use that same token. See [docs/payment-token-locking.md](./docs/payment-token-locking.md) for invariants and test coverage.
 - **Payment token decimals:** Different Stellar assets use different decimal precisions (e.g., USDC=6, XLM=7, WBTC=8). Use `set_payment_token_decimals` to configure the offering's asset precision; the contract normalizes raw amounts to 7-decimal canonical units before computing holder shares. See [docs/payment-token-decimal-compatibility.md](./docs/payment-token-decimal-compatibility.md) for details and examples.
 - **Testnet mode:** Admin can enable testnet mode via `set_testnet_mode(true)` to relax certain validations for non-production deployments. When enabled: (1) `register_offering` allows `revenue_share_bps > 10000`, (2) `report_revenue` skips concentration enforcement. Use only for testnet/development environments. Check mode with `is_testnet_mode()`.
 - **Reporting and claiming windows:** Issuers can optionally restrict when `report_revenue` and `claim` are permitted using time-based access windows. See [Time Windows](#time-based-access-windows-reporting--claiming) below.
+
+### Distribution Proofs
+
+`prove_distribution_for_period(issuer, namespace, token, period_id, holders)` is a **read-only** endpoint that lets off-chain indexers verify their payout reconstruction against contract truth.
+
+#### What it returns
+
+`(Vec<DistributionEntry>, BytesN<32>)` — a per-holder vector and a SHA-256 digest.
+
+Each `DistributionEntry` contains:
+- `holder: Address` — the holder's address (same order as the input `holders` slice)
+- `share_bps: u32` — the holder's on-chain share in basis points
+- `normalized_payout: i128` — `compute_share(normalize_amount(period_revenue, decimals), share_bps, rounding_mode)`
+
+#### Digest construction
+
+```
+digest = SHA-256(
+    XDR(issuer) || XDR(namespace) || XDR(token) || XDR(period_id) || XDR(entries)
+)
+```
+
+The digest covers the full output vector in input order. Off-chain indexers reproduce it by:
+1. Calling `prove_distribution_for_period` with the same ordered `holders` slice.
+2. Computing the same SHA-256 over the XDR-serialised fields.
+3. Comparing — any mismatch indicates drift from contract math.
+
+#### Deterministic ordering
+
+The contract preserves the **caller-supplied order** of `holders` exactly. There is no on-chain sorting. Off-chain tools must use a stable, agreed-upon ordering (e.g. lexicographic by address bytes) and pass the same order on every call to get a reproducible digest.
+
+#### Edge cases
+
+| Condition | Behaviour |
+|-----------|-----------|
+| Unknown `period_id` (no deposit) | `normalized_payout = 0` for all holders; digest still valid |
+| `share_bps == 0` for a holder | `normalized_payout = 0` |
+| Empty `holders` vec | Returns empty `entries`; digest is SHA-256 of the header-only payload |
+| `holders.len() > 200` | Silently capped at `MAX_CHUNK_PERIODS` (200); paginate off-chain |
+| Decimals ≠ 7 | `normalize_amount` scales the raw revenue before `compute_share` |
+
+#### Security
+
+- **Read-only**: no storage writes, no auth required.
+- **Tamper-evident**: the digest covers contract-computed values only. It cannot be forged without changing on-chain `HolderShare` or `PeriodRevenue` state.
+- **No double-counting risk**: the function does not transfer tokens or advance any index.
 
 ### Time-Based Access Windows (Reporting & Claiming)
 
@@ -281,6 +331,8 @@ Accepted ranges and rejection semantics:
 | `max_stake` | `set_investment_constraints` | >= 0 and `>= min_stake` when set | `InvalidAmount` |
 | `period_id` | `report_revenue` | `> 0` and `last + 1` (for new reports) | `InvalidPeriodId` |
 | `min_amount` | `set_min_revenue_threshold` | ≥ 0 | `InvalidAmount` |
+
+- `snapshot content_hash`: SHA-256 digest over the on-chain snapshot rows in ascending slot order. Each row is encoded in XDR as the tuple `(slot_index: u32, holder: Address, share_bps: u32)`.
 
 Use `try_*` client methods to receive these errors as `Result`.
 Consolidated invalid-amount regression coverage lives in `src/invalid_amount_matrix_tests.rs`; the checklist is in `docs/negative-amount-validation-matrix.md`.
