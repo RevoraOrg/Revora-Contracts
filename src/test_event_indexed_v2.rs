@@ -37,7 +37,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0);
     (env, client, issuer, ns, token, payout)
 }
 
@@ -205,7 +205,7 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0);
 
     let holder = Address::generate(&env);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -243,7 +243,7 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0);
 
     let holder = Address::generate(&env);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -273,8 +273,8 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
     let payout_a = Address::generate(&env);
     let payout_b = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token_a, &2500, &payout_a, &0);
-    client.register_offering(&issuer, &ns, &token_b, &2500, &payout_b, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout_a, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout_b, &0);
 
     let before_a = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_a, &payout_a, &10_000, &1, &false);

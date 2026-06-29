@@ -66,6 +66,8 @@ fn setup_with_offering(
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &10_000,
@@ -229,7 +231,7 @@ fn soft_pause_register_offering_blocked() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let result =
-        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+        client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -304,7 +306,7 @@ fn hard_pause_register_offering_blocked() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let result =
-        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+        client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 

@@ -221,6 +221,8 @@ fn setup_claim_fail() -> (
 
     revora.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &10_000,
@@ -442,6 +444,8 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
 
     revora.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,

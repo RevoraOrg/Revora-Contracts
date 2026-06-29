@@ -80,6 +80,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &5_000,
@@ -422,6 +424,8 @@ fn transfer_fail_in_one_offering_does_not_affect_sibling_offering() {
     let (payment_token_b, pt_admin_b) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token_b,
         &5_000,

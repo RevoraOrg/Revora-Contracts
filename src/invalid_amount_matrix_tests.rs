@@ -33,6 +33,8 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
@@ -55,6 +57,8 @@ fn setup_funded_offering() -> (Env, Address, Address, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
@@ -87,6 +91,8 @@ fn register_offering_rejects_negative_supply_cap_values() {
     for invalid_cap in [-1_i128, i128::MIN] {
         let result = client.try_register_offering(
             &issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &1_000,
