@@ -181,13 +181,16 @@ fn pending_periods(
     holder: &Address,
 ) -> soroban_sdk::Vec<u64> {
     env.as_contract(revora_id, || {
-        RevoraRevenueShare::get_pending_periods(
+        let (periods, _) = RevoraRevenueShare::get_pending_periods_page(
             env.clone(),
             issuer.clone(),
             symbol_short!("def"),
             offering_token.clone(),
             holder.clone(),
-        )
+            0,
+            20,
+        );
+        periods
     })
 }
 
@@ -438,14 +441,15 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Register a second offering with a normal Stellar asset token
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
-
+    let payout_asset_b = crate::test_utils::create_token(&env, &admin_b);
+    crate::test_utils::mint_tokens(&env, &payout_asset_b, &issuer, 100_000);
 
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
-
+        &payout_asset_b,
         &0,
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
@@ -453,7 +457,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
-
+        &payout_asset_b,
         &100_000,
         &1,
     );

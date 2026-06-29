@@ -34,6 +34,10 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `blacklist_remove` | `caller: Address`, `token: Address`, `investor: Address` | — | issuer | Remove investor from blacklist. Only the current issuer can perform this action. Idempotent. |
 | `is_blacklisted` | `token: Address`, `investor: Address` | `bool` | — | Whether investor is blacklisted for token. |
 | `get_blacklist` | `token: Address` | `Vec<Address>` | — | All blacklisted addresses for token. |
+| `set_holder_jurisdiction` | `issuer: Address`, `namespace: Symbol`, `token: Address`, `holder: Address`, `jurisdiction: Symbol` | `Result<(), RevoraError>` | issuer | Tag a holder record with a mutable issuer-controlled jurisdiction code for one offering. Emits `jur_set`. |
+| `get_holder_jurisdiction` | `issuer: Address`, `namespace: Symbol`, `token: Address`, `holder: Address` | `Option<Symbol>` | — | Read the holder's stored jurisdiction tag for one offering. |
+| `set_allowed_jurisdictions` | `issuer: Address`, `namespace: Symbol`, `token: Address`, `jurisdictions: Vec<Symbol>` | `Result<(), RevoraError>` | issuer | Replace the offering's jurisdiction allowlist for future share writes and snapshot inclusion. Empty list disables jurisdiction gating. Emits `jur_set`. |
+| `get_allowed_jurisdictions` | `issuer: Address`, `namespace: Symbol`, `token: Address` | `Vec<Symbol>` | — | Return the offering's configured jurisdiction allowlist. |
 | `set_concentration_limit` | `issuer: Address`, `token: Address`, `max_bps: u32`, `enforce: bool`, `max_staleness_secs: u64` | `Result<(), RevoraError>` | issuer | Set per-offering max single-holder concentration (bps). 0 = disabled. If `enforce` is true, `report_revenue` fails when reported concentration > `max_bps`. When `max_staleness_secs > 0` and `enforce` is true, `report_revenue` also fails if no concentration has been reported or the last report is older than `max_staleness_secs` seconds. Offering must exist. |
 | `report_concentration` | `issuer: Address`, `token: Address`, `concentration_bps: u32` | `Result<(), RevoraError>` | issuer | Report current top-holder concentration (bps). Emits `conc_warn` if over configured limit. |
 | `get_concentration_limit` | `issuer: Address`, `token: Address` | `Option<ConcentrationLimitConfig>` | — | Get concentration limit config for offering. |
@@ -76,7 +80,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 18 | `InvalidPeriodId` | period_id is 0 where a positive value is required (#35). |
 | 25 | `ReportingWindowClosed` | Current ledger timestamp is outside the configured reporting window; `report_revenue` rejected. |
 | 26 | `ClaimWindowClosed` | Current ledger timestamp is outside the configured claiming window; `claim` rejected. |
-| 49 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
+| 31 | `JurisdictionDisallowed` | Holder jurisdiction is not currently allowed for a new `set_holder_share` write or snapshot inclusion batch. Existing persisted shares remain claimable. |
+| 51 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -92,6 +97,9 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `rev_rep` | `(issuer, token), (amount, period_id, blacklist_vec)` | Receipt for an accepted persisted report call (initial or override). Use `rev_init` plus `rev_ovrd` to reconstruct audit totals. |
 | `bl_add` | `(token, caller), investor` | After `blacklist_add`. |
 | `bl_rem` | `(token, caller), investor` | After `blacklist_remove`. |
+| `jur_set` | `(issuer, namespace, token), (holder/allow, payload...)` | After `set_holder_jurisdiction` or `set_allowed_jurisdictions`. |
+| `jur_reject` | `(issuer, namespace, token), (holder, jurisdiction, action)` | When a share write or snapshot batch is rejected because the holder's jurisdiction is not allowed. |
+| `acc_upd` | `(issuer, namespace, token), (period_id, period_index, delta_e18, global_acc_e18)` | After `deposit_revenue`, recording the cumulative dividend-accrual index update for indexers. |
 | `min_rev` | `(issuer, token), (previous_amount, new_amount)` | When `set_min_revenue_threshold` is set or changed. |
 | `rev_below` | `(issuer, token), (amount, period_id, threshold)` | When a new `report_revenue` call is below the offering's minimum threshold; no report/audit update and the period remains available for a later accepted report. |
 | `conc_warn` | `(issuer, token), (concentration_bps, limit_bps)` | When `report_concentration` is called and reported concentration exceeds configured limit (warning only; enforce blocks at `report_revenue`). |
@@ -121,6 +129,8 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 - **Payment token decimals:** Different Stellar assets use different decimal precisions (e.g., USDC=6, XLM=7, WBTC=8). Use `set_payment_token_decimals` to configure the offering's asset precision; the contract normalizes raw amounts to 7-decimal canonical units before computing holder shares. See [docs/payment-token-decimal-compatibility.md](./docs/payment-token-decimal-compatibility.md) for details and examples.
 - **Testnet mode:** Admin can enable testnet mode via `set_testnet_mode(true)` to relax certain validations for non-production deployments. When enabled: (1) `register_offering` allows `revenue_share_bps > 10000`, (2) `report_revenue` skips concentration enforcement. Use only for testnet/development environments. Check mode with `is_testnet_mode()`.
 - **Reporting and claiming windows:** Issuers can optionally restrict when `report_revenue` and `claim` are permitted using time-based access windows. See [Time Windows](#time-based-access-windows-reporting--claiming) below.
+- **Jurisdiction gating:** Issuers can tag holder records and maintain a per-offering jurisdiction allowlist. The guard only applies to new `set_holder_share` writes and `apply_snapshot_shares` batches, so removing a jurisdiction does not retroactively block already-persisted holders from claiming. See [docs/jurisdiction-tagging.md](./docs/jurisdiction-tagging.md).
+- **Dividend accrual ledger:** `deposit_revenue` now advances a cumulative per-offering accrual index, and holder share updates are frozen with per-holder checkpoints. This means changing a holder's share only affects future deposits; already-deposited revenue remains claimable at the historical share in effect when it accrued. See [docs/dividend-accrual-ledger.md](./docs/dividend-accrual-ledger.md).
 
 ### Distribution Proofs
 
@@ -301,7 +311,7 @@ Comprehensive tests verify these invariants:
 - `claim_partial_sequence_with_delay_advances_index_correctly`: Partial sequences advance index correctly
 
 
-- **Version:** Call `get_version()` to read the current contract version (a constant, e.g., `23`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
+- **Version:** Call `get_version()` to read the current contract version (a constant, e.g., `24`). This value is bumped when storage layout or semantics change in a way that affects compatibility.
 - **Upgrade strategy:** This codebase deploys a single WASM contract; Soroban has no EVM-style proxy upgrade, so upgrades require deploying a new contract instance. Future upgrades follow this process:
   1. Deploy a new contract (new WASM) with a higher `CONTRACT_VERSION`.
   2. Optionally run a one-time migration (e.g., admin or migration script) that reads state from the old contract and writes into the new one, or that emits migration-milestone events for indexers.
