@@ -1,5 +1,6 @@
 #![no_std]
 #![deny(unsafe_code)]
+#![deny(clippy::arithmetic_side_effects)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
@@ -44,6 +45,9 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
     Bytes, BytesN, Env, IntoVal, Map, Symbol, Vec,
 };
+
+pub mod safe_math;
+use safe_math::SafeMath;
 
 // Issue #109 â€” Revenue report correction and audit-summary reconciliation are
 // implemented in this file. See `report_revenue`, `reconcile_audit_summary`,
@@ -1246,7 +1250,7 @@ impl RevoraRevenueShare {
             .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
             .unwrap_or(0);
 
-        let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
+        let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
             return Err(RevoraError::InvalidShareBps);
         }
@@ -1341,7 +1345,7 @@ impl RevoraRevenueShare {
         if cap > 0 {
             let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
             let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
-            let new_total = deposited.saturating_add(amount);
+            let new_total = deposited.s_add(amount)?;
             if new_total > cap {
                 return Err(RevoraError::SupplyCapExceeded);
             }
@@ -1388,7 +1392,7 @@ impl RevoraRevenueShare {
         // Update cumulative deposited revenue and emit cap-reached event if applicable (#96)
         let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
         let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
-        let new_deposited = deposited.saturating_add(amount);
+        let new_deposited = deposited.s_add(amount)?;
         env.storage().persistent().set(&deposited_key, &new_deposited);
 
         let cap_val: i128 = env.storage().persistent().get(&cap_key).unwrap_or(0);
@@ -1592,11 +1596,12 @@ impl RevoraRevenueShare {
         for i in 0..keys.len() {
             let period_id = keys.get(i).unwrap();
             if let Some((amount, _)) = reports.get(period_id) {
-                let next = total_revenue.saturating_add(amount);
-                if next == i128::MAX && amount > 0 && total_revenue != i128::MAX {
+                if let Ok(next) = total_revenue.s_add(amount) {
+                    total_revenue = next;
+                } else {
                     is_saturated = true;
+                    total_revenue = i128::MAX;
                 }
-                total_revenue = next;
             }
         }
 
@@ -2779,9 +2784,8 @@ impl RevoraRevenueShare {
                         .persistent()
                         .get(&summary_key)
                         .unwrap_or(AuditSummary { total_revenue: 0, report_count: 0 });
-                    summary.total_revenue = summary
-                        .total_revenue
-                        .saturating_add(amount.saturating_sub(existing_amount));
+                    let delta = amount.s_sub(existing_amount).unwrap_or(0);
+                    summary.total_revenue = summary.total_revenue.s_add(delta).unwrap_or(i128::MAX);
                     env.storage().persistent().set(&summary_key, &summary);
 
                     env.events().publish(
@@ -2877,8 +2881,8 @@ impl RevoraRevenueShare {
                         .persistent()
                         .get(&summary_key)
                         .unwrap_or(AuditSummary { total_revenue: 0, report_count: 0 });
-                    summary.total_revenue = summary.total_revenue.saturating_add(amount);
-                    summary.report_count = summary.report_count.saturating_add(1);
+                    summary.total_revenue = summary.total_revenue.s_add(amount).unwrap_or(i128::MAX);
+                    summary.report_count = summary.report_count.s_add(1).unwrap_or(u64::MAX);
                     env.storage().persistent().set(&summary_key, &summary);
 
                     env.events().publish(
@@ -3097,13 +3101,14 @@ impl RevoraRevenueShare {
     ) -> i128 {
         let mut total: i128 = 0;
         for period in from_period..=to_period {
-            total = total.saturating_add(Self::get_revenue_by_period(
+            let amount = Self::get_revenue_by_period(
                 env.clone(),
                 issuer.clone(),
                 namespace.clone(),
                 token.clone(),
                 period,
-            ));
+            );
+            total = total.s_add(amount).unwrap_or(i128::MAX);
         }
         total
     }
@@ -3143,15 +3148,16 @@ impl RevoraRevenueShare {
             if processed >= cap {
                 return (total, Some(p));
             }
-            total = total.saturating_add(Self::get_revenue_by_period(
+            let amount = Self::get_revenue_by_period(
                 env.clone(),
                 issuer.clone(),
                 namespace.clone(),
                 token.clone(),
                 p,
-            ));
-            processed = processed.saturating_add(1);
-            p = p.saturating_add(1);
+            );
+            total = total.s_add(amount).unwrap_or(i128::MAX);
+            processed = processed.s_add(1).unwrap_or(u32::MAX);
+            p = p.s_add(1).unwrap_or(u64::MAX);
         }
         (total, None)
     }
@@ -4424,11 +4430,11 @@ impl RevoraRevenueShare {
         // Decompose `amount` to avoid `amount * bps` overflow:
         // amount = q * 10_000 + r, so (amount * bps) / 10_000 = q * bps + (r * bps) / 10_000.
         // `r` is bounded to (-10_000, 10_000), so `r * bps` is always safe in i128.
-        // Defense-in-depth: use checked_mul with saturating fallback to guard against refactors.
-        let q = amount / 10_000;
+        // Defense-in-depth: use s_mul with saturating fallback to guard against refactors.
+        let q = amount.s_div(10_000).unwrap_or(0);
         let r = amount % 10_000;
         let bps = revenue_share_bps as i128;
-        let base = q.checked_mul(bps).unwrap_or_else(|| {
+        let base = q.s_mul(bps).unwrap_or_else(|_| {
             if (q >= 0 && bps >= 0) || (q < 0 && bps < 0) {
                 i128::MAX
             } else {
@@ -4436,7 +4442,7 @@ impl RevoraRevenueShare {
             }
         });
 
-        let remainder_product = r.checked_mul(bps).unwrap_or_else(|| {
+        let remainder_product = r.s_mul(bps).unwrap_or_else(|_| {
             if (r >= 0 && bps >= 0) || (r < 0 && bps < 0) {
                 i128::MAX
             } else {
@@ -4444,18 +4450,18 @@ impl RevoraRevenueShare {
             }
         });
         let remainder_share = match mode {
-            RoundingMode::Truncation => remainder_product / 10_000,
+            RoundingMode::Truncation => remainder_product.s_div(10_000).unwrap_or(0),
             RoundingMode::RoundHalfUp => {
                 let half = 5_000_i128;
                 if remainder_product >= 0 {
-                    remainder_product.saturating_add(half) / 10_000
+                    remainder_product.s_add(half).unwrap_or(i128::MAX).s_div(10_000).unwrap_or(0)
                 } else {
-                    remainder_product.saturating_sub(half) / 10_000
+                    remainder_product.s_sub(half).unwrap_or(i128::MIN).s_div(10_000).unwrap_or(0)
                 }
             }
         };
 
-        let share = base.checked_add(remainder_share).unwrap_or_else(|| {
+        let share = base.s_add(remainder_share).unwrap_or_else(|_| {
             if (base >= 0 && remainder_share >= 0) || (base < 0 && remainder_share < 0) {
                 if base >= 0 {
                     i128::MAX
@@ -6197,7 +6203,7 @@ impl RevoraRevenueShare {
         // Update cumulative deposited revenue
         let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
         let deposited: i128 = env.storage().persistent().get(&deposited_key).unwrap_or(0);
-        let new_deposited = deposited.saturating_add(amount);
+        let new_deposited = deposited.s_add(amount).unwrap_or(i128::MAX);
         env.storage().persistent().set(&deposited_key, &new_deposited);
     }
 
