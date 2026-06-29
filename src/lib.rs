@@ -169,6 +169,9 @@ pub enum RevoraError {
     ///
     /// Wire value: 48. Stable since v1.
     PeriodAlreadyClosed = 48,
+    /// Concentration data is stale: `report_concentration` was never called or its timestamp
+    /// predates the staleness window.
+    StaleConcentrationData = 52,
 }
 
 pub mod vesting;
@@ -190,6 +193,8 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_prove_distribution;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -447,9 +452,9 @@ pub struct AuditReconciliationResult {
 /// One entry in a distribution proof: the holder's address, their share in basis points,
 /// and the normalized payout computed by the contract for a specific period.
 ///
-/// Returned by `prove_distribution_for_period`. The ordering of entries in the returned
-/// vector matches the order of the `holders` input slice exactly, enabling deterministic
-/// digest verification by off-chain indexers.
+/// Returned by `prove_distribution_for_period`. Entries are sorted by descending `share_bps`
+/// with XDR address bytes (ascending) as a tie-break, giving indexers a canonical, stable
+/// ordering regardless of the input `holders` order.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DistributionEntry {
@@ -767,6 +772,14 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+    /// Cumulative revenue deposited for an offering (used for supply-cap enforcement).
+    DepositedRevenue(OfferingId),
+    /// Per-offering supply cap in raw payment-token units (0 = unlimited).
+    SupplyCap(OfferingId),
+    /// Per-offering minimum revenue threshold gate.
+    MinRevenueThreshold(OfferingId),
+    /// Per-offering investment constraints (min_stake, max_stake).
+    InvestmentConstraints(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6215,7 +6228,165 @@ impl RevoraRevenueShare {
         let idx_key = DataKey::LastClaimedIdx(offering_id, holder);
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
     }
-    // â”€â”€ On-chain distribution simulation (#29) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    // ── Deterministic distribution ordering helpers (#472) ───────────────
+
+    /// Returns `true` iff `a`'s XDR encoding is lexicographically less than `b`'s.
+    fn addr_lt(env: &Env, a: &Address, b: &Address) -> bool {
+        let ba = a.to_xdr(env);
+        let bb = b.to_xdr(env);
+        let min_len = ba.len().min(bb.len());
+        for i in 0..min_len {
+            let byte_a: u32 = ba.get(i).unwrap();
+            let byte_b: u32 = bb.get(i).unwrap();
+            if byte_a < byte_b {
+                return true;
+            }
+            if byte_a > byte_b {
+                return false;
+            }
+        }
+        ba.len() < bb.len()
+    }
+
+    /// Selection-sort `n` holder slots by `(share_bps desc, address-XDR bytes asc)`.
+    /// Returns sorted indices into `bps_vec` / `addr_vec`. O(n²) — safe for n ≤ 200.
+    fn sort_holder_indices(
+        env: &Env,
+        bps_vec: &Vec<u32>,
+        addr_vec: &Vec<Address>,
+        n: u32,
+    ) -> Vec<u32> {
+        // 256-bit bitmask across four u64 words; covers n ≤ 255.
+        let mut selected: [u64; 4] = [0u64; 4];
+        let mut sorted = Vec::<u32>::new(env);
+
+        for _ in 0..n {
+            let mut best: u32 = u32::MAX;
+            let mut best_bps: u32 = 0;
+
+            for j in 0..n {
+                let word = (j / 64) as usize;
+                let bit = j % 64;
+                if (selected[word] >> bit) & 1 == 1 {
+                    continue;
+                }
+                let j_bps = bps_vec.get(j).unwrap();
+                let better = if best == u32::MAX {
+                    true
+                } else if j_bps > best_bps {
+                    true
+                } else if j_bps == best_bps {
+                    let j_addr = addr_vec.get(j).unwrap();
+                    let b_addr = addr_vec.get(best).unwrap();
+                    Self::addr_lt(env, &j_addr, &b_addr)
+                } else {
+                    false
+                };
+                if better {
+                    best = j;
+                    best_bps = j_bps;
+                }
+            }
+
+            if best != u32::MAX {
+                let word = (best / 64) as usize;
+                let bit = best % 64;
+                selected[word] |= 1u64 << bit;
+                sorted.push_back(best);
+            }
+        }
+
+        sorted
+    }
+
+    // ── prove_distribution_for_period (#472) ─────────────────────────────
+
+    /// Compute distribution entries for a given period, sorted by `(share_bps desc,
+    /// address-XDR bytes asc)`. Returns the entry list and a SHA-256 digest that
+    /// commits to the offering, period, and every entry in canonical order.
+    ///
+    /// Holders are capped at `MAX_CHUNK_PERIODS` (200). Unknown holders get
+    /// `share_bps = 0` and `normalized_payout = 0`. An unknown `period_id` yields
+    /// zero payouts without an error.
+    pub fn prove_distribution_for_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+        holders: Vec<Address>,
+    ) -> (Vec<DistributionEntry>, BytesN<32>) {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let period_revenue: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PeriodRevenue(offering_id.clone(), period_id))
+            .unwrap_or(0);
+
+        let decimals: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PaymentTokenDecimals(offering_id.clone()))
+            .unwrap_or(STELLAR_CANONICAL_DECIMALS);
+
+        let mode: RoundingMode = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RoundingMode(offering_id.clone()))
+            .unwrap_or(RoundingMode::Truncation);
+
+        let normalized_revenue = Self::normalize_amount(period_revenue, decimals);
+
+        let n = holders.len().min(MAX_CHUNK_PERIODS);
+
+        let mut addr_vec = Vec::<Address>::new(&env);
+        let mut bps_vec = Vec::<u32>::new(&env);
+        for i in 0..n {
+            let h = holders.get(i).unwrap();
+            let bps: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), h.clone()))
+                .unwrap_or(0);
+            addr_vec.push_back(h);
+            bps_vec.push_back(bps);
+        }
+
+        let sorted_idx = Self::sort_holder_indices(&env, &bps_vec, &addr_vec, n);
+
+        // Digest is domain-separated by offering + period so digests differ across periods
+        // even when revenue amounts are identical.
+        let mut digest_input = Bytes::new(&env);
+        digest_input.append(&issuer.to_xdr(&env));
+        digest_input.append(&namespace.to_xdr(&env));
+        digest_input.append(&token.to_xdr(&env));
+        digest_input.append(&period_id.to_xdr(&env));
+
+        let mut entries = Vec::<DistributionEntry>::new(&env);
+        for k in 0..n {
+            let idx = sorted_idx.get(k).unwrap();
+            let holder = addr_vec.get(idx).unwrap();
+            let share_bps = bps_vec.get(idx).unwrap();
+            let payout = Self::compute_share(env.clone(), normalized_revenue, share_bps, mode);
+
+            digest_input.append(&holder.to_xdr(&env));
+            digest_input.append(&share_bps.to_xdr(&env));
+            digest_input.append(&payout.to_xdr(&env));
+
+            entries.push_back(DistributionEntry { holder, share_bps, normalized_payout: payout });
+        }
+
+        let digest = env.crypto().sha256(&digest_input);
+        (entries, digest)
+    }
+
+    // ── On-chain distribution simulation (#29) ────────────────────────────
 
     /// Read-only: simulate distribution for sample inputs without mutating state.
     /// Returns expected payouts per holder and total. Uses offering's rounding mode.
@@ -6229,10 +6400,26 @@ impl RevoraRevenueShare {
         holder_shares: Vec<(Address, u32)>,
     ) -> SimulateDistributionResult {
         let mode = Self::get_rounding_mode(env.clone(), issuer, namespace, token.clone());
+
+        let n = holder_shares.len();
+
+        // Extract parallel vecs for the sort helper.
+        let mut addr_vec = Vec::<Address>::new(&env);
+        let mut bps_vec = Vec::<u32>::new(&env);
+        for i in 0..n {
+            let (h, b) = holder_shares.get(i).unwrap();
+            addr_vec.push_back(h);
+            bps_vec.push_back(b);
+        }
+
+        let sorted_idx = Self::sort_holder_indices(&env, &bps_vec, &addr_vec, n);
+
         let mut total: i128 = 0;
         let mut payouts = Vec::new(&env);
-        for i in 0..holder_shares.len() {
-            let (holder, share_bps) = holder_shares.get(i).unwrap();
+        for k in 0..n {
+            let idx = sorted_idx.get(k).unwrap();
+            let holder = addr_vec.get(idx).unwrap();
+            let share_bps = bps_vec.get(idx).unwrap();
             let payout = if share_bps > 10_000 {
                 0_i128
             } else {

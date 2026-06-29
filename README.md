@@ -131,7 +131,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 `(Vec<DistributionEntry>, BytesN<32>)` — a per-holder vector and a SHA-256 digest.
 
 Each `DistributionEntry` contains:
-- `holder: Address` — the holder's address (same order as the input `holders` slice)
+- `holder: Address` — the holder's address in canonical sorted order (see below)
 - `share_bps: u32` — the holder's on-chain share in basis points
 - `normalized_payout: i128` — `compute_share(normalize_amount(period_revenue, decimals), share_bps, rounding_mode)`
 
@@ -139,18 +139,31 @@ Each `DistributionEntry` contains:
 
 ```
 digest = SHA-256(
-    XDR(issuer) || XDR(namespace) || XDR(token) || XDR(period_id) || XDR(entries)
+    XDR(issuer) || XDR(namespace) || XDR(token) || XDR(period_id)
+    || XDR(holder_0) || XDR(share_bps_0) || XDR(payout_0)
+    || XDR(holder_1) || XDR(share_bps_1) || XDR(payout_1)
+    || ...
 )
 ```
 
-The digest covers the full output vector in input order. Off-chain indexers reproduce it by:
-1. Calling `prove_distribution_for_period` with the same ordered `holders` slice.
-2. Computing the same SHA-256 over the XDR-serialised fields.
+The digest covers the full output vector in **canonical sorted order** (see below). Off-chain indexers reproduce it by:
+1. Calling `prove_distribution_for_period` with any ordering of the `holders` slice.
+2. Computing the same SHA-256 over the XDR-serialised fields in the returned entry order.
 3. Comparing — any mismatch indicates drift from contract math.
 
 #### Deterministic ordering
 
-The contract preserves the **caller-supplied order** of `holders` exactly. There is no on-chain sorting. Off-chain tools must use a stable, agreed-upon ordering (e.g. lexicographic by address bytes) and pass the same order on every call to get a reproducible digest.
+The contract **sorts entries on-chain** before building the digest, so the output order is always canonical regardless of the input `holders` slice order:
+
+```
+primary key:   share_bps descending
+tie-break key: holder address XDR bytes, lexicographically ascending
+```
+
+This means:
+- Holders with higher `share_bps` always appear first.
+- When two holders share the same `share_bps`, the one whose serialised address bytes compare smaller (byte-by-byte) comes first.
+- Off-chain indexers do **not** need to pre-sort the `holders` input; the contract always returns — and digests — the same canonical sequence for a given holder set.
 
 #### Edge cases
 
