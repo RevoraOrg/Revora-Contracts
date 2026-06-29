@@ -169,6 +169,18 @@ pub enum RevoraError {
     ///
     /// Wire value: 48. Stable since v1.
     PeriodAlreadyClosed = 48,
+
+    /// `faucet_seed_holders` was called while `testnet_mode == false`.
+    /// This function is strictly disallowed on mainnet.
+    ///
+    /// Wire value: 51.
+    TestnetOnly = 51,
+
+    /// Concentration staleness check failed: the stored concentration timestamp is
+    /// too old to enforce the configured limit safely.
+    ///
+    /// Wire value: 52.
+    StaleConcentrationData = 52,
 }
 
 pub mod vesting;
@@ -190,6 +202,8 @@ mod test_min_revenue_threshold_boundary;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_faucet_seed;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -281,6 +295,8 @@ const EVENT_ISSUER_TRANSFER_CANCELLED: Symbol = symbol_short!("iss_canc");
 const EVENT_ISSUER_TRANSFER_REJECTED: Symbol = symbol_short!("iss_rej");
 const EVENT_ISSUER_TRANSFER_VESTING_MIGRATED: Symbol = symbol_short!("iss_vst");
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
+/// Emitted for each deterministic seed produced by `faucet_seed_holders` (testnet only).
+const EVENT_FAUCET_SEED: Symbol = symbol_short!("fct_seed");
 
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
 const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
@@ -767,6 +783,18 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Per-offering supply cap in payment token units (#96). Zero means unlimited.
+    SupplyCap(OfferingId),
+    /// Cumulative revenue deposited for an offering across all periods.
+    DepositedRevenue(OfferingId),
+    /// Minimum reported revenue below which no distribution is triggered (#25).
+    MinRevenueThreshold(OfferingId),
+    /// Per-offering investment constraints (min_stake, max_stake).
+    InvestmentConstraints(OfferingId),
+
+    /// Testnet faucet: sha256-derived seed bytes for holder slot at the given index.
+    FaucetSeedEntry(OfferingId, u32),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6756,6 +6784,89 @@ impl RevoraRevenueShare {
 
         env.events().publish((EVENT_PROPOSAL_EXECUTED, executor), proposal_id);
         Ok(())
+    }
+
+    // ── Testnet faucet ────────────────────────────────────────────────────────
+
+    /// Allocate `count` deterministic holder seed slots for an offering.
+    ///
+    /// Each seed is derived as `sha256(issuer_xdr || namespace_xdr || token_xdr || idx_xdr)`
+    /// and can be treated as a raw 32-byte ed25519 public key by external test suites.
+    /// The equal BPS split (`10_000 / count`, remainder to last slot) is documented in
+    /// each emitted `fct_seed` event so test suites can pin share expectations.
+    ///
+    /// ### Security
+    /// Panics (via `RevoraError::TestnetOnly`) when `testnet_mode == false`.
+    /// Must never be callable on mainnet.
+    ///
+    /// ### Parameters
+    /// - `issuer` / `namespace` / `token`: offering identity.
+    /// - `count`: number of deterministic seed slots to generate (0 returns empty vec).
+    ///
+    /// ### Returns
+    /// `Vec<BytesN<32>>` of per-slot seeds in index order.
+    pub fn faucet_seed_holders(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        count: u32,
+    ) -> Result<Vec<BytesN<32>>, RevoraError> {
+        if !Self::is_testnet_mode(env.clone()) {
+            return Err(RevoraError::TestnetOnly);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if !env.storage().persistent().has(&DataKey2::OfferingRecord(offering_id.clone())) {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        if count == 0 {
+            return Ok(Vec::new(&env));
+        }
+
+        // Build a per-offering prefix: sha256(issuer || namespace || token)
+        let mut prefix_input = Bytes::new(&env);
+        prefix_input.append(&issuer.to_xdr(&env));
+        prefix_input.append(&namespace.to_xdr(&env));
+        prefix_input.append(&token.to_xdr(&env));
+
+        let bps_floor: u32 = 10_000u32 / count;
+        let bps_remainder: u32 = 10_000u32 % count;
+
+        let mut seeds: Vec<BytesN<32>> = Vec::new(&env);
+
+        for idx in 0..count {
+            // Per-slot seed: sha256(prefix_bytes || idx_xdr)
+            let mut slot_input = prefix_input.clone();
+            slot_input.append(&idx.to_xdr(&env));
+            let seed: BytesN<32> = env.crypto().sha256(&slot_input);
+
+            let share_bps: u32 = if idx == count - 1 {
+                bps_floor + bps_remainder
+            } else {
+                bps_floor
+            };
+
+            // Store seed for test-suite retrieval without forcing a full scan.
+            env.storage()
+                .persistent()
+                .set(&DataKey2::FaucetSeedEntry(offering_id.clone(), idx), &seed);
+
+            env.events().publish(
+                (EVENT_FAUCET_SEED, issuer.clone(), namespace.clone(), token.clone()),
+                (idx, seed.clone(), share_bps),
+            );
+
+            seeds.push_back(seed);
+        }
+
+        Ok(seeds)
     }
 } // end impl RevoraRevenueShare (plain)
 
