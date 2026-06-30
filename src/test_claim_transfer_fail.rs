@@ -181,13 +181,15 @@ fn pending_periods(
     holder: &Address,
 ) -> soroban_sdk::Vec<u64> {
     env.as_contract(revora_id, || {
-        RevoraRevenueShare::get_pending_periods(
+        RevoraRevenueShare::get_pending_periods_page(
             env.clone(),
             issuer.clone(),
             symbol_short!("def"),
             offering_token.clone(),
             holder.clone(),
-        )
+            0,
+            100,
+        ).0
     })
 }
 
@@ -438,22 +440,27 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     // Register a second offering with a normal Stellar asset token
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
-
+    let payout_b = env.register_stellar_asset_contract_v2(admin_b.clone());
+    let payout_b_id = payout_b.address();
 
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
-
+        &payout_b_id,
         &0,
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
+    
+    // Mint payout tokens to the issuer so they can deposit revenue
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);
+
     revora.deposit_revenue(
         &issuer,
         &symbol_short!("def"),
         &offering_token_b,
-
+        &payout_b_id,
         &100_000,
         &1,
     );
