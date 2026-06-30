@@ -26,4 +26,5 @@ opt-level = "z"
 overflow-checks = true
 
 [workspace]
+members = ["indexer"]
 
