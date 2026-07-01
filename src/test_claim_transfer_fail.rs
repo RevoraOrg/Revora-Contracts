@@ -226,7 +226,8 @@ fn setup_claim_fail() -> (
         &10_000,
         &fail_token_id,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
     // Mint to issuer and deposit — transfer direction is issuer→contract, not yet failing
@@ -447,7 +448,8 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &10_000,
 
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
     revora.deposit_revenue(
         &issuer,

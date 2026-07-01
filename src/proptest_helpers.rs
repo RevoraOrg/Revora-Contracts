@@ -23,7 +23,7 @@
 ///         let client = make_client(&env);
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
-///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0);
+///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &symbol_short!(""), &0);
 ///     }
 /// }
 /// ```

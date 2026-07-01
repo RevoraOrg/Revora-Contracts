@@ -629,7 +629,7 @@ fn get_whitelist_empty_before_any_add() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     for period_id in 1..=100_u64 {
         client.report_revenue(
@@ -841,7 +841,7 @@ fn blacklist_overrides_whitelist() {
     let investor = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // Add to both whitelist and blacklist
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
@@ -997,7 +997,8 @@ fn register_offering_rejects_bps_over_10000() {
         &10_001,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(
         result.is_err(),
         "contract must return Err(RevoraError::InvalidRevenueShareBps) for bps > 10000"
@@ -1021,8 +1022,272 @@ fn register_offering_accepts_bps_exactly_10000() {
         &10_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(result.is_ok());
+}
+
+// ── denomination metadata ─────────────────────────────────────
+
+/// denomination_metadata: happy path stores symbol and decimals correctly.
+#[test]
+fn denomination_metadata_stored_and_readable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let sym = symbol_short!("USDC");
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &sym,
+        &6,
+    );
+
+    let meta = client.get_denomination_metadata(&issuer, &symbol_short!("def"), &token);
+    assert!(meta.is_some(), "denomination metadata must be present after register");
+    let (stored_sym, stored_dec) = meta.unwrap();
+    assert_eq!(stored_sym, sym);
+    assert_eq!(stored_dec, 6u32);
+}
+
+/// denomination_metadata: display_decimals = 0 is the minimum valid value.
+#[test]
+fn denomination_metadata_zero_decimals_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("XLM"),
+        &0,
+    );
+    assert!(result.is_ok(), "display_decimals=0 must be accepted");
+}
+
+/// denomination_metadata: display_decimals = 18 (MAX_TOKEN_DECIMALS) is accepted.
+#[test]
+fn denomination_metadata_max_decimals_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("WBTC"),
+        &18,
+    );
+    assert!(result.is_ok(), "display_decimals=18 must be accepted");
+    let meta = client.get_denomination_metadata(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(meta.unwrap().1, 18u32);
+}
+
+/// denomination_metadata: display_decimals = 19 exceeds MAX_TOKEN_DECIMALS — must reject.
+#[test]
+fn denomination_metadata_rejects_display_decimals_over_18() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("BAD"),
+        &19,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        "display_decimals=19 must return DisplayDecimalsOutOfRange"
+    );
+}
+
+/// denomination_metadata: display_decimals = u32::MAX is firmly rejected.
+#[test]
+fn denomination_metadata_rejects_display_decimals_u32_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("BAD"),
+        &u32::MAX,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        "display_decimals=u32::MAX must return DisplayDecimalsOutOfRange"
+    );
+}
+
+/// denomination_metadata: no record exists before register — get returns None.
+#[test]
+fn denomination_metadata_returns_none_before_register() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let meta = client.get_denomination_metadata(&issuer, &symbol_short!("def"), &token);
+    assert!(meta.is_none(), "must return None for unregistered offering");
+}
+
+/// denomination_metadata: ofr_reg2 event payload includes denomination_symbol and
+/// display_decimals so indexers never need a second round-trip.
+#[test]
+fn denomination_metadata_in_ofr_reg2_event_payload() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let sym = symbol_short!("USDC");
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &500,
+        &payout_asset,
+        &0,
+        &sym,
+        &6,
+    );
+
+    // Scan events for ofr_reg2 and verify payload contains denomination fields.
+    let events = env.events().all();
+    let ofr_reg2_sym = symbol_short!("ofr_reg2");
+    let mut found = false;
+    for i in 0..events.len() {
+        let ev = events.get(i).unwrap();
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = ev.0;
+        if topics.len() >= 1 {
+            if let Ok(t) = topics.get(0).unwrap().try_into_val(&env) as Result<Symbol, _> {
+                if t == ofr_reg2_sym {
+                    // The payload tuple is (token, revenue_share_bps, payout_asset,
+                    // denomination_symbol, display_decimals).
+                    // We only assert the event was emitted; full XDR payload decode
+                    // is covered by test_indexer_fixtures.rs.
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(found, "ofr_reg2 event must be emitted after register_offering");
+}
+
+/// denomination_metadata: offering stored in OfferItem and OfferingRecord both carry
+/// the new fields — cross-check via get_offering.
+#[test]
+fn denomination_metadata_reflected_in_get_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let sym = symbol_short!("USDC");
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &2_500,
+        &payout_asset,
+        &0,
+        &sym,
+        &6,
+    );
+
+    let offering = client
+        .get_offering(&issuer, &symbol_short!("def"), &token)
+        .expect("offering must exist after register");
+    assert_eq!(offering.denomination_symbol, sym);
+    assert_eq!(offering.display_decimals, 6u32);
+}
+
+/// denomination_metadata: validation fires BEFORE the duplicate-prevention check so a
+/// call with bad decimals never silently no-ops on a previously registered offering.
+#[test]
+fn denomination_metadata_validation_before_duplicate_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    // First registration succeeds.
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("XLM"),
+        &7,
+    );
+
+    // Second call with bad display_decimals should return the error, not Ok(()).
+    let result = client.try_register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!("XLM"),
+        &19,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        "bad decimals must error even when offering already exists"
+    );
 }
 
 // ── revenue index ─────────────────────────────────────────────
@@ -1096,7 +1361,7 @@ fn multiple_reports_same_period_accumulate() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     for period_id in 1..=100_u64 {
         client.report_revenue(
@@ -1145,7 +1410,7 @@ fn get_revenue_range_sums_periods() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0, &symbol_short!(""), &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100, &1, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200, &2, &false);
     assert_eq!(client.get_revenue_range(&issuer, &symbol_short!("def"), &token, &1, &2), 300);
@@ -1170,7 +1435,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &500, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &500, &payout_asset, &0, &symbol_short!(""), &0);
 
     for _ in 0..30 {
         client.blacklist_add(
@@ -1221,7 +1486,7 @@ fn large_period_range_sums_correctly() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &1_000, &1, &false);
 }
 
@@ -1237,7 +1502,7 @@ fn concentration_limit_not_set_allows_report_revenue() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -1270,7 +1535,7 @@ fn set_concentration_limit_stores_config() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
     assert_eq!(config.clone().unwrap().max_bps, 5000);
@@ -1288,7 +1553,7 @@ fn set_concentration_limit_bounds_check() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     let res =
         client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false, &0u64);
@@ -1303,7 +1568,7 @@ fn report_concentration_bounds_check() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     let res = client.try_report_concentration(&issuer, &symbol_short!("def"), &token, &10001);
     assert!(res.is_err());
@@ -1320,7 +1585,7 @@ fn set_concentration_limit_respects_pause() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.initialize(&admin, &None, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     client.pause_admin(&admin);
     let res =
@@ -1339,7 +1604,7 @@ fn report_concentration_respects_pause() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.initialize(&admin, &None, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     client.pause_admin(&admin);
     let res = client.try_report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
@@ -1355,7 +1620,7 @@ fn report_concentration_emits_audit_event() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &3000);
@@ -1372,7 +1637,7 @@ fn report_concentration_emits_warning_when_over_limit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
@@ -1391,7 +1656,7 @@ fn report_concentration_no_warning_when_below_limit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
     assert_eq!(
@@ -1408,7 +1673,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     let r = client.try_report_revenue(
@@ -1434,7 +1699,7 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
     client.report_revenue(
@@ -1466,7 +1731,7 @@ fn concentration_near_threshold_boundary() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5001);
 
@@ -1507,7 +1772,7 @@ fn set_concentration_limit_requires_auth_before_state_read() {
 
     // Register the offering with mocked auth so it exists in storage.
     env.mock_all_auths();
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // Now clear mocked auths — subsequent calls require real auth.
     let env2 = Env::default();
@@ -1541,7 +1806,7 @@ fn set_concentration_limit_auth_required_even_in_event_only_mode() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // With mock_all_auths the call succeeds (auth is satisfied).
     let result = client.try_set_concentration_limit(
@@ -1570,7 +1835,7 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // attacker tries to set the limit on issuer's offering.
     let result = client.try_set_concentration_limit(
@@ -1598,7 +1863,7 @@ fn concentration_staleness_no_prior_report_rejected() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     // enforce=true, max_staleness_secs=3600 — no report_concentration called yet
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
     let r = client.try_report_revenue(
@@ -1627,7 +1892,7 @@ fn concentration_staleness_stale_report_rejected() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     // Report concentration at t=1000
@@ -1662,7 +1927,7 @@ fn concentration_staleness_fresh_report_allowed() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     // Report concentration at t=1000
@@ -1692,7 +1957,7 @@ fn concentration_staleness_enforce_off_bypasses_guard() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     // enforce=false — staleness guard must not fire
     client.set_concentration_limit(
         &issuer,
@@ -1724,7 +1989,7 @@ fn concentration_staleness_zero_secs_disables_guard() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     // max_staleness_secs=0 — guard disabled
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     // No report_concentration called — should not be rejected for staleness
@@ -1749,7 +2014,7 @@ fn concentration_staleness_boundary_exact_window_allowed() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     env.ledger().set_timestamp(1000);
@@ -1800,7 +2065,7 @@ fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     let result = client.try_set_rounding_mode(
         &attacker,
@@ -1823,7 +2088,7 @@ fn audit_summary_empty_before_any_report() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
     assert!(summary.is_none());
 }
@@ -1836,7 +2101,7 @@ fn audit_summary_aggregates_revenue_and_count() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100, &1, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200, &2, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &300, &3, &false);
@@ -1858,8 +2123,8 @@ fn audit_summary_per_offering_isolation() {
     let token_b = Address::generate(&env);
     let payout_asset_a = Address::generate(&env);
     let payout_asset_b = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1_000, &payout_asset_a, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &1_000, &payout_asset_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1_000, &payout_asset_a, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &1_000, &payout_asset_b, &0, &symbol_short!(""), &0);
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -1942,14 +2207,14 @@ fn set_and_get_rounding_mode() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
         RoundingMode::Truncation
     );
 
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
         RoundingMode::Truncation
@@ -2093,7 +2358,7 @@ fn claim_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, A
     let (payment_token, pt_admin) = create_payment_token(&env);
 
     // Register offering
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0); // 50% revenue share
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0); // 50% revenue share
 
     // Mint payment tokens to the issuer so they can deposit
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
@@ -2130,7 +2395,8 @@ fn register_offering_does_not_lock_payment_token_before_first_deposit() {
         &5_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
 
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &offering_token), None);
 }
@@ -2162,7 +2428,8 @@ fn failed_invalid_first_deposit_does_not_lock_payment_token() {
         &5_000,
         &payment_token,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -2242,7 +2509,7 @@ fn report_revenue_rejects_mismatched_payout_asset() {
     let payout_asset = Address::generate(&env);
     let wrong_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     let r = client.try_report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -2272,7 +2539,8 @@ fn first_deposit_uses_registered_payment_token_lock() {
         &5_000,
         &configured_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     mint_tokens(&env, &configured_asset, &configured_admin, &issuer, &1_000_000);
 
     client.deposit_revenue(
@@ -2307,7 +2575,8 @@ fn failed_first_deposit_does_not_lock_payment_token_or_consume_period() {
         &5_000,
         &payment_token,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
 
     let failed = client.try_deposit_revenue(
         &issuer,
@@ -2402,7 +2671,7 @@ fn deposit_revenue_rejects_mismatched_token_after_lock() {
     let (locked_token, locked_admin) = create_payment_token(&env);
     let (other_token, other_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &locked_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &locked_token, &0, &symbol_short!(""), &0);
     mint_tokens(&env, &locked_token, &locked_admin, &issuer, &1_000_000);
     mint_tokens(&env, &other_token, &other_admin, &issuer, &1_000_000);
 
@@ -2440,7 +2709,8 @@ fn deposit_revenue_rejects_wrong_token_on_first_deposit() {
         &5_000,
         &configured_token,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     mint_tokens(&env, &wrong_token, &wrong_admin, &issuer, &1_000_000);
 
     // First deposit with wrong token must be rejected
@@ -2484,8 +2754,8 @@ fn payment_token_lock_is_per_offering() {
     let (asset_a, admin_a) = create_payment_token(&env);
     let (asset_b, admin_b) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &5_000, &asset_a, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &5_000, &asset_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &5_000, &asset_a, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &5_000, &asset_b, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &asset_a, &admin_a, &issuer, &1_000_000);
     mint_tokens(&env, &asset_b, &admin_b, &issuer, &1_000_000);
@@ -2522,7 +2792,7 @@ fn payment_token_none_before_first_deposit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payout, _) = create_payment_token(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
 }
 
@@ -2536,7 +2806,7 @@ fn payment_token_locked_after_first_successful_deposit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payout, admin) = create_payment_token(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
     mint_tokens(&env, &payout, &admin, &issuer, &1_000_000);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout, &100_000, &1);
     assert_eq!(
@@ -2556,7 +2826,7 @@ fn payment_token_mismatch_returns_correct_error_code() {
     let token = Address::generate(&env);
     let (payout_a, admin_a) = create_payment_token(&env);
     let (payout_b, admin_b) = create_payment_token(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_a, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_a, &0, &symbol_short!(""), &0);
     mint_tokens(&env, &payout_a, &admin_a, &issuer, &1_000_000);
     mint_tokens(&env, &payout_b, &admin_b, &issuer, &1_000_000);
 
@@ -2589,7 +2859,7 @@ fn payment_token_not_locked_after_failed_first_deposit() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payout, admin) = create_payment_token(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
     // No mint — transfer will fail
     let r = client.try_deposit_revenue(
         &issuer,
@@ -2680,8 +2950,8 @@ fn multi_offering_different_payment_tokens_independent() {
     let (payment_token_y, admin_y) = create_payment_token(&env);
 
     // Register two offerings in same namespace ("multi") but different tokens
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token_y, &0, &symbol_short!(""), &0);
 
     // Mint tokens for issuer
     mint_tokens(&env, &payment_token_x, &admin_x, &issuer, &1_000_000);
@@ -2726,8 +2996,8 @@ fn multi_offering_cross_deposit_fails_with_payment_token_mismatch() {
     let (token_y, admin_y) = create_payment_token(&env);
     let (token_z, admin_z) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -2781,8 +3051,8 @@ fn multi_offering_cross_deposit_does_not_mutate_state() {
     let (token_y, admin_y) = create_payment_token(&env);
     let (token_z, admin_z) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -2829,8 +3099,8 @@ fn multi_offering_independent_deposits_then_cross_fail() {
     let (token_y, admin_y) = create_payment_token(&env);
     let (token_z, admin_z) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -2877,8 +3147,8 @@ fn multi_offering_same_payment_token_both_offerings() {
     let (payment_token, admin) = create_payment_token(&env);
 
     // Both offerings use the SAME payment token
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &payment_token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &payment_token, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &payment_token, &admin, &issuer, &2_000_000);
 
@@ -2915,8 +3185,8 @@ fn multi_offering_independent_period_sequencing() {
     let (token_x, admin_x) = create_payment_token(&env);
     let (token_y, admin_y) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
@@ -2958,8 +3228,8 @@ fn multi_offering_snapshot_deposits_independent() {
     let (token_x, admin_x) = create_payment_token(&env);
     let (token_y, admin_y) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     // Enable snapshot for both
     client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
@@ -3014,7 +3284,7 @@ fn multi_offering_snapshot_locks_payment_token() {
     let (token_x, admin_x) = create_payment_token(&env);
     let (token_z, admin_z) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
     client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
@@ -3060,9 +3330,9 @@ fn multi_offering_three_offerings_full_isolation() {
     let (token_z, admin_z) = create_payment_token(&env);
 
     // Register three offerings
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_c, &5_000, &token_z, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_c, &5_000, &token_z, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -3117,8 +3387,8 @@ fn multi_offering_interleaved_deposits_maintain_isolation() {
     let (token_x, admin_x) = create_payment_token(&env);
     let (token_y, admin_y) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0);
-    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_a, &5_000, &token_x, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("multi"), &token_b, &5_000, &token_y, &0, &symbol_short!(""), &0);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
@@ -3157,7 +3427,7 @@ fn get_payment_token_decimals_defaults_to_7() {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
 
     assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 7);
 }
@@ -3172,7 +3442,7 @@ fn set_and_get_payment_token_decimals() {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
 
     assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 6);
@@ -3188,7 +3458,7 @@ fn set_payment_token_decimals_rejects_out_of_range() {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &19);
     assert!(result.is_err());
@@ -3204,7 +3474,7 @@ fn set_payment_token_decimals_accepts_max_18() {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &18);
     assert!(result.is_ok());
@@ -3221,7 +3491,7 @@ fn set_payment_token_decimals_accepts_zero() {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout, &0, &symbol_short!(""), &0);
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &0);
     assert!(result.is_ok());
@@ -3242,7 +3512,7 @@ fn claim_normalizes_6_decimal_token_revenue() {
     let holder = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     // Configure 6-decimal token (e.g., USDC)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
@@ -3275,7 +3545,7 @@ fn claim_normalizes_8_decimal_token_revenue() {
     let holder = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     // Configure 8-decimal token (e.g., WBTC)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &8);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
@@ -3309,7 +3579,7 @@ fn claim_with_7_decimal_token_is_unchanged() {
     let holder = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     // Default is 7 decimals — no explicit set needed
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000); // 50%
 
@@ -3334,7 +3604,7 @@ fn get_claimable_normalizes_6_decimal_token() {
     let holder = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
 
@@ -3414,7 +3684,7 @@ fn deposit_revenue_exactly_at_supply_cap_succeeds() {
     let token = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     // exactly at cap should succeed
@@ -3432,7 +3702,7 @@ fn deposit_revenue_exceeds_supply_cap_fails() {
     let token = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     // Deposit exceeds cap should fail
@@ -3450,7 +3720,7 @@ fn deposit_revenue_multiple_deposits_exceeds_supply_cap_fails() {
     let token = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &50_000, &1);
@@ -3468,7 +3738,7 @@ fn set_investment_constraints_succeeds_for_valid_bounds() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
     
     let constraints = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
@@ -3486,7 +3756,7 @@ fn set_investment_constraints_fails_when_max_less_than_min() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &1_000, &100);
     assert!(r.is_err());
 }
@@ -3501,7 +3771,7 @@ fn set_investment_constraints_fails_negative() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &-1, &100);
     assert!(r.is_err());
     
@@ -3519,7 +3789,7 @@ fn set_investment_constraints_emits_event() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
     
     let before = legacy_events(&env).len();
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
@@ -3547,7 +3817,7 @@ fn register_capped_offering(
     payment_token: &Address,
     cap: i128,
 ) {
-    client.register_offering(issuer, &symbol_short!("cap"), token, &5_000, payment_token, &cap);
+    client.register_offering(issuer, &symbol_short!("cap"), token, &5_000, payment_token, &cap, &symbol_short!(""), &0);
 }
 
 #[test]
@@ -3560,7 +3830,7 @@ fn get_deposited_revenue_returns_zero_before_any_deposit() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &100_000);
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &100_000, &symbol_short!(""), &0);
 
     // No deposits yet — read API must return 0.
     assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 0);
@@ -3598,7 +3868,7 @@ fn deposit_revenue_no_cap_is_unlimited() {
     let (payment_token, pt_admin) = create_payment_token(&env);
 
     // Register with cap = 0 (unlimited).
-    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000_000);
 
     let r = client.try_deposit_revenue(
@@ -3811,7 +4081,7 @@ fn get_supply_cap_returns_zero_when_no_cap_set() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("cap"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     assert_eq!(client.get_supply_cap(&issuer, &symbol_short!("cap"), &token), 0);
 }
 
@@ -3871,7 +4141,7 @@ fn get_investment_constraints_returns_none_before_set() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     // Read API must return None before constraints are configured.
     assert!(
         client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).is_none(),
@@ -3890,7 +4160,7 @@ fn set_investment_constraints_both_zero_succeeds() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &0, &0,
     );
@@ -3912,7 +4182,7 @@ fn set_investment_constraints_equal_min_and_max_succeeds() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &1_000, &1_000,
     );
@@ -3934,7 +4204,7 @@ fn set_investment_constraints_min_zero_max_positive_succeeds() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &0, &5_000,
     );
@@ -3956,7 +4226,7 @@ fn set_investment_constraints_updates_replace_previous() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &200, &2_000);
 
@@ -3977,7 +4247,7 @@ fn set_investment_constraints_update_event_marks_previous_existed() {
     let token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
     // First call — no previous, event payload should have is_update = false.
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
 
@@ -4919,7 +5189,7 @@ fn offering_isolation_claims_independent() {
     // Register a second offering
     let token_b = Address::generate(&env);
     let (pt_b, pt_b_admin) = create_payment_token(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &3_000, &pt_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &3_000, &pt_b, &0, &symbol_short!(""), &0);
 
     // Create a second payment token for offering B
     mint_tokens(&env, &pt_b, &pt_b_admin, &issuer, &5_000_000);
@@ -5367,7 +5637,8 @@ fn frozen_blocks_register_offering() {
         &1_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(r.is_err());
 }
 
@@ -5449,7 +5720,7 @@ fn freeze_offering_sets_flag_and_emits_event() {
 fn freeze_offering_blocks_only_target_offering() {
     let (env, client, issuer, token_a, payment_token, _contract_id) = claim_setup();
     let token_b = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &5_000, &payment_token, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
     client.freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token_a);
@@ -5912,7 +6183,8 @@ fn testnet_mode_allows_bps_over_10000() {
         &15_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(result.is_ok());
 
     // Verify offering was registered
@@ -5937,7 +6209,8 @@ fn testnet_mode_disabled_rejects_bps_over_10000() {
         &15_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(result.is_err());
 }
 
@@ -5957,7 +6230,7 @@ fn testnet_mode_skips_concentration_enforcement() {
     client.set_testnet_mode(&true);
 
     // Register offering and set concentration limit with enforcement
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
@@ -6058,7 +6331,7 @@ fn testnet_mode_disabled_enforces_concentration() {
     let payout_asset = Address::generate(&env);
 
     // Testnet mode disabled (default)
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
@@ -6089,7 +6362,7 @@ fn testnet_mode_toggle_after_offerings_exist() {
     let payout_asset2 = Address::generate(&env);
 
     // Register offering in normal mode
-    client.register_offering(&issuer, &symbol_short!("def"), &token1, &5_000, &payout_asset1, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token1, &5_000, &payout_asset1, &0, &symbol_short!(""), &0);
 
     // Set admin and enable testnet mode
     client.set_admin(&admin);
@@ -6103,7 +6376,8 @@ fn testnet_mode_toggle_after_offerings_exist() {
         &20_000,
         &payout_asset2,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     assert!(result.is_ok());
 
     // Verify both offerings exist
@@ -6126,7 +6400,7 @@ fn testnet_mode_affects_only_validation_not_storage() {
     client.set_testnet_mode(&true);
 
     // Register with high bps
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &25_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &25_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // Disable testnet mode
     client.set_testnet_mode(&false);
@@ -6152,7 +6426,7 @@ fn testnet_mode_multiple_offerings_with_varied_bps() {
         let token = Address::generate(&env);
         let bps = 10_000 + (i * 1_000);
         let payout_asset = Address::generate(&env);
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &payout_asset, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &payout_asset, &0, &symbol_short!(""), &0);
     }
 
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 5);
@@ -6172,7 +6446,7 @@ fn testnet_mode_concentration_warning_still_emitted() {
     client.set_admin(&admin);
     client.set_testnet_mode(&true);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
 
     // Warning should still be emitted in testnet mode
@@ -6609,7 +6883,7 @@ fn issuer_transfer_multiple_offerings_isolation() {
     let new_issuer_b = Address::generate(&env);
 
     // Register second offering
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &3_000, &token_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &3_000, &token_b, &0, &symbol_short!(""), &0);
 
     // Propose transfers for both (same issuer for both offerings)
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token_a, &new_issuer_a);
@@ -7883,7 +8157,7 @@ fn issuer_transfer_wrong_address_cannot_accept() {
     let token2 = Address::generate(&env2);
     let payout2 = Address::generate(&env2);
     let new_issuer2 = Address::generate(&env2);
-    client2.register_offering(&issuer2, &symbol_short!("def"), &token2, &1_000, &payout2, &0);
+    client2.register_offering(&issuer2, &symbol_short!("def"), &token2, &1_000, &payout2, &0, &symbol_short!(""), &0);
     client2.propose_issuer_transfer(&issuer2, &symbol_short!("def"), &token2, &new_issuer2);
 
     // Pending transfer is to new_issuer2; verify it is stored correctly
@@ -8158,7 +8432,7 @@ fn testnet_mode_normal_operations_unaffected() {
     client.set_testnet_mode(&true);
 
     // Normal operations should work as expected
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -8224,7 +8498,8 @@ fn testnet_mode_pagination_unaffected() {
             &(1_000 + i * 100),
             &payout_asset,
             &0,
-        );
+            &symbol_short!(""),
+            &0);
     }
 
     // Pagination should work normally
@@ -8291,7 +8566,7 @@ fn register_blocked_while_paused() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.pause_admin(&admin);
     assert!(client
-        .try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0)
+        .try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0)
         .is_err());
 }
 
@@ -8306,7 +8581,7 @@ fn report_blocked_while_paused() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.pause_admin(&admin);
     assert!(client
         .try_report_revenue(
@@ -8358,7 +8633,7 @@ fn blacklist_add_blocked_while_paused() {
     let investor = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.pause_admin(&admin);
     assert!(client
         .try_blacklist_add(&admin, &issuer, &symbol_short!("def"), &token, &investor)
@@ -8379,7 +8654,7 @@ fn blacklist_remove_blocked_while_paused() {
     let investor = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
     client.pause_admin(&admin);
     assert!(client
         .try_blacklist_remove(&admin, &issuer, &symbol_short!("def"), &token, &investor)
@@ -8393,7 +8668,7 @@ fn large_period_range_sums_correctly_full() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0, &symbol_short!(""), &0);
     for period in 1..=10 {
         client.report_revenue(
             &issuer,
@@ -8457,7 +8732,7 @@ fn check_invariants_enhanced(env: &Env, client: &RevoraRevenueShareClient, issue
             if client.is_paused() {
                 // Mutations should be blocked; verify by attempting a mutation
                 let dummy_token = Address::generate(env);
-                let result = client.try_register_offering(&issuer, &ns, &dummy_token, &1000, &dummy_token, &0);
+                let result = client.try_register_offering(&issuer, &ns, &dummy_token, &1000, &dummy_token, &0, &symbol_short!(""), &0);
                 assert!(result.is_err(), "Mutations allowed when paused");
             }
 
@@ -8493,7 +8768,7 @@ proptest! {
         for op in seq {
             match op {
                 TestOperation::RegisterOffering((i, ns, t, bps, pa)) => {
-                    client.register_offering(&i, &ns, &t, &bps, &pa, &0);
+                    client.register_offering(&i, &ns, &t, &bps, &pa, &0, &symbol_short!(""), &0);
                 }
                 TestOperation::ReportRevenue((i, ns, t, pa, amt, pid, ovr)) => {
                     client.report_revenue(&i, &ns, &t, &pa, &amt, &pid, &ovr);
@@ -8523,7 +8798,7 @@ proptest! {
         let ns = symbol_short!("def");
         let token = Address::generate(&env);
 
-        client.register_offering(&issuer, &ns, &token, &1000, &token.clone(), &0);
+        client.register_offering(&issuer, &ns, &token, &1000, &token.clone(), &0, &symbol_short!(""), &0);
         
         // Execute background sequence
         for op in seq {
@@ -8602,7 +8877,7 @@ proptest! {
         let token = Address::generate(&env);
         // Mutations panic post-pause
         let result = std::panic::catch_unwind(|| {
-            client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token.clone(), &0);
+            client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token.clone(), &0, &symbol_short!(""), &0);
         });
         prop_assert!(result.is_err());
     }
@@ -8623,7 +8898,7 @@ proptest! {
     ) {
         let (i, ns, t) = offering;
         let client = make_client(&env);
-        client.register_offering(&i, &ns, &t, &1000, &t.clone(), &0);
+        client.register_offering(&i, &ns, &t, &1000, &t.clone(), &0, &symbol_short!(""), &0);
 
         // Blacklist holder
         client.blacklist_add(&i, &i, &ns, &t.clone(), &holder);
@@ -8651,7 +8926,7 @@ proptest! {
         // Register exactly N offerings
         for _ in 0..n {
             let token = Address::generate(&env);
-            client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+            client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &symbol_short!(""), &0);
         }
 
         assert_eq!(client.get_offering_count(&issuer, &ns), n as u32);
@@ -8723,7 +8998,7 @@ fn test_offerings_pagination_stress() {
     
     for _ in 0..num_offerings {
         let token = Address::generate(&env);
-        client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+        client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &symbol_short!(""), &0);
     }
 
     // 1. Verify MAX_PAGE_LIMIT enforcement
@@ -8760,7 +9035,7 @@ fn test_blacklist_pagination_stress() {
     let ns = symbol_short!("def");
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let num_blacklisted = 45;
     for _ in 0..num_blacklisted {
@@ -8797,7 +9072,7 @@ fn test_whitelist_pagination_stress() {
     let ns = symbol_short!("def");
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let num_whitelisted = 45;
     for _ in 0..num_whitelisted {
@@ -8866,7 +9141,7 @@ fn calculate_distribution_bps_100_percent() {
 
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &token, &0, &symbol_short!(""), &0);
 
     let payout = client.calculate_distribution(
         &caller,
@@ -8894,7 +9169,7 @@ fn calculate_distribution_bps_25_percent() {
 
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0, &symbol_short!(""), &0);
 
     let payout = client.calculate_distribution(
         &caller,
@@ -9032,7 +9307,7 @@ fn calculate_distribution_rounds_down() {
 
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &3_333, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &3_333, &token, &0, &symbol_short!(""), &0);
 
     let payout = client.calculate_distribution(
         &caller,
@@ -9058,7 +9333,7 @@ fn calculate_distribution_rounds_down_exact() {
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0, &symbol_short!(""), &0);
 
     let payout = client.calculate_distribution(
         &caller,
@@ -9130,7 +9405,7 @@ fn calculate_distribution_multiple_holders_sum() {
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &token, &0, &symbol_short!(""), &0);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -9188,7 +9463,7 @@ fn calculate_distribution_requires_auth() {
 
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &token, &0, &symbol_short!(""), &0);
 
     client.calculate_distribution(
         &caller,
@@ -9220,7 +9495,7 @@ fn calculate_total_distributable_bps_100_percent() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &token, &0, &symbol_short!(""), &0);
 
     let total =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -9236,7 +9511,7 @@ fn calculate_total_distributable_bps_25_percent() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &2_500, &token, &0, &symbol_short!(""), &0);
 
     let total =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -9261,7 +9536,7 @@ fn calculate_total_distributable_rounds_down() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &3_333, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &3_333, &token, &0, &symbol_short!(""), &0);
 
     let total = client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100);
 
@@ -9302,7 +9577,7 @@ fn calculate_distribution_offering_isolation() {
 
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &8_000, &token_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &8_000, &token_b, &0, &symbol_short!(""), &0);
 
     let payout_a = client.calculate_distribution(
         &caller,
@@ -9334,7 +9609,7 @@ fn calculate_total_distributable_offering_isolation() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &8_000, &token_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &8_000, &token_b, &0, &symbol_short!(""), &0);
 
     let total_a =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -9435,7 +9710,7 @@ fn test_event_only_mode_register_and_report() {
     assert!(client.is_event_only());
 
     // Register offering should emit event but NOT persist state
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // Verify event emitted (skip checking EVENT_INIT)
     let events = legacy_events(&env);
@@ -9526,7 +9801,7 @@ fn test_set_offering_metadata_success() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
     let result =
@@ -9542,7 +9817,7 @@ fn test_get_offering_metadata_returns_none_initially() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = client.get_offering_metadata(&issuer, &symbol_short!("def"), &token);
     assert_eq!(metadata, None);
@@ -9556,7 +9831,7 @@ fn test_update_offering_metadata_success() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata1);
@@ -9575,7 +9850,7 @@ fn test_get_offering_metadata_after_set() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "https://example.com/metadata.json");
     let r = client.try_set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -9593,7 +9868,7 @@ fn test_set_metadata_requires_auth() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -9625,7 +9900,7 @@ fn test_set_metadata_respects_freeze() {
     let token = Address::generate(&env);
 
     client.initialize(&admin, &None, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
     client.freeze();
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -9646,7 +9921,7 @@ fn test_set_metadata_respects_pause() {
     let token = Address::generate(&env);
 
     client.initialize(&admin, &None, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
     client.pause_admin(&admin);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -9663,7 +9938,7 @@ fn test_set_metadata_empty_string() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "");
     let result =
@@ -9682,7 +9957,7 @@ fn test_set_metadata_max_length() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     // Create a 256-byte string (max allowed)
     let max_str = "a".repeat(256);
@@ -9700,7 +9975,7 @@ fn test_set_metadata_oversized_data() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     // Create a 257-byte string (exceeds max)
     let oversized_str = "a".repeat(257);
@@ -9718,7 +9993,7 @@ fn test_set_metadata_repeated_updates() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata_values =
         ["ipfs://QmTest0", "ipfs://QmTest1", "ipfs://QmTest2", "ipfs://QmTest3", "ipfs://QmTest4"];
@@ -9743,8 +10018,8 @@ fn test_metadata_scoped_per_offering() {
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1000, &token_a, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &2000, &token_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1000, &token_a, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &2000, &token_b, &0, &symbol_short!(""), &0);
 
     let metadata_a = SdkString::from_str(&env, "ipfs://QmTokenA");
     let metadata_b = SdkString::from_str(&env, "ipfs://QmTokenB");
@@ -9768,7 +10043,7 @@ fn test_metadata_set_emits_event() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let before = legacy_events(&env).len();
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -9794,7 +10069,7 @@ fn test_metadata_update_emits_event() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata1);
@@ -9823,7 +10098,7 @@ fn test_metadata_events_include_correct_data() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -9857,9 +10132,9 @@ fn test_metadata_multiple_offerings_same_issuer() {
     let token2 = Address::generate(&env);
     let token3 = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token1, &1000, &token1, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token2, &2000, &token2, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token3, &3000, &token3, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token1, &1000, &token1, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token2, &2000, &token2, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token3, &3000, &token3, &0, &symbol_short!(""), &0);
 
     let meta1 = SdkString::from_str(&env, "ipfs://Qm1");
     let meta2 = SdkString::from_str(&env, "ipfs://Qm2");
@@ -9883,7 +10158,7 @@ fn test_metadata_after_issuer_transfer() {
     let new_issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&old_issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&old_issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmOriginal");
     client.set_offering_metadata(&old_issuer, &symbol_short!("def"), &token, &metadata);
@@ -9912,7 +10187,7 @@ fn test_set_metadata_requires_issuer() {
     let non_issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
     let result =
@@ -9928,7 +10203,7 @@ fn test_metadata_ipfs_cid_format() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     // Test typical IPFS CID (46 characters)
     let ipfs_cid = SdkString::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -9948,7 +10223,7 @@ fn test_metadata_https_url_format() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     let https_url = SdkString::from_str(&env, "https://api.example.com/metadata/token123.json");
     let result =
@@ -9967,7 +10242,7 @@ fn test_metadata_content_hash_format() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000, &token, &0, &symbol_short!(""), &0);
 
     // SHA256 hash as hex string
     let content_hash = SdkString::from_str(
@@ -10063,7 +10338,7 @@ mod regression {
         let payout_asset = Address::generate(&env);
 
         // Act: Perform the operation
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
         // Assert: Verify correct behavior
         let offering = client.get_offering(&issuer, &symbol_short!("def"), &token);
@@ -10322,7 +10597,8 @@ mod regression {
             &1_000,
             &payout_asset,
             &0,
-        );
+            &symbol_short!(""),
+            &0);
         (client, admin, token, payout_asset)
     }
 
@@ -10764,10 +11040,10 @@ mod regression {
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
         let p3 = Address::generate(&env);
-        client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0, &symbol_short!(""), &0);
         let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
         assert_eq!(page.len(), 4);
         assert_eq!(page.get(0).clone().unwrap().token, t0);
@@ -10786,10 +11062,10 @@ mod regression {
         let p1 = Address::generate(&env);
         let p2 = Address::generate(&env);
         let p3 = Address::generate(&env);
-        client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0);
-        client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t0, &100, &p0, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t1, &200, &p1, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t2, &300, &p2, &0, &symbol_short!(""), &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &t3, &400, &p3, &0, &symbol_short!(""), &0);
         let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
         assert_eq!(page.len(), 4);
         assert_eq!(page.get(0).clone().unwrap().token, t0);
@@ -10883,7 +11159,7 @@ mod regression {
         let v0 = client.get_version();
         let token = Address::generate(&env);
         let payout_asset = Address::generate(&env);
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
         assert_eq!(client.get_version(), v0);
     }
 
@@ -11026,7 +11302,7 @@ mod regression {
         let token = Address::generate(&env);
         let payout = Address::generate(&env);
 
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &500, &payout, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &500, &payout, &0, &symbol_short!(""), &0);
 
         let result = client.get_offering(&issuer, &symbol_short!("def"), &token);
         assert!(result.is_some());
@@ -11048,7 +11324,7 @@ mod regression {
         let mut target_token = Address::generate(&env);
         for i in 0..10u32 {
             let t = Address::generate(&env);
-            client.register_offering(&issuer, &symbol_short!("def"), &t, &(i * 100), &payout, &0);
+            client.register_offering(&issuer, &symbol_short!("def"), &t, &(i * 100), &payout, &0, &symbol_short!(""), &0);
             if i == 9 {
                 target_token = t;
             }
@@ -11076,7 +11352,8 @@ mod regression {
             &300,
             &payout,
             &0,
-        );
+            &symbol_short!(""),
+            &0);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
@@ -11106,7 +11383,8 @@ mod regression {
             &300,
             &payout,
             &0,
-        );
+            &symbol_short!(""),
+            &0);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
@@ -11374,7 +11652,7 @@ mod admin_rotation_edge {
         let payout_asset = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
         client.propose_admin_rotation(&new_admin);
         client.accept_admin_rotation(&new_admin);
@@ -11453,7 +11731,7 @@ mod admin_rotation_integration {
         let investor = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
-        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+        client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
         client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
 
         client.propose_admin_rotation(&new_admin);
@@ -11842,7 +12120,7 @@ fn test_offerings_page_pagination_25_offerings() {
     for i in 0..25 {
         let token = Address::generate(&env);
         tokens.push_back(token.clone());
-        client.register_offering(&issuer1, &ns, &token, &(1000 + i * 100), &token, &0);
+        client.register_offering(&issuer1, &ns, &token, &(1000 + i * 100), &token, &0, &symbol_short!(""), &0);
     }
 
     // Test 1: Page through with limit=10
@@ -11881,7 +12159,7 @@ fn test_offerings_page_edge_cases() {
     // Register 10 offerings
     for i in 0..10 {
         let token = Address::generate(&env);
-        client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+        client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &symbol_short!(""), &0);
     }
 
     // Edge case 1: start == count (10 offerings, start at 10)
@@ -11919,10 +12197,10 @@ fn test_offerings_page_ordering_deterministic() {
     let t2 = Address::generate(&env);
     let t3 = Address::generate(&env);
 
-    client.register_offering(&issuer, &ns, &t0, &100, &t0, &0);
-    client.register_offering(&issuer, &ns, &t1, &200, &t1, &0);
-    client.register_offering(&issuer, &ns, &t2, &300, &t2, &0);
-    client.register_offering(&issuer, &ns, &t3, &400, &t3, &0);
+    client.register_offering(&issuer, &ns, &t0, &100, &t0, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &ns, &t1, &200, &t1, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &ns, &t2, &300, &t2, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &ns, &t3, &400, &t3, &0, &symbol_short!(""), &0);
 
     // Retrieve all pages and verify ordering
     let (page1, cursor1) = client.get_offerings_page(&issuer, &ns, &0, &2);
@@ -11974,9 +12252,9 @@ fn test_offerings_page_after_issuer_transfer() {
     let t2 = Address::generate(&env);
     let t3 = Address::generate(&env);
 
-    client.register_offering(&issuer1, &ns, &t1, &100, &t1, &0);
-    client.register_offering(&issuer1, &ns, &t2, &200, &t2, &0);
-    client.register_offering(&issuer1, &ns, &t3, &300, &t3, &0);
+    client.register_offering(&issuer1, &ns, &t1, &100, &t1, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer1, &ns, &t2, &200, &t2, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer1, &ns, &t3, &300, &t3, &0, &symbol_short!(""), &0);
 
     // Verify issuer1 has 3 offerings
     let (page1_before, _) = client.get_offerings_page(&issuer1, &ns, &0, &20);
@@ -12013,7 +12291,7 @@ fn test_issuer_transfer_migrates_all_configs() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&old_issuer, &ns, &token, &1000, &payout_asset, &0);
+    client.register_offering(&old_issuer, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // 1. Set concentration
     client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true);

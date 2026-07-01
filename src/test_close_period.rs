@@ -60,7 +60,8 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &10_000,
         &payment_token,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
 
     (env, client, issuer, offering_token, payment_token)
 }

@@ -42,7 +42,8 @@ fn prove_distribution_normal_case() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -107,7 +108,8 @@ fn prove_distribution_digest_is_deterministic() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -163,7 +165,8 @@ fn prove_distribution_ordering_affects_digest() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -223,7 +226,8 @@ fn prove_distribution_empty_holders() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -266,7 +270,8 @@ fn prove_distribution_unknown_period_id_returns_zero_payouts() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder_a = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32);
@@ -316,7 +321,8 @@ fn prove_distribution_zero_share_bps_yields_zero_payout() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -365,7 +371,8 @@ fn prove_distribution_usdc_6_decimals_normalizes_correctly() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     // Configure 6-decimal payment token (USDC-style)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6u32);
@@ -420,7 +427,8 @@ fn prove_distribution_respects_round_half_up_mode() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
     client.set_rounding_mode(&issuer, &symbol_short!("def"), &token, &RoundingMode::RoundHalfUp);
 
     let holder = Address::generate(&env);
@@ -463,7 +471,8 @@ fn prove_distribution_caps_at_max_chunk_periods() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.deposit_revenue(
@@ -510,7 +519,8 @@ fn prove_distribution_entry_fields_match() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000u32);
@@ -560,7 +570,8 @@ fn prove_distribution_different_periods_produce_different_digests() {
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+        &symbol_short!(""),
+        &0);
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32);

@@ -96,6 +96,10 @@ pub enum RevoraError {
     SnapshotNotFinalized = 49,
     /// The recomputed snapshot digest does not match the committed `content_hash`.
     SnapshotHashMismatch = 50,
+    /// `display_decimals` exceeds the maximum allowed precision of 18.
+    ///
+    /// Wire value: 51. Stable since v1.
+    DisplayDecimalsOutOfRange = 51,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -393,6 +397,14 @@ pub struct Offering {
     /// Cumulative revenue share for all holders in basis points (0-10000).
     pub revenue_share_bps: u32,
     pub payout_asset: Address,
+    /// Human-readable ticker/symbol for the payout denomination (e.g. `USDC`, `XLM`).
+    /// Used by wallets and dashboards to display amounts without guessing the payment token.
+    /// Maximum 9 characters (Soroban `Symbol` limit).
+    pub denomination_symbol: Symbol,
+    /// Number of decimal places to use when displaying amounts for this offering.
+    /// Must be ≤ `MAX_TOKEN_DECIMALS` (18) and ≤ the payment token's on-chain decimals.
+    /// Defaults to 0 when unset.
+    pub display_decimals: u32,
 }
 
 /// Per-offering concentration guardrail config (#26).
@@ -767,6 +779,11 @@ pub enum DataKey2 {
 
     /// Sealed-period flag: when present, `report_revenue` overrides are rejected for this period.
     ClosedPeriod(OfferingId, u64),
+
+    /// Per-offering denomination display metadata (denomination_symbol, display_decimals).
+    /// Written once at `register_offering` and never mutated.
+    /// Allows wallets and dashboards to render amounts correctly without guessing token semantics.
+    DenominationMetadata(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2326,21 +2343,35 @@ impl RevoraRevenueShare {
     /// * `issuer` - The address of the offering issuer. Must provide authentication.
     /// * `namespace` - A symbol identifying the namespace for this offering.
     /// * `token` - The address of the token being offered.
-    /// * `revenue_share_bps` - The revenue share percentage in basis points (0â€“10,000).
+    /// * `revenue_share_bps` - The revenue share percentage in basis points (0-10,000).
     ///   Values above 10,000 are rejected unless testnet mode is enabled (admin-only,
-    ///   never enable on mainnet â€” see `TESTNET_MODE.md`).
+    ///   never enable on mainnet - see `TESTNET_MODE.md`).
     /// * `payout_asset` - The asset in which revenue will be paid out.
     /// * `supply_cap` - Optional cap on the total amount of revenue that can be deposited (0 = no cap).
+    /// * `denomination_symbol` - Human-readable ticker for the payout denomination (e.g. `USDC`, `XLM`).
+    ///   Stored as-is; not validated against on-chain token registries.
+    ///   Maximum 9 characters (Soroban `Symbol` limit).
+    /// * `display_decimals` - Decimal precision wallets should use when displaying amounts.
+    ///   Must satisfy `display_decimals <= MAX_TOKEN_DECIMALS (18)`.
+    ///   Callers should also ensure `display_decimals <= payment_token_decimals`; verify
+    ///   via `get_payment_token_decimals` before calling.
     ///
     /// # Returns
     /// - `Ok(())` on success.
     /// - `Err(RevoraError::InvalidRevenueShareBps)` if `revenue_share_bps` exceeds 10,000
     ///   and testnet mode is disabled (the default).
+    /// - `Err(RevoraError::DisplayDecimalsOutOfRange)` if `display_decimals > 18`.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     /// - `Err(RevoraError::ContractPaused)` if the contract is paused.
     ///
     /// # Events
-    /// Emits `EVENT_OFFER_REG_V2` and `EVENT_INDEXED_V2`.
+    /// Emits `EVENT_OFFER_REG_V2` (payload includes `denomination_symbol` and `display_decimals`)
+    /// and `EVENT_INDEXED_V2`.
+    ///
+    /// # Security note
+    /// `denomination_symbol` is informational only and does not affect payout math or transfers.
+    /// Issuers are responsible for providing values consistent with the actual `payout_asset`.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_offering(
         env: Env,
         issuer: Address,
@@ -2349,6 +2380,8 @@ impl RevoraRevenueShare {
         revenue_share_bps: u32,
         payout_asset: Address,
         supply_cap: i128,
+        denomination_symbol: Symbol,
+        display_decimals: u32,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -2361,9 +2394,15 @@ impl RevoraRevenueShare {
             return Err(err);
         }
 
+        // display_decimals must not exceed the protocol-wide maximum of 18.
+        // Prevents callers from supplying nonsensical precision that confuses downstream display.
+        if display_decimals > MAX_TOKEN_DECIMALS {
+            return Err(RevoraError::DisplayDecimalsOutOfRange);
+        }
+
         // Skip bps validation in testnet mode (reads the real flag from storage).
         // In production mode (default) revenue_share_bps is always capped at 10 000 (100%).
-        // Testnet mode is admin-only and must never be enabled on mainnet â€” see TESTNET_MODE.md.
+        // Testnet mode is admin-only and must never be enabled on mainnet - see TESTNET_MODE.md.
         let testnet_mode = Self::is_testnet_mode(env.clone());
         if !testnet_mode && revenue_share_bps > 10_000 {
             return Err(RevoraError::InvalidRevenueShareBps);
@@ -2403,6 +2442,8 @@ impl RevoraRevenueShare {
             token: token.clone(),
             revenue_share_bps,
             payout_asset: payout_asset.clone(),
+            denomination_symbol: denomination_symbol.clone(),
+            display_decimals,
         };
 
         let item_key = DataKey::OfferItem(tenant_id.clone(), count);
@@ -2412,6 +2453,12 @@ impl RevoraRevenueShare {
         // Direct index for O(1) get_offering (#360).
         env.storage().persistent().set(&DataKey2::OfferingRecord(offering_id.clone()), &offering);
 
+        // Denomination metadata auxiliary index: O(1) read for display semantics.
+        env.storage().persistent().set(
+            &DataKey2::DenominationMetadata(offering_id.clone()),
+            &(denomination_symbol.clone(), display_decimals),
+        );
+
         let issuer_lookup_key = DataKey::OfferingIssuer(offering_id.clone());
         env.storage().persistent().set(&issuer_lookup_key, &issuer);
 
@@ -2420,10 +2467,18 @@ impl RevoraRevenueShare {
             env.storage().persistent().set(&cap_key, &supply_cap);
         }
 
+        // Primary registration event - denomination metadata included so indexers never
+        // need a second call to learn display semantics.
         Self::emit_v2_event(
             &env,
             (EVENT_OFFER_REG_V2, issuer.clone(), namespace.clone()),
-            (token.clone(), revenue_share_bps, payout_asset.clone()),
+            (
+                token.clone(),
+                revenue_share_bps,
+                payout_asset.clone(),
+                denomination_symbol.clone(),
+                display_decimals,
+            ),
         );
 
         env.events().publish(
@@ -2447,14 +2502,39 @@ impl RevoraRevenueShare {
                 (EVENT_SCHEMA_VERSION, token.clone(), revenue_share_bps, payout_asset.clone()),
             );
         }
-        // Versioned v2 event: [2, token, revenue_share_bps, payout_asset] â€” always emitted (#RC26Q2-C31)
+        // Versioned v2 event: always emitted (#RC26Q2-C31).
+        // Payload: (token, revenue_share_bps, payout_asset, denomination_symbol, display_decimals)
         Self::emit_v2_event(
             &env,
             (EVENT_OFFER_REG_V2, issuer, namespace, token.clone()),
-            (token, revenue_share_bps, payout_asset),
+            (token, revenue_share_bps, payout_asset, denomination_symbol, display_decimals),
         );
 
         Ok(())
+    }
+
+    /// Return the denomination display metadata for an offering.
+    ///
+    /// This is a cheap O(1) read that does not require iterating offerings.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The issuer address.
+    /// - `namespace`: The offering namespace.
+    /// - `token`: The offering token address.
+    ///
+    /// ### Returns
+    /// `Some((denomination_symbol, display_decimals))` if the offering exists,
+    /// `None` if no offering with that identity has been registered.
+    pub fn get_denomination_metadata(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<(Symbol, u32)> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, (Symbol, u32)>(&DataKey2::DenominationMetadata(offering_id))
     }
 
     /// Fetch a single offering by issuer and token.
@@ -6790,7 +6870,7 @@ mod issue_370_373_tests {
         let mut tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0);
+            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0, &symbol_short!(""), &0);
             tokens.push_back(token);
         }
 
@@ -6861,13 +6941,13 @@ mod issue_370_373_tests {
 
         let new_token_0 = Address::generate(&env);
         let new_token_1 = Address::generate(&env);
-        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0);
-        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0);
+        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0, &symbol_short!(""), &0);
+        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0, &symbol_short!(""), &0);
 
         let mut old_tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0);
+            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0, &symbol_short!(""), &0);
             old_tokens.push_back(token);
         }
 
