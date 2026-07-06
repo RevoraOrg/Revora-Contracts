@@ -201,7 +201,7 @@ fn pending_periods_page_and_claimable_chunk_consistent() {
         &1000u32,
         &payment_token,
         &0i128,
-    , &None);
+    &None);
     // Mint to issuer so deposit_revenue token transfer succeeds
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
@@ -326,7 +326,7 @@ fn get_claimable_chunk_table_driven_invariants() {
         &1000u32,
         &payment_token,
         &0i128,
-    , &None);
+    &None);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     let test_cases = vec![
@@ -509,7 +509,7 @@ fn get_claimable_chunk_table_driven_invariants() {
             &1000u32,
             &payment_token,
             &0i128,
-        , &None);
+        &None);
         mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
         // Set up test case conditions
@@ -613,7 +613,7 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
         &1000u32,
         &payment_token,
         &0i128,
-    , &None);
+    &None);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000);
@@ -685,7 +685,7 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
         &1000u32,
         &payment_token,
         &0i128,
-    , &None);
+    &None);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
@@ -748,7 +748,7 @@ fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
         &1000u32,
         &payment_token,
         &0i128,
-    , &None);
+    &None);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000);

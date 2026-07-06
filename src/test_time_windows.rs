@@ -134,7 +134,7 @@ fn setup_with_holder() -> (
         &10_000, // 100% share pool
         &payment_token,
         &0,
-    , &None);
+    &None);
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(&issuer, &symbol_short!("ns"), &offering_token, &holder, &10_000);
 
@@ -981,10 +981,10 @@ fn claim_window_is_scoped_per_offering() {
 
     RevoraRevenueShareClient::new(&env, &cid).register_offering(
         &issuer, &symbol_short!("ns"), &token_a, &10_000, &payment_token, &0,
-    , &None);
+    &None);
     RevoraRevenueShareClient::new(&env, &cid).register_offering(
         &issuer, &symbol_short!("ns"), &token_b, &10_000, &payment_token, &0,
-    , &None);
+    &None);
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(&issuer, &symbol_short!("ns"), &token_a, &holder, &10_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(&issuer, &symbol_short!("ns"), &token_b, &holder, &10_000);

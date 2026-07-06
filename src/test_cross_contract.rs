@@ -624,7 +624,7 @@ fn cross_contract_stress_revora_with_registry_and_oracle() {
             &((i + 1) * 1_000),
             &payout,
             &0,
-        , &None);
+        &None);
         oracle.set_price(&admin, &payout, &((i as i128 + 1) * 1_000_000), &1000);
         revora.report_revenue(
             &issuer,

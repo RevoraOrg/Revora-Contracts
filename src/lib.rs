@@ -169,6 +169,8 @@ pub enum RevoraError {
     ///
     /// Wire value: 53. Stable since v1.
     PeriodAlreadyClosed = 53,
+    /// Concentration data is stale or missing; cannot enforce concentration limit.
+    StaleConcentrationData = 54,
     /// The specified share class is invalid or does not exist for the offering.
     InvalidShareClass = 51,
     /// The total BPS allocations across all share classes must sum to exactly 10,000.
@@ -181,9 +183,9 @@ pub mod vesting;
 pub mod kani_harness;
 
 #[cfg(test)]
-mod test_compute_share_invariants;
-#[cfg(test)]
 mod test_claim_transfer_fail;
+#[cfg(test)]
+mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -594,6 +596,18 @@ pub enum MetaDataKey {
     RevenueApproved(OfferingId, u64),
 }
 
+/// Pause tier for the contract. Stored under `DataKey::Paused`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseState {
+    /// Contract is fully operational.
+    NotPaused = 0,
+    /// Reports and deposits blocked; `claim` allowed.
+    SoftPaused = 1,
+    /// All state-mutating operations blocked, including `claim`.
+    HardPaused = 2,
+}
+
 /// Defines how fractional shares are handled during distribution calculations.
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,8 +756,6 @@ pub enum DataKey {
     SnapshotFinalizationRequired,
     /// Latest committed snapshot reference for an offering.
     LastSnapshotCommitRef(OfferingId),
-    /// Whether the snapshot has been finalized successfully.
-    SnapshotFinalized(OfferingId, u64),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -751,6 +763,16 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey2 {
+    /// Whether the snapshot has been finalized successfully.
+    SnapshotFinalized(OfferingId, u64),
+    /// Per-offering supply cap (max total deposited revenue).
+    SupplyCap(OfferingId),
+    /// Total revenue deposited so far for supply-cap tracking.
+    DepositedRevenue(OfferingId),
+    /// Per-offering investment constraints (min/max stake).
+    InvestmentConstraints(OfferingId),
+    /// Per-offering minimum revenue threshold.
+    MinRevenueThreshold(OfferingId),
     /// Last reported period_id for an offering.
     LastReportedPeriodId(OfferingId),
     /// Last deposited period_id for an offering.
@@ -1264,7 +1286,8 @@ impl RevoraRevenueShare {
         };
 
         let classes_key = DataKey2::OfferingClasses(offering_id.clone());
-        let classes: Option<Vec<(ShareClass, ClassConfig)>> = env.storage().persistent().get(&classes_key);
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
 
         match classes {
             Some(cls_vec) => {
@@ -1283,12 +1306,16 @@ impl RevoraRevenueShare {
                     return Err(RevoraError::InvalidShareClass);
                 }
 
-                let class_share_key = DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone());
+                let class_share_key =
+                    DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone());
                 let old_share: u32 = env.storage().persistent().get(&class_share_key).unwrap_or(0);
-                let total_class_key = DataKey2::HolderShareClassTotal(offering_id.clone(), sc.clone());
-                let current_class_total: u32 = env.storage().persistent().get(&total_class_key).unwrap_or(0);
+                let total_class_key =
+                    DataKey2::HolderShareClassTotal(offering_id.clone(), sc.clone());
+                let current_class_total: u32 =
+                    env.storage().persistent().get(&total_class_key).unwrap_or(0);
 
-                let new_total = current_class_total.saturating_sub(old_share).saturating_add(share_bps);
+                let new_total =
+                    current_class_total.saturating_sub(old_share).saturating_add(share_bps);
                 if new_total > 10_000 {
                     return Err(RevoraError::InvalidShareBps);
                 }
@@ -1302,7 +1329,8 @@ impl RevoraRevenueShare {
                 }
                 // Maintain a running total of persisted holder shares for this offering.
                 let total_key = DataKey::HolderShareTotal(offering_id.clone());
-                let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+                let mut current_total: u32 =
+                    env.storage().persistent().get(&total_key).unwrap_or(0);
 
                 let old_share: u32 = env
                     .storage()
@@ -1742,7 +1770,11 @@ impl RevoraRevenueShare {
 
     /// Admin-only setter to adjust the stored layout version (used by migrations/tests).
     /// Emits `EVENT_LAYOUT_VERSION` when the stored value is changed.
-    pub fn set_storage_layout_version(env: Env, caller: Address, v: u32) -> Result<(), RevoraError> {
+    pub fn set_storage_layout_version(
+        env: Env,
+        caller: Address,
+        v: u32,
+    ) -> Result<(), RevoraError> {
         let admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         admin.require_auth();
@@ -1880,7 +1912,7 @@ impl RevoraRevenueShare {
         let effective_expiry = if expiry_secs == 0 {
             0
         } else {
-            expiry_secs.max(MIN_ISSUER_TRANSFER_EXPIRY_SECS).min(MAX_ISSUER_TRANSFER_EXPIRY_SECS)
+            expiry_secs.clamp(MIN_ISSUER_TRANSFER_EXPIRY_SECS, MAX_ISSUER_TRANSFER_EXPIRY_SECS)
         };
 
         let timestamp = env.ledger().timestamp();
@@ -2082,32 +2114,66 @@ impl RevoraRevenueShare {
             .set(&DataKey::OfferingIssuer(new_offering_id.clone()), &new_issuer.clone());
 
         // Migrate configuration state linked to the old OfferingId (#1344)
-        if let Some(config) = env.storage().persistent().get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
+        if let Some(config) = env
+            .storage()
+            .persistent()
+            .get::<_, ConcentrationLimitConfig>(&DataKey::ConcentrationLimit(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ConcentrationLimit(new_offering_id.clone()), &config);
             env.storage().persistent().remove(&DataKey::ConcentrationLimit(offering_id.clone()));
         }
-        if let Some(current) = env.storage().persistent().get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
+        if let Some(current) = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::CurrentConcentration(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::CurrentConcentration(new_offering_id.clone()), &current);
             env.storage().persistent().remove(&DataKey::CurrentConcentration(offering_id.clone()));
         }
-        if let Some(mode) = env.storage().persistent().get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone())) {
+        if let Some(mode) = env
+            .storage()
+            .persistent()
+            .get::<_, RoundingMode>(&DataKey::RoundingMode(offering_id.clone()))
+        {
             env.storage().persistent().set(&DataKey::RoundingMode(new_offering_id.clone()), &mode);
             env.storage().persistent().remove(&DataKey::RoundingMode(offering_id.clone()));
         }
-        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(&DataKey2::InvestmentConstraints(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
-            env.storage().persistent().remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
+        if let Some(constraints) = env.storage().persistent().get::<_, InvestmentConstraintsConfig>(
+            &DataKey2::InvestmentConstraints(offering_id.clone()),
+        ) {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::InvestmentConstraints(new_offering_id.clone()), &constraints);
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::InvestmentConstraints(offering_id.clone()));
         }
-        if let Some(delay) = env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
+        if let Some(delay) =
+            env.storage().persistent().get::<_, u64>(&DataKey::ClaimDelaySecs(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimDelaySecs(new_offering_id.clone()), &delay);
             env.storage().persistent().remove(&DataKey::ClaimDelaySecs(offering_id.clone()));
         }
-        if let Some(snap_config) = env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
+        if let Some(snap_config) =
+            env.storage().persistent().get::<_, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SnapshotConfig(new_offering_id.clone()), &snap_config);
             env.storage().persistent().remove(&DataKey::SnapshotConfig(offering_id.clone()));
         }
-        if let Some(snap_ref) = env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone())) {
-            env.storage().persistent().set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
+        if let Some(snap_ref) =
+            env.storage().persistent().get::<_, u64>(&DataKey::LastSnapshotRef(offering_id.clone()))
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::LastSnapshotRef(new_offering_id.clone()), &snap_ref);
             env.storage().persistent().remove(&DataKey::LastSnapshotRef(offering_id.clone()));
         }
 
@@ -2213,9 +2279,7 @@ impl RevoraRevenueShare {
         let eo = event_only.unwrap_or(false);
         env.storage().persistent().set(&DataKey2::ContractFlags, &(false, eo));
         // Stamp storage layout version for future compatibility checks.
-        env.storage()
-            .persistent()
-            .set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
+        env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
@@ -2407,6 +2471,7 @@ impl RevoraRevenueShare {
     ///
     /// # Events
     /// Emits `EVENT_OFFER_REG_V2` and `EVENT_INDEXED_V2`.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_offering(
         env: Env,
         issuer: Address,
@@ -2424,7 +2489,8 @@ impl RevoraRevenueShare {
         if let Some(ref cls_vec) = classes {
             let mut sum_bps: u32 = 0;
             for (_, config) in cls_vec.iter() {
-                sum_bps = sum_bps.checked_add(config.bps).ok_or(RevoraError::InvalidShareClassBps)?;
+                sum_bps =
+                    sum_bps.checked_add(config.bps).ok_or(RevoraError::InvalidShareClassBps)?;
             }
             if sum_bps != 10_000 {
                 return Err(RevoraError::InvalidShareClassBps);
@@ -2498,7 +2564,9 @@ impl RevoraRevenueShare {
         }
 
         if let Some(ref cls_vec) = classes {
-            env.storage().persistent().set(&DataKey2::OfferingClasses(offering_id.clone()), cls_vec);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::OfferingClasses(offering_id.clone()), cls_vec);
         }
 
         Self::emit_v2_event(
@@ -5147,7 +5215,7 @@ impl RevoraRevenueShare {
     fn is_snapshot_finalized(env: &Env, offering_id: &OfferingId, snapshot_ref: u64) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref))
+            .get(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref))
             .unwrap_or(false)
     }
 
@@ -5221,7 +5289,7 @@ impl RevoraRevenueShare {
 
         env.storage()
             .persistent()
-            .set(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
+            .set(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
         env.events().publish((EVENT_SNAP_FINALIZED, issuer, namespace, token), snapshot_ref);
         Ok(())
     }
@@ -5285,7 +5353,15 @@ impl RevoraRevenueShare {
         )
         .ok_or(RevoraError::OfferingNotFound)?;
 
-        Self::set_holder_share_internal(&env, issuer, namespace, token, holder, share_bps, Some(share_class))
+        Self::set_holder_share_internal(
+            &env,
+            issuer,
+            namespace,
+            token,
+            holder,
+            share_bps,
+            Some(share_class),
+        )
     }
 
     /// Get a holder's revenue share in basis points for an offering.
@@ -5298,10 +5374,16 @@ impl RevoraRevenueShare {
     ) -> u32 {
         let offering_id = OfferingId { issuer, namespace, token };
         let classes_key = DataKey2::OfferingClasses(offering_id.clone());
-        if let Some(cls_vec) = env.storage().persistent().get::<_, Vec<(ShareClass, ClassConfig)>>(&classes_key) {
+        if let Some(cls_vec) =
+            env.storage().persistent().get::<_, Vec<(ShareClass, ClassConfig)>>(&classes_key)
+        {
             let mut total_share = 0;
             for (sc, _) in cls_vec.iter() {
-                let share: u32 = env.storage().persistent().get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc)).unwrap_or(0);
+                let share: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc))
+                    .unwrap_or(0);
                 total_share += share;
             }
             total_share
@@ -5556,7 +5638,8 @@ impl RevoraRevenueShare {
             );
             let normalized = Self::normalize_amount(revenue, decimals);
             let classes_key = DataKey2::OfferingClasses(offering_id.clone());
-            let classes: Option<Vec<(ShareClass, ClassConfig)>> = env.storage().persistent().get(&classes_key);
+            let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+                env.storage().persistent().get(&classes_key);
             let rounding_mode = Self::get_rounding_mode(
                 env.clone(),
                 offering_id.issuer.clone(),
@@ -5568,10 +5651,28 @@ impl RevoraRevenueShare {
                 let mut p = 0_i128;
                 if let Some(ref cls_vec) = classes {
                     for (sc, config) in cls_vec.iter() {
-                        let holder_share = env.storage().persistent().get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone())).unwrap_or(0);
+                        let holder_share = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey2::HolderShareClass(
+                                offering_id.clone(),
+                                holder.clone(),
+                                sc.clone(),
+                            ))
+                            .unwrap_or(0);
                         if holder_share > 0 {
-                            let class_rev = Self::compute_share(env.clone(), normalized, config.bps, rounding_mode.clone());
-                            let holder_payout = Self::compute_share(env.clone(), class_rev, holder_share, rounding_mode.clone());
+                            let class_rev = Self::compute_share(
+                                env.clone(),
+                                normalized,
+                                config.bps,
+                                rounding_mode,
+                            );
+                            let holder_payout = Self::compute_share(
+                                env.clone(),
+                                class_rev,
+                                holder_share,
+                                rounding_mode,
+                            );
                             p = p.saturating_add(holder_payout);
                         }
                     }
@@ -5693,10 +5794,8 @@ impl RevoraRevenueShare {
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
 
-        env.events().publish(
-            (EVENT_PERIOD_CLOSED, issuer, namespace, token),
-            (period_id, closed_at),
-        );
+        env.events()
+            .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
         Ok(())
     }
@@ -5869,6 +5968,7 @@ impl RevoraRevenueShare {
             payload.token.clone(),
             payload.holder.clone(),
             payload.share_bps,
+            None,
         )?;
         Self::mark_meta_nonce_used(&env, &signer, nonce);
         env.events().publish(
@@ -6014,12 +6114,11 @@ impl RevoraRevenueShare {
     /// * `token` - The address of the token.
     /// * `max_periods` - The maximum number of periods to claim in this call.
     ///
-    /// # Events
-
     /// Read-only: return a page of pending period IDs for a holder, bounded by `limit`.
     /// Returns `(periods_page, next_cursor)` where `next_cursor` is `Some(next_index)` when more
     /// periods remain, otherwise `None`. `limit` of 0 or greater than `MAX_PAGE_LIMIT` will be
     /// capped to `MAX_PAGE_LIMIT` to keep calls predictable.
+    #[allow(clippy::too_many_arguments)]
     pub fn get_pending_periods_page(
         env: Env,
         issuer: Address,
@@ -6134,28 +6233,42 @@ impl RevoraRevenueShare {
             );
             let normalized = Self::normalize_amount(revenue, decimals);
             let classes_key = DataKey2::OfferingClasses(offering_id.clone());
-            let classes: Option<Vec<(ShareClass, ClassConfig)>> = env.storage().persistent().get(&classes_key);
+            let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+                env.storage().persistent().get(&classes_key);
 
             let payout = if classes.is_some() {
                 let mut p = 0_i128;
                 if let Some(ref cls_vec) = classes {
                     for (sc, config) in cls_vec.iter() {
-                        let holder_share = env.storage().persistent().get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone())).unwrap_or(0);
+                        let holder_share = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey2::HolderShareClass(
+                                offering_id.clone(),
+                                holder.clone(),
+                                sc.clone(),
+                            ))
+                            .unwrap_or(0);
                         if holder_share > 0 {
-                            let class_rev = Self::compute_share(env.clone(), normalized, config.bps, RoundingMode::Truncation);
-                            let holder_payout = Self::compute_share(env.clone(), class_rev, holder_share, RoundingMode::Truncation);
+                            let class_rev = Self::compute_share(
+                                env.clone(),
+                                normalized,
+                                config.bps,
+                                RoundingMode::Truncation,
+                            );
+                            let holder_payout = Self::compute_share(
+                                env.clone(),
+                                class_rev,
+                                holder_share,
+                                RoundingMode::Truncation,
+                            );
                             p = p.saturating_add(holder_payout);
                         }
                     }
                 }
                 p
             } else {
-                Self::compute_share(
-                    env.clone(),
-                    normalized,
-                    share_bps,
-                    RoundingMode::Truncation,
-                )
+                Self::compute_share(env.clone(), normalized, share_bps, RoundingMode::Truncation)
             };
             total = total.saturating_add(payout);
             processed = processed.saturating_add(1);
@@ -6415,7 +6528,8 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
         let classes_key = DataKey2::OfferingClasses(offering_id.clone());
-        let classes: Option<Vec<(ShareClass, ClassConfig)>> = env.storage().persistent().get(&classes_key);
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
         let mode = Self::get_rounding_mode(env.clone(), issuer, namespace, token.clone());
         let mut total: i128 = 0;
         let mut payouts = Vec::new(&env);
@@ -6428,17 +6542,27 @@ impl RevoraRevenueShare {
                     let mut p = 0_i128;
                     if let Some(ref cls_vec) = classes {
                         for (sc, config) in cls_vec.iter() {
-                            let holder_share = env.storage().persistent().get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone())).unwrap_or(0);
+                            let holder_share = env
+                                .storage()
+                                .persistent()
+                                .get(&DataKey2::HolderShareClass(
+                                    offering_id.clone(),
+                                    holder.clone(),
+                                    sc.clone(),
+                                ))
+                                .unwrap_or(0);
                             if holder_share > 0 {
-                                let class_rev = Self::compute_share(env.clone(), amount, config.bps, mode.clone());
-                                let holder_payout = Self::compute_share(env.clone(), class_rev, holder_share, mode.clone());
+                                let class_rev =
+                                    Self::compute_share(env.clone(), amount, config.bps, mode);
+                                let holder_payout =
+                                    Self::compute_share(env.clone(), class_rev, holder_share, mode);
                                 p = p.saturating_add(holder_payout);
                             }
                         }
                     }
                     p
                 } else {
-                    Self::compute_share(env.clone(), amount, share_bps, mode.clone())
+                    Self::compute_share(env.clone(), amount, share_bps, mode)
                 }
             };
             total = total.saturating_add(payout);
@@ -6993,7 +7117,7 @@ mod issue_370_373_tests {
         let mut tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0);
+            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0, &None);
             tokens.push_back(token);
         }
 
@@ -7064,13 +7188,37 @@ mod issue_370_373_tests {
 
         let new_token_0 = Address::generate(&env);
         let new_token_1 = Address::generate(&env);
-        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0);
-        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0);
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_0,
+            &1_100,
+            &new_token_0,
+            &0,
+            &None,
+        );
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_1,
+            &1_200,
+            &new_token_1,
+            &0,
+            &None,
+        );
 
         let mut old_tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0);
+            client.register_offering(
+                &old_issuer,
+                &namespace,
+                &token,
+                &(2_000 + i),
+                &token,
+                &0,
+                &None,
+            );
             old_tokens.push_back(token);
         }
 
@@ -7174,7 +7322,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &0
+                &0,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7227,7 +7376,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &1
+                &1,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7256,7 +7406,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &cap
+                &cap,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7284,7 +7435,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &-1_i128
+                &-1_i128,
+                &None
             ),
             Err(Ok(RevoraError::InvalidAmount))
         );
@@ -7303,7 +7455,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &cap
+                &cap,
+                &None
             ),
             Ok(Ok(()))
         );

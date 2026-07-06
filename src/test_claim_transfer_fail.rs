@@ -181,13 +181,16 @@ fn pending_periods(
     holder: &Address,
 ) -> soroban_sdk::Vec<u64> {
     env.as_contract(revora_id, || {
-        RevoraRevenueShare::get_pending_periods(
+        RevoraRevenueShare::get_pending_periods_page(
             env.clone(),
             issuer.clone(),
             symbol_short!("def"),
             offering_token.clone(),
             holder.clone(),
+            0,
+            50,
         )
+        .0
     })
 }
 
@@ -226,7 +229,8 @@ fn setup_claim_fail() -> (
         &10_000,
         &fail_token_id,
         &0,
-    , &None);
+        &None,
+    );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
     // Mint to issuer and deposit — transfer direction is issuer→contract, not yet failing
@@ -449,7 +453,8 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &10_000,
         &payment_token_b.address(),
         &0,
-    , &None);
+        &None,
+    );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
     revora.deposit_revenue(
         &issuer,

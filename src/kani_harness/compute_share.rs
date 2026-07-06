@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)]
 //! Kani bounded verification for `compute_share` rounding invariants (Issue #465).
 //!
 //! ## Verified domain
@@ -25,8 +26,6 @@
 //! `i128::MIN * 10_000` overflows `i128` on the naive multiply path. The production
 //! implementation uses quotient/remainder decomposition instead. See
 //! `naive_product_or_panic` and `test_compute_share_invariants::i128_min_naive_multiply_documented_panic`.
-
-#![cfg_attr(not(kani), allow(dead_code))]
 
 /// Basis-point denominator used by `compute_share`.
 pub const BPS_DENOM: i128 = 10_000;

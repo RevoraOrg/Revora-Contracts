@@ -71,7 +71,7 @@ fn setup_with_offering(
         &10_000,
         &payment_token.address(),
         &0,
-    , &None);
+    &None);
     client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
     // Mint to issuer and deposit period 1

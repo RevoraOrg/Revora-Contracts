@@ -564,7 +564,7 @@ fn register_offering_missing_auth_no_mutation() {
         &1_000,
         &token,
         &0,
-    , &None);
+    &None);
     assert!(result.is_err());
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
     assert_eq!(
@@ -824,7 +824,7 @@ fn register_offering_blocked_when_frozen() {
         &1_000,
         &token,
         &0,
-    , &None);
+    &None);
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
 }
 
@@ -973,7 +973,7 @@ fn register_offering_invalid_bps_returns_typed_error() {
         &10_001u32,
         &token,
         &0,
-    , &None);
+    &None);
     assert_eq!(result, Err(Ok(RevoraError::InvalidRevenueShareBps)));
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
 }

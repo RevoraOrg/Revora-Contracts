@@ -997,7 +997,7 @@ fn register_offering_rejects_bps_over_10000() {
         &10_001,
         &payout_asset,
         &0,
-    , &None);
+    &None);
     assert!(
         result.is_err(),
         "contract must return Err(RevoraError::InvalidRevenueShareBps) for bps > 10000"
@@ -1021,7 +1021,7 @@ fn register_offering_accepts_bps_exactly_10000() {
         &10_000,
         &payout_asset,
         &0,
-    , &None);
+    &None);
     assert!(result.is_ok());
 }
 
@@ -2130,7 +2130,7 @@ fn register_offering_does_not_lock_payment_token_before_first_deposit() {
         &5_000,
         &payout_asset,
         &0,
-    , &None);
+    &None);
 
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &offering_token), None);
 }
@@ -2162,7 +2162,7 @@ fn failed_invalid_first_deposit_does_not_lock_payment_token() {
         &5_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -2272,7 +2272,7 @@ fn first_deposit_uses_registered_payment_token_lock() {
         &5_000,
         &configured_asset,
         &0,
-    , &None);
+    &None);
     mint_tokens(&env, &configured_asset, &configured_admin, &issuer, &1_000_000);
 
     client.deposit_revenue(
@@ -2307,7 +2307,7 @@ fn failed_first_deposit_does_not_lock_payment_token_or_consume_period() {
         &5_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
 
     let failed = client.try_deposit_revenue(
         &issuer,
@@ -2440,7 +2440,7 @@ fn deposit_revenue_rejects_wrong_token_on_first_deposit() {
         &5_000,
         &configured_token,
         &0,
-    , &None);
+    &None);
     mint_tokens(&env, &wrong_token, &wrong_admin, &issuer, &1_000_000);
 
     // First deposit with wrong token must be rejected
@@ -5367,7 +5367,7 @@ fn frozen_blocks_register_offering(, &None) {
         &1_000,
         &payout_asset,
         &0,
-    , &None);
+    &None);
     assert!(r.is_err());
 }
 
@@ -5912,7 +5912,7 @@ fn testnet_mode_allows_bps_over_10000() {
         &15_000,
         &payout_asset,
         &0,
-    , &None);
+    &None);
     assert!(result.is_ok());
 
     // Verify offering was registered
@@ -5937,7 +5937,7 @@ fn testnet_mode_disabled_rejects_bps_over_10000() {
         &15_000,
         &payout_asset,
         &0,
-    , &None);
+    &None);
     assert!(result.is_err());
 }
 
@@ -6103,7 +6103,7 @@ fn testnet_mode_toggle_after_offerings_exist() {
         &20_000,
         &payout_asset2,
         &0,
-    , &None);
+    &None);
     assert!(result.is_ok());
 
     // Verify both offerings exist
@@ -8224,7 +8224,7 @@ fn testnet_mode_pagination_unaffected() {
             &(1_000 + i * 100),
             &payout_asset,
             &0,
-        , &None);
+        &None);
     }
 
     // Pagination should work normally
@@ -10322,7 +10322,7 @@ mod regression {
             &1_000,
             &payout_asset,
             &0,
-        , &None);
+        &None);
         (client, admin, token, payout_asset)
     }
 
@@ -11076,7 +11076,7 @@ mod regression {
             &300,
             &payout,
             &0,
-        , &None);
+        &None);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
@@ -11106,7 +11106,7 @@ mod regression {
             &300,
             &payout,
             &0,
-        , &None);
+        &None);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 

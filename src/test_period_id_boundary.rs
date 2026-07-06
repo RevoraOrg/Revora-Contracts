@@ -66,7 +66,7 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
         &1_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
     mint(&env, &payment_token, &issuer, 1_000_000_000);
     (env, client, issuer, offering_token, payment_token)
 }
@@ -495,7 +495,7 @@ fn period_id_isolated_across_offerings() {
         &1_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
     client.register_offering(
         &issuer_b,
         &symbol_short!("def"),
@@ -503,7 +503,7 @@ fn period_id_isolated_across_offerings() {
         &1_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
 
     mint(&env, &payment_token, &issuer_a, 1_000_000);
     mint(&env, &payment_token, &issuer_b, 1_000_000);
@@ -592,7 +592,7 @@ fn frozen_contract_rejects_deposit_revenue() {
         &1_000,
         &payment_token,
         &0,
-    , &None);
+    &None);
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.freeze();
 
