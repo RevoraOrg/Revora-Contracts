@@ -438,11 +438,13 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (env, revora_id, revora, _fail_token_id, _fail_token, issuer, offering_token_a, holder) =
         setup_claim_fail();
 
-    // Register a second offering with a normal Stellar asset token
+    // Register a second offering with a fresh non-failing token
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
 
-    let payout_b = Address::generate(&env);
+    // Deploy a separate FailingTransferToken instance (no fail_from set = always succeeds)
+    let (payout_b, token_b_client) = deploy_failing_token(&env);
+    token_b_client.mint(&issuer, &200_000);
     revora.register_offering(
         &issuer,
         &symbol_short!("def"),
