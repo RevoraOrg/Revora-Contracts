@@ -72,12 +72,14 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &5_000,
         &payout_asset,
         &0,
-    );
+    &None);
 
     // Enable snapshot distribution for this offering.
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
@@ -343,7 +345,7 @@ fn snapshot_replay_is_isolated_per_offering() {
     // Register a second offering (different token, same issuer/namespace).
     let token_b = Address::generate(&env);
     let payout_b = Address::generate(&env);
-    client.register_offering(&issuer, &ns, &token_b, &5_000, &payout_b, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &5_000, &payout_b, &0);
     client.set_snapshot_config(&issuer, &ns, &token_b, &true);
 
     // Advance offering A to ref 100.

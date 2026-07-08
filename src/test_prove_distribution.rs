@@ -37,12 +37,14 @@ fn prove_distribution_normal_case() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -102,12 +104,14 @@ fn prove_distribution_digest_is_deterministic() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -146,10 +150,10 @@ fn prove_distribution_digest_is_deterministic() {
     assert_eq!(digest1, digest2);
 }
 
-// ── Ordering matters: swapped holders produce different digest ────────────────
+// ── Sorting makes input order irrelevant: swapped holders → same digest ───────
 
 #[test]
-fn prove_distribution_ordering_affects_digest() {
+fn prove_distribution_sorting_makes_order_invariant() {
     let (env, client) = make_client();
 
     let issuer = Address::generate(&env);
@@ -158,15 +162,18 @@ fn prove_distribution_ordering_affects_digest() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
+    // Different BPS so they have a clear sort order regardless of address bytes.
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32);
 
@@ -188,14 +195,14 @@ fn prove_distribution_ordering_affects_digest() {
     holders_ba.push_back(holder_b.clone());
     holders_ba.push_back(holder_a.clone());
 
-    let (_, digest_ab) = client.prove_distribution_for_period(
+    let (entries_ab, digest_ab) = client.prove_distribution_for_period(
         &issuer,
         &symbol_short!("def"),
         &token,
         &1u64,
         &holders_ab,
     );
-    let (_, digest_ba) = client.prove_distribution_for_period(
+    let (entries_ba, digest_ba) = client.prove_distribution_for_period(
         &issuer,
         &symbol_short!("def"),
         &token,
@@ -203,13 +210,16 @@ fn prove_distribution_ordering_affects_digest() {
         &holders_ba,
     );
 
-    assert_ne!(digest_ab, digest_ba);
+    // Deterministic sort: both orderings must produce the same canonical sequence.
+    assert_eq!(digest_ab, digest_ba);
+    assert_eq!(entries_ab.get(0).unwrap().holder, entries_ba.get(0).unwrap().holder);
+    assert_eq!(entries_ab.get(1).unwrap().holder, entries_ba.get(1).unwrap().holder);
 }
 
-// ── Empty holders ─────────────────────────────────────────────────────────────
+// ── Identical BPS: tie-break by address bytes ascending ───────────────────────
 
 #[test]
-fn prove_distribution_empty_holders() {
+fn prove_distribution_identical_bps_tie_break_by_address() {
     let (env, client) = make_client();
 
     let issuer = Address::generate(&env);
@@ -224,6 +234,84 @@ fn prove_distribution_empty_holders() {
         &payment_token,
         &0i128,
     );
+
+    // Generate addresses until we have two with the same BPS; the tie-break must be
+    // by XDR address bytes ascending regardless of generation order.
+    let holder_x = Address::generate(&env);
+    let holder_y = Address::generate(&env);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_x, &5_000u32);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_y, &5_000u32);
+
+    mint(&env, &payment_token, &issuer, 10_000_000);
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payment_token,
+        &10_000_000i128,
+        &1u64,
+    );
+
+    // Input order: [y, x].
+    let mut holders_yx = Vec::new(&env);
+    holders_yx.push_back(holder_y.clone());
+    holders_yx.push_back(holder_x.clone());
+
+    // Input order: [x, y].
+    let mut holders_xy = Vec::new(&env);
+    holders_xy.push_back(holder_x.clone());
+    holders_xy.push_back(holder_y.clone());
+
+    let (entries_yx, digest_yx) = client.prove_distribution_for_period(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1u64,
+        &holders_yx,
+    );
+    let (entries_xy, digest_xy) = client.prove_distribution_for_period(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1u64,
+        &holders_xy,
+    );
+
+    // Regardless of input order, digest must be identical.
+    assert_eq!(digest_yx, digest_xy);
+
+    // Both must agree on which address comes first (smaller XDR bytes ascending).
+    let first_yx = entries_yx.get(0).unwrap().holder;
+    let first_xy = entries_xy.get(0).unwrap().holder;
+    assert_eq!(first_yx, first_xy);
+    let second_yx = entries_yx.get(1).unwrap().holder;
+    let second_xy = entries_xy.get(1).unwrap().holder;
+    assert_eq!(second_yx, second_xy);
+
+    // The first entry must differ from the second (not both the same address).
+    assert_ne!(first_yx, second_yx);
+}
+
+// ── Empty holders ─────────────────────────────────────────────────────────────
+
+#[test]
+fn prove_distribution_empty_holders() {
+    let (env, client) = make_client();
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payment_token = create_payment_token(&env);
+
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000u32,
+        &payment_token,
+        &0i128,
+    &None);
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -261,12 +349,14 @@ fn prove_distribution_unknown_period_id_returns_zero_payouts() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder_a = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32);
@@ -311,12 +401,14 @@ fn prove_distribution_zero_share_bps_yields_zero_payout() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -360,12 +452,14 @@ fn prove_distribution_usdc_6_decimals_normalizes_correctly() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     // Configure 6-decimal payment token (USDC-style)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6u32);
@@ -415,12 +509,14 @@ fn prove_distribution_respects_round_half_up_mode() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
     client.set_rounding_mode(&issuer, &symbol_short!("def"), &token, &RoundingMode::RoundHalfUp);
 
     let holder = Address::generate(&env);
@@ -458,12 +554,14 @@ fn prove_distribution_caps_at_max_chunk_periods() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.deposit_revenue(
@@ -505,12 +603,14 @@ fn prove_distribution_entry_fields_match() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000u32);
@@ -555,12 +655,14 @@ fn prove_distribution_different_periods_produce_different_digests() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000u32,
         &payment_token,
         &0i128,
-    );
+    &None);
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32);

@@ -47,9 +47,14 @@
 //! holds for all i128 extremes.
 
 #![cfg(test)]
+extern crate std;
 
+extern crate alloc;
+
+use alloc::format;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use alloc::format;
+use soroban_sdk::Env;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +118,7 @@ fn truncation_table_driven() {
             result, expected,
             "Truncation: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("Truncation amount={amount} bps={bps}"));
+        assert_bounds(result, amount, "Truncation");
     }
 }
 
@@ -156,7 +161,7 @@ fn round_half_up_table_driven() {
             result, expected,
             "RoundHalfUp: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+        assert_bounds(result, amount, "RoundHalfUp");
     }
 }
 
@@ -593,8 +598,8 @@ fn remainder_product_bound_holds_for_all_bps() {
             let result_round = c.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
 
             // Verify bounds invariant
-            assert_bounds(result_trunc, amount, &format!("Truncation amount={amount} bps={bps}"));
-            assert_bounds(result_round, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+            assert_bounds(result_trunc, amount, "Truncation");
+            assert_bounds(result_round, amount, "RoundHalfUp");
 
             // Verify that the result is consistent with the decomposition formula
             // amount = q * 10_000 + r, share = q * bps + (r * bps) / 10_000
@@ -623,10 +628,10 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
     let extreme_amounts = [i128::MAX, i128::MIN, i128::MAX - 1, i128::MIN + 1];
 
     for &amount in &extreme_amounts {
-        for &bps in [1_u32, 5_000, 10_000] {
+        for &bps in &[1_u32, 5_000, 10_000] {
             let result = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
             // Should never panic and should always satisfy bounds
-            assert_bounds(result, amount, &format!("Extreme amount={amount} bps={bps}"));
+            assert_bounds(result, amount, "Extreme amount");
         }
     }
 }

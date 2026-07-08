@@ -235,7 +235,7 @@ pub fn migrate_offering_schedules(
         .persistent()
         .get(&VestingKey::OfferingScheduleCount(new_offering_id.clone()))
         .unwrap_or(0);
-    let mut migrated: Vec<Address> = Vec::new(&env);
+    let mut migrated: Vec<Address> = Vec::new(env);
 
     // First pass: validate that no schedule is pre-cliff.
     for beneficiary in beneficiaries.iter() {

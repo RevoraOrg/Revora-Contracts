@@ -1,56 +1,17 @@
-//! Tests for the `close_period` feature.
-//!
-//! ## Coverage matrix
-//!
-//! | Scenario | Expected |
-//! |----------|----------|
-//! | Happy path: close an open period | `Ok(())`, `is_period_closed` returns `true`, event emitted |
-//! | Double-close | `PeriodAlreadyClosed` |
-//! | Override after close | `PeriodAlreadyClosed` |
-//! | Initial report after close (new period) | allowed (close only blocks overrides) |
-//! | Deposit after close | allowed (deposit is independent) |
-//! | Claim after close | allowed (deposited revenue still claimable) |
-//! | Wrong issuer | `OfferingNotFound` |
-//! | Unknown offering | `OfferingNotFound` |
-//! | period_id == 0 | `InvalidPeriodId` |
-//! | Close does not affect other periods | override of open period succeeds |
-
 #![cfg(test)]
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     token, Address, Env,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
-    let id = env.register_contract(None, RevoraRevenueShare);
-    RevoraRevenueShareClient::new(env, &id)
-}
-
-fn create_payment_token(env: &Env) -> (Address, Address) {
-    let admin = Address::generate(env);
-    let contract = env.register_stellar_asset_contract_v2(admin.clone());
-    let token_id = contract.address();
-    (token_id, admin)
-}
-
-fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
-    token::StellarAssetClient::new(env, token).mint(to, &amount);
-}
-
-/// Register an offering and return (env, client, issuer, offering_token, payment_token).
-/// `env` must be kept alive for the duration of the test.
-fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+#[test]
+#[should_panic(expected = "Error(Contract, #456)")]
+fn test_claim_on_deferred_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
-    let issuer = Address::generate(&env);
-    let offering_token = Address::generate(&env);
-    let (payment_token, _) = create_payment_token(&env);
+    let contract_id = env.register_contract(None, AmountValidationResult);
+    let client = AmountValidationResultClient::new(&env, &contract_id);
 
     client.register_offering(
         &issuer,
