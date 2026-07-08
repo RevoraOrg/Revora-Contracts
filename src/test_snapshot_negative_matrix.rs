@@ -72,7 +72,7 @@ fn setup_snapshot_test() -> (Env, RevoraRevenueShareClient<'static>, Address, Ad
     let payout_asset = Address::generate(&env);
 
     // Register offering with payout_asset
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
 
     (env, client, issuer, token, payout_asset, contract_id)
 }

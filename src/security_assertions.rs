@@ -24,6 +24,8 @@
 use core::fmt::Debug;
 
 use crate::RevoraError;
+#![deny(clippy::arithmetic_side_effects)]
+
 use soroban_sdk::{Address, Env};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -489,10 +491,7 @@ pub mod safe_math {
     /// - `Ok(result)` if b != 0
     /// - `Err(LimitReached)` if b == 0
     pub fn safe_div(a: i128, b: i128) -> Result<i128, RevoraError> {
-        if b == 0 {
-            return Err(RevoraError::LimitReached);
-        }
-        Ok(a / b)
+        a.checked_div(b).ok_or(RevoraError::LimitReached)
     }
 
     /// Safely add with saturation (clamps to min/max instead of erroring).
@@ -518,7 +517,7 @@ pub mod safe_math {
     pub fn safe_compute_share(amount: i128, bps: u32) -> Result<i128, RevoraError> {
         let bps_i128 = bps as i128;
         let raw = amount.checked_mul(bps_i128).ok_or(RevoraError::LimitReached)?;
-        Ok(raw / 10_000)
+        raw.checked_div(10_000).ok_or(RevoraError::LimitReached)
     }
 }
 
