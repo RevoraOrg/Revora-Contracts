@@ -20,8 +20,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    token,
-    Address, Env,
+    token, Address, Env,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -60,6 +59,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &10_000,
         &payment_token,
         &0,
+        &None,
     );
 
     (env, client, issuer, offering_token, payment_token)
@@ -134,8 +134,7 @@ fn override_after_close_returns_period_already_closed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // Attempt override — must be rejected.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -149,9 +148,11 @@ fn initial_report_for_new_period_after_close_is_allowed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // A brand-new period 2 (initial report, not an override) must still be accepted.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
-    assert!(result.is_ok(), "initial report for a new period should succeed after closing period 1");
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
+    assert!(
+        result.is_ok(),
+        "initial report for a new period should succeed after closing period 1"
+    );
 }
 
 #[test]
@@ -206,8 +207,7 @@ fn close_period_does_not_affect_other_periods() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &2));
 
     // Override of period 2 must still succeed.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
     assert!(result.is_ok(), "override of an open period must succeed");
 }
 
@@ -222,4 +222,126 @@ fn close_period_wrong_issuer_returns_not_found() {
     let attacker = Address::generate(&env);
     let result = client.try_close_period(&attacker, &ns, &token, &1);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+use soroban_sdk::{xdr::ToXdr, Bytes, BytesN};
+
+fn compute_snapshot_content_hash(env: &Env, holders: &[(Address, u32)]) -> BytesN<32> {
+    let mut digest_input = Bytes::new(env);
+    for (index, (holder, share_bps)) in holders.iter().enumerate() {
+        digest_input.append(&((index as u32).to_xdr(env)));
+        digest_input.append(&holder.to_xdr(env));
+        digest_input.append(&share_bps.to_xdr(env));
+    }
+    env.crypto().sha256(&digest_input).to_bytes()
+}
+
+#[test]
+fn atomic_close_period_happy_path() {
+    let (env, client, issuer, token, payment) = setup_offering();
+    let ns = symbol_short!("ns");
+    let contract_id = client.address.clone();
+
+    client.set_snapshot_config(&issuer, &ns, &token, &true);
+
+    let holder = Address::generate(&env);
+    let holders = soroban_sdk::vec![&env, (holder.clone(), 5_000u32)];
+    let content_hash = compute_snapshot_content_hash(&env, &[(holder.clone(), 5_000)]);
+
+    client.commit_snapshot(&issuer, &ns, &token, &1, &content_hash);
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders);
+
+    client.report_revenue(&issuer, &ns, &token, &payment, &1_000, &1, &false);
+
+    let res = client.try_atomic_close_period(&issuer, &ns, &token, &1);
+    assert!(res.is_ok(), "atomic_close_period should succeed");
+
+    assert!(client.is_period_closed(&issuer, &ns, &token, &1));
+
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
+    let finalized = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::SnapshotFinalized(offering_id, 1))
+            .unwrap_or(false)
+    });
+    assert!(finalized, "snapshot should be finalized");
+}
+
+#[test]
+fn atomic_close_period_fails_no_report() {
+    let (env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+    let contract_id = client.address.clone();
+
+    client.set_snapshot_config(&issuer, &ns, &token, &true);
+
+    let holder = Address::generate(&env);
+    let holders = soroban_sdk::vec![&env, (holder.clone(), 5_000u32)];
+    let content_hash = compute_snapshot_content_hash(&env, &[(holder.clone(), 5_000)]);
+
+    client.commit_snapshot(&issuer, &ns, &token, &1, &content_hash);
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders);
+
+    let res = client.try_atomic_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(res, Err(Ok(RevoraError::MissingReportForOverride)));
+
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
+    let finalized = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::SnapshotFinalized(offering_id, 1))
+            .unwrap_or(false)
+    });
+    assert!(!finalized, "snapshot should not be finalized (rolled back)");
+}
+
+#[test]
+fn atomic_close_period_fails_hash_mismatch() {
+    let (env, client, issuer, token, payment) = setup_offering();
+    let ns = symbol_short!("ns");
+    let contract_id = client.address.clone();
+
+    client.set_snapshot_config(&issuer, &ns, &token, &true);
+
+    let holder = Address::generate(&env);
+    let holders = soroban_sdk::vec![&env, (holder.clone(), 5_000u32)];
+    let content_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.commit_snapshot(&issuer, &ns, &token, &1, &content_hash);
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders);
+
+    client.report_revenue(&issuer, &ns, &token, &payment, &1_000, &1, &false);
+
+    let res = client.try_atomic_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(res, Err(Ok(RevoraError::SnapshotHashMismatch)));
+
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
+    let finalized = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::SnapshotFinalized(offering_id, 1))
+            .unwrap_or(false)
+    });
+    assert!(!finalized, "snapshot should not be finalized (rolled back)");
+}
+
+#[test]
+fn atomic_close_period_fails_snapshot_disabled() {
+    let (_env, client, issuer, token, payment) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    client.report_revenue(&issuer, &ns, &token, &payment, &1_000, &1, &false);
+
+    let res = client.try_atomic_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(res, Err(Ok(RevoraError::SnapshotNotEnabled)));
+
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
 }

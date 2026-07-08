@@ -101,6 +101,32 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `iss_acc` | `(token), (old_issuer, new_issuer)` | When `accept_issuer_transfer` completes the transfer. |
 | `iss_canc` | `(token), (current_issuer, proposed_new_issuer)` | When `cancel_issuer_transfer` revokes a pending transfer. |
 | `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
+| `ev_idx2` (V2) | `(version, event_type, issuer, namespace, token, period_id), (event_data...)` | Indexed V2 event — emitted by all state-changing entries for off-chain indexers. |
+| `ev_idx3` (V3) | `(version, event_type, issuer, namespace, token, period_id, _reserved), (event_data...)` | Indexed V3 event — dual-emitted alongside V2. Additive fields land here in future minor versions. |
+
+#### Indexed Event Versioning
+
+The contract maintains two concurrent indexed event topics: `ev_idx2` (V2) and `ev_idx3` (V3). Both are emitted
+by all state-changing entries via the `emit_v2_and_v3` helper. V2 subscribers continue to receive V2 events
+unchanged at the `ev_idx2` topic. V3 subscribers consume the `ev_idx3` topic which carries version=3 and a
+`_reserved` field for additive schema evolution.
+
+**Migration table: V2 → V3**
+
+| Field | V2 (`EventIndexTopicV2`) | V3 (`EventIndexTopicV3`) | Notes |
+|-------|--------------------------|--------------------------|-------|
+| `version` | `2` | `3` | Schema version discriminator |
+| `event_type` | `Symbol` | `Symbol` | Unchanged |
+| `issuer` | `Address` | `Address` | Unchanged |
+| `namespace` | `Symbol` | `Symbol` | Unchanged |
+| `token` | `Address` | `Address` | Unchanged |
+| `period_id` | `u64` | `u64` | Unchanged; 0 when not period-scoped |
+| `_reserved` | — | `u32` | **New in V3.** Reserved for future additive fields (e.g. `share_class`, `tax_bucket`). Always `0` in current version. |
+
+**Deprecation policy:** `ev_idx2` will continue to be emitted for at least two contract minor versions
+after the introduction of `ev_idx3`. V2-only subscribers are safe during this deprecation window.
+After the deprecation window, V2 emission may be removed. V3 subscribers should validate the `version`
+field and ignore events where `version != 3`.
 
 ### Call patterns and limits
 
