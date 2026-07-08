@@ -17,13 +17,13 @@
 /// ```ignore
 /// proptest! {
 ///     #[test]
-///     fn fuzz_register_offering(bps in arb_valid_bps()) {
+///     fn fuzz_register_offering(bps in arb_valid_bps(), &None) {
 ///         let env = Env::default();
 ///         env.mock_all_auths();
 ///         let client = make_client(&env);
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
-///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0);
+///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &None);
 ///     }
 /// }
 /// ```
@@ -131,7 +131,7 @@ pub fn arb_strictly_increasing_periods(len: usize) -> impl Strategy<Value = Vec<
 /// pre-generated address pool so strategies remain `Send + Sync`.
 #[derive(Debug, Clone)]
 pub enum TestOperation {
-    /// `register_offering(issuer, namespace, token, bps, payout_asset, supply_cap)`
+    /// `register_offering(issuer, namespace, token, bps, payout_asset, supply_cap, &None)`
     RegisterOffering { issuer: Address, namespace: Symbol, token: Address, bps: u32, payout_asset: Address, supply_cap: i128 },
     /// `report_revenue(issuer, namespace, token, payout_asset, amount, period_id, override_existing)`
     ReportRevenue { issuer: Address, namespace: Symbol, token: Address, payout_asset: Address, amount: i128, period_id: u64, override_existing: bool },
@@ -158,7 +158,7 @@ pub enum TestOperation {
 // ── Operation strategies ─────────────────────────────────────────────────────
 
 /// Strategy for a single valid `RegisterOffering` operation.
-pub fn arb_register_offering() -> impl Strategy<Value = TestOperation> {
+pub fn arb_register_offering(, &None) -> impl Strategy<Value = TestOperation> {
     (arb_valid_bps(), 0i128..=1_000_000_000i128)
         .prop_map(|(bps, supply_cap)| TestOperation::RegisterOffering { bps, supply_cap })
 }
@@ -206,7 +206,7 @@ pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
 /// Strategy for any single valid operation (uniform distribution across all variants).
 pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
     prop_oneof![
-        arb_register_offering(),
+        arb_register_offering(, &None),
         arb_report_revenue(),
         arb_deposit_revenue(),
         arb_set_holder_share(),

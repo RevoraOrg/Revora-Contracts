@@ -85,7 +85,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
         &5_000,
         &payment_token,
         &0,
-    );
+    &None);
 
     (env, client, contract_id, issuer, offering_token, payment_token, pt_admin)
 }
@@ -427,7 +427,7 @@ fn transfer_fail_in_one_offering_does_not_affect_sibling_offering() {
         &5_000,
         &payment_token_b,
         &0,
-    );
+    &None);
 
     // Fund only offering B
     mint(&env, &payment_token_b, &issuer, 100_000);
