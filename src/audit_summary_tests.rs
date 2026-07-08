@@ -21,7 +21,7 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
     let payout_asset = Address::generate(&env);
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &None);
 
     (env, contract_id, issuer, token, payout_asset)
 }

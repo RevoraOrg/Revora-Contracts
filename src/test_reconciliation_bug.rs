@@ -48,7 +48,7 @@ fn setup_offering_with_payment_token(
     let (payment_token, _pt_admin) = create_payment_token(&env);
 
     // Register offering (5000 bps = 50% revenue share)
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &None);
 
     // Mint payment tokens to the issuer so they can deposit
     mint_tokens(&env, &payment_token, &issuer, 10_000_000);

@@ -20,7 +20,7 @@ fn decimals_bounds_and_default() {
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    client.register_offering(&issuer, &ns, &token, &0u32, &token, &0i128);
+    client.register_offering(&issuer, &ns, &token, &0u32, &token, &0i128, &None);
 
     assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &0u32).is_ok());
     assert_eq!(client.get_payment_token_decimals(&issuer, &ns, &token), 0u32);

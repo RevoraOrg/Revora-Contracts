@@ -80,7 +80,7 @@ fn frozen_setup(
     let issuer = admin.clone();
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
-    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128);
+    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &None);
 
     // Freeze the contract — all subsequent mutating calls must return ContractFrozen.
     client.freeze();
@@ -102,7 +102,7 @@ fn frozen_register_offering_returns_contract_frozen() {
         &500u32,
         &payout_asset,
         &0i128,
-    );
+    &None);
     assert_frozen_err(result);
     // Verify no partial write: offering must not exist.
     assert!(client.get_offering(&issuer, &symbol_short!("ns2"), &new_token).is_none());
@@ -482,7 +482,7 @@ fn frozen_claim_is_not_blocked() {
     let issuer = admin.clone();
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128);
+    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &None);
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32);
