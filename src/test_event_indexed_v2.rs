@@ -37,7 +37,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &None);
     (env, client, issuer, ns, token, payout)
 }
 
@@ -75,7 +75,7 @@ fn event_indexed_v2_rv_init_topic_and_data_shape() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_init"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_init"), before)
         .expect("rv_init EVENT_INDEXED_V2 must be emitted on initial report");
 
     // Topic shape
@@ -103,7 +103,7 @@ fn event_indexed_v2_rv_rej_topic_and_data_shape() {
     // Same period_id + override_existing=false → rv_rej
     client.report_revenue(&issuer, &ns, &token, &payout, &20_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rej"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rej"), before)
         .expect("rv_rej EVENT_INDEXED_V2 must be emitted on duplicate report");
 
     assert_eq!(topic.version, 2);
@@ -131,7 +131,7 @@ fn event_indexed_v2_rv_ovr_topic_and_data_shape() {
     // override_existing=true → rv_ovr
     client.report_revenue(&issuer, &ns, &token, &payout, &15_000, &1, &true);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_ovr"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_ovr"), before)
         .expect("rv_ovr EVENT_INDEXED_V2 must be emitted on override");
 
     assert_eq!(topic.version, 2);
@@ -157,7 +157,7 @@ fn event_indexed_v2_rv_rep_topic_and_data_shape() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before)
         .expect("rv_rep EVENT_INDEXED_V2 must be emitted unconditionally");
 
     assert_eq!(topic.version, 2);
@@ -182,7 +182,7 @@ fn event_indexed_v2_rv_rep_actual_override_true_on_correction() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &15_000, &1, &true);
 
-    let (_, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before as u32).unwrap();
+    let (_, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before).unwrap();
     let (_, _, actual_override): (i128, Address, bool) = data.into_val(&env);
     assert!(actual_override);
 }
@@ -201,11 +201,11 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
-    let payout = env.register_stellar_asset_contract(admin.clone());
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &None);
 
     let holder = Address::generate(&env);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -213,7 +213,7 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("claim"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("claim"), before)
         .expect("claim EVENT_INDEXED_V2 must be emitted");
 
     assert_eq!(topic.version, 2);
@@ -239,11 +239,11 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
-    let payout = env.register_stellar_asset_contract(admin.clone());
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &None);
 
     let holder = Address::generate(&env);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -252,7 +252,7 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
-    let (topic, _) = find_indexed_v2(&env, symbol_short!("claim"), before as u32).unwrap();
+    let (topic, _) = find_indexed_v2(&env, symbol_short!("claim"), before).unwrap();
     assert_eq!(topic.period_id, 0);
 }
 
@@ -273,18 +273,18 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
     let payout_a = Address::generate(&env);
     let payout_b = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token_a, &2500, &payout_a, &0);
-    client.register_offering(&issuer, &ns, &token_b, &2500, &payout_b, &0);
+    client.register_offering(&issuer, &ns, &token_a, &2500, &payout_a, &0, &None);
+    client.register_offering(&issuer, &ns, &token_b, &2500, &payout_b, &0, &None);
 
     let before_a = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_a, &payout_a, &10_000, &1, &false);
-    let (_, data_a) = find_indexed_v2(&env, symbol_short!("rv_init"), before_a as u32).unwrap();
+    let (_, data_a) = find_indexed_v2(&env, symbol_short!("rv_init"), before_a).unwrap();
     let (_, asset_a): (i128, Address) = data_a.into_val(&env);
     assert_eq!(asset_a, payout_a);
 
     let before_b = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_b, &payout_b, &20_000, &1, &false);
-    let (_, data_b) = find_indexed_v2(&env, symbol_short!("rv_init"), before_b as u32).unwrap();
+    let (_, data_b) = find_indexed_v2(&env, symbol_short!("rv_init"), before_b).unwrap();
     let (_, asset_b): (i128, Address) = data_b.into_val(&env);
     assert_eq!(asset_b, payout_b);
 }
@@ -302,7 +302,7 @@ fn event_indexed_v2_version_field_always_2() {
     let ev_idx2 = symbol_short!("ev_idx2");
     let all = env.events().all();
     let mut count = 0u32;
-    for i in before as u32..all.len() {
+    for i in before..all.len() {
         let (_, topics, _) = all.get(i).unwrap();
         if topics.len() >= 2 {
             let t0: Symbol = topics.get(0).unwrap().into_val(&env);

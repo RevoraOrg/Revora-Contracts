@@ -25,9 +25,9 @@ fn test_namespace_isolation() {
     let ns_2 = symbol_short!("ns2");
 
     // Issuer A registers in ns1
-    client.register_offering(&issuer_a, &ns_1, &token, &1000, &token, &0);
+    client.register_offering(&issuer_a, &ns_1, &token, &1000, &token, &0, &None);
     // Issuer B registers in ns2 with SAME token
-    client.register_offering(&issuer_b, &ns_2, &token, &2000, &token, &0);
+    client.register_offering(&issuer_b, &ns_2, &token, &2000, &token, &0, &None);
 
     // Set holder shares differently
     let holder = Address::generate(&env);
@@ -64,8 +64,8 @@ fn test_same_issuer_different_namespaces() {
     let ns_1 = symbol_short!("prod");
     let ns_2 = symbol_short!("stg");
 
-    client.register_offering(&issuer, &ns_1, &token, &1000, &token, &0);
-    client.register_offering(&issuer, &ns_2, &token, &2000, &token, &0);
+    client.register_offering(&issuer, &ns_1, &token, &1000, &token, &0, &None);
+    client.register_offering(&issuer, &ns_2, &token, &2000, &token, &0, &None);
 
     client.set_snapshot_config(&issuer, &ns_1, &token, &true);
     client.set_snapshot_config(&issuer, &ns_2, &token, &false);
@@ -88,8 +88,8 @@ fn test_cross_namespace_blacklist_isolation() {
     let investor = Address::generate(&env);
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns_1, &token, &1000, &token, &0);
-    client.register_offering(&issuer, &ns_2, &token, &1000, &token, &0);
+    client.register_offering(&issuer, &ns_1, &token, &1000, &token, &0, &None);
+    client.register_offering(&issuer, &ns_2, &token, &1000, &token, &0, &None);
 
     // Blacklist in NS 1
     client.blacklist_add(&issuer, &issuer, &ns_1, &token, &investor);
@@ -131,7 +131,7 @@ fn test_unauthorized_issuer_access_fails() {
     let token = Address::generate(&env);
     let ns_1 = symbol_short!("ns1");
 
-    client.register_offering(&issuer_real, &ns_1, &token, &1000, &token, &0);
+    client.register_offering(&issuer_real, &ns_1, &token, &1000, &token, &0, &None);
 
     // Attacker tries to blacklist for real issuer's offering
     // Note: mock_all_auths will allow the call to reach the contract,
@@ -165,7 +165,7 @@ fn test_transfer_maintains_namespace_isolation() {
     let token_1 = Address::generate(&env);
     let ns_1 = symbol_short!("ns1");
 
-    client.register_offering(&issuer_a, &ns_1, &token_1, &1000, &token_1, &0);
+    client.register_offering(&issuer_a, &ns_1, &token_1, &1000, &token_1, &0, &None);
     client.set_claim_delay(&issuer_a, &ns_1, &token_1, &3600);
 
     // Transfer to Issuer B
@@ -198,10 +198,10 @@ fn test_duplicate_registration_fails() {
     let ns = symbol_short!("ns1");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    client.register_offering(&issuer, &ns, &token, &1000, &token, &0, &None);
 
     // Exact same registration should fail
-    let res = client.try_register_offering(&issuer, &ns, &token, &1000, &token, &0);
+    let res = client.try_register_offering(&issuer, &ns, &token, &1000, &token, &0, &None);
     assert!(res.is_err());
 }
 
@@ -220,8 +220,8 @@ fn test_aggregation_across_namespaces() {
     let ns_2 = symbol_short!("stg");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns_1, &token1, &1000, &token1, &0);
-    client.register_offering(&issuer, &ns_2, &token2, &1000, &token2, &0);
+    client.register_offering(&issuer, &ns_1, &token1, &1000, &token1, &0, &None);
+    client.register_offering(&issuer, &ns_2, &token2, &1000, &token2, &0, &None);
 
     // Report revenue in both namespaces
     client.report_revenue(&issuer, &ns_1, &token1, &token1, &50000, &1, &false);
@@ -252,7 +252,7 @@ fn test_blacklist_precedence_over_whitelist() {
 
     // Initialize and register offering
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Add investor to whitelist first
     client.whitelist_add(&issuer, &issuer, &ns, &token, &investor);
@@ -296,7 +296,7 @@ fn test_blacklist_unaffected_by_whitelist_removal() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Add to both lists
     client.whitelist_add(&issuer, &issuer, &ns, &token, &investor);
@@ -325,7 +325,7 @@ fn test_blacklist_removal_doesnt_whitelist() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Blacklist investor
     client.blacklist_add(&issuer, &issuer, &ns, &token, &investor);
@@ -353,7 +353,7 @@ fn test_blacklist_add_idempotent() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Add to blacklist multiple times
     client.blacklist_add(&issuer, &issuer, &ns, &token, &investor);
@@ -379,7 +379,7 @@ fn test_blacklist_remove_idempotent() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Remove from empty blacklist multiple times (should not panic)
     client.blacklist_remove(&issuer, &issuer, &ns, &token, &investor);
@@ -407,7 +407,7 @@ fn test_mixed_sequence_with_share_updates() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Set initial shares
     client.set_holder_share(&issuer, &ns, &token, &holder_a, &5000);
@@ -476,7 +476,7 @@ fn test_whitelist_only_mode() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Add only one address to whitelist
     client.whitelist_add(&issuer, &issuer, &ns, &token, &whitelisted);
@@ -532,7 +532,7 @@ fn test_blacklist_only_mode() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Add only one address to blacklist
     client.blacklist_add(&issuer, &issuer, &ns, &token, &blacklisted);
@@ -587,7 +587,7 @@ fn test_complex_add_remove_sequence() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Complex sequence
     client.blacklist_add(&issuer, &issuer, &ns, &token, &investor);
@@ -636,7 +636,7 @@ fn test_multiple_investors_precedence() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // inv_a: whitelisted only
     client.whitelist_add(&issuer, &issuer, &ns, &token, &inv_a);
@@ -711,7 +711,7 @@ fn test_whitelist_disable_changes_eligibility() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // Enable whitelist
     client.whitelist_add(&issuer, &issuer, &ns, &token, &whitelisted);
@@ -771,7 +771,7 @@ fn test_no_lists_all_eligible() {
     let ns = symbol_short!("def");
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0, &None);
 
     // No blacklist or whitelist entries
     assert!(!client.is_whitelist_enabled(&issuer, &ns, &token));
