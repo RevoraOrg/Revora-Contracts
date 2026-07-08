@@ -104,7 +104,7 @@ fn frozen_register_offering_returns_contract_frozen() {
         &500u32,
         &payout_asset,
         &0i128,
-    );
+    &None);
     assert_frozen_err(result);
     // Verify no partial write: offering must not exist.
     assert!(client.get_offering(&issuer, &symbol_short!("ns2"), &new_token).is_none());

@@ -136,7 +136,7 @@ fn setup_with_holder() -> (
         &10_000, // 100% share pool
         &payment_token,
         &0,
-    );
+    &None);
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(&issuer, &symbol_short!("ns"), &offering_token, &holder, &10_000);
 

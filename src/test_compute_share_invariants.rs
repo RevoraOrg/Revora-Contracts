@@ -47,9 +47,14 @@
 //! holds for all i128 extremes.
 
 #![cfg(test)]
+extern crate std;
 
+extern crate alloc;
+
+use alloc::format;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use alloc::format;
+use soroban_sdk::Env;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +118,7 @@ fn truncation_table_driven() {
             result, expected,
             "Truncation: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("Truncation amount={amount} bps={bps}"));
+        assert_bounds(result, amount, "Truncation");
     }
 }
 
@@ -143,9 +148,9 @@ fn round_half_up_table_driven() {
         (-10_000, 5_000, -5_000),
         // 1 bps
         (10_000, 1, 1),
-        (9_999, 1, 1),  // 0.9999 rounds up to 1
-        (4_999, 1, 0),  // 0.4999 rounds down
-        (5_000, 1, 1),  // exactly 0.5 rounds up
+        (9_999, 1, 1), // 0.9999 rounds up to 1
+        (4_999, 1, 0), // 0.4999 rounds down
+        (5_000, 1, 1), // exactly 0.5 rounds up
         // Over-bps guard
         (1_000_000, 10_001, 0),
     ];
@@ -156,7 +161,7 @@ fn round_half_up_table_driven() {
             result, expected,
             "RoundHalfUp: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+        assert_bounds(result, amount, "RoundHalfUp");
     }
 }
 
@@ -318,8 +323,8 @@ fn round_half_up_gte_truncation_for_positive_amounts() {
                 r >= t,
                 "RoundHalfUp ({r}) < Truncation ({t}) for amount={amount}, bps={bps}"
             );
-            assert_bounds(t, amount, &format!("Truncation amount={amount} bps={bps}"));
-            assert_bounds(r, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+            assert_bounds(t, amount, "Truncation");
+            assert_bounds(r, amount, "RoundHalfUp");
         }
     }
 }
@@ -428,7 +433,6 @@ fn rounding_boundary_negative_half() {
     assert_eq!(c.compute_share(&-3, &5_000, &RoundingMode::RoundHalfUp), -2);
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Issue #465: i128::MIN — naive multiply must panic, decomposition must not wrap
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -436,10 +440,7 @@ fn rounding_boundary_negative_half() {
 #[test]
 fn i128_min_naive_multiply_overflow_is_detected() {
     // Naive `amount * bps` overflows for i128::MIN at full bps; must not silently wrap.
-    assert!(
-        i128::MIN.checked_mul(10_000).is_none(),
-        "i128::MIN * 10_000 must not fit in i128"
-    );
+    assert!(i128::MIN.checked_mul(10_000).is_none(), "i128::MIN * 10_000 must not fit in i128");
 }
 
 /// Naive multiply reference — panics instead of silently wrapping on overflow.
@@ -466,7 +467,6 @@ fn i128_min_full_bps_decomposition_is_exact_not_wrapped() {
     assert_bounds(result_round, i128::MIN, "i128::MIN full bps RoundHalfUp");
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Issue #373: compute_share RoundHalfUp & Extreme i128 Value Tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -478,10 +478,10 @@ fn compute_share_roundhalfup_negative_amount_edge_cases() {
 
     // Test exact half-unit with negative amounts
     // For negative amounts, "rounding away from zero" means more negative
-    
+
     // amount = -15000, bps = 5000 → exact -7500 (no rounding needed)
     assert_eq!(c.compute_share(&-15000, &5000, &RoundingMode::RoundHalfUp), -7500);
-    
+
     // amount = -15001, bps = 5000 → -7500.5 → should round to -7501 (away from zero)
     let result = c.compute_share(&-15001, &5000, &RoundingMode::RoundHalfUp);
     assert_eq!(result, -7501, "Negative half should round away from zero");
@@ -589,8 +589,8 @@ fn remainder_product_bound_holds_for_all_bps() {
         20_000,
         100_000,
         1_000_000,
-        i128::MAX / 10_000 * 10_000 + 9_999, // Max remainder
-        i128::MIN / 10_000 * 10_000 - 9_999,   // Min remainder
+        i128::MAX / 10_000 * 10_000, // Near-max, divisible by 10_000
+        i128::MIN / 10_000 * 10_000, // Near-min, divisible by 10_000
     ];
 
     let bps_values = [1_u32, 100, 1_000, 5_000, 9_999, 10_000];
@@ -601,8 +601,8 @@ fn remainder_product_bound_holds_for_all_bps() {
             let result_round = c.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
 
             // Verify bounds invariant
-            assert_bounds(result_trunc, amount, &format!("Truncation amount={amount} bps={bps}"));
-            assert_bounds(result_round, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+            assert_bounds(result_trunc, amount, "Truncation");
+            assert_bounds(result_round, amount, "RoundHalfUp");
 
             // Verify that the result is consistent with the decomposition formula
             // amount = q * 10_000 + r, share = q * bps + (r * bps) / 10_000
@@ -628,19 +628,13 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
 
     // Test with extreme values that would be problematic without checked_mul
     // The decomposition ensures |r| < 10_000, but we test the saturating fallback path
-    let extreme_amounts = [
-        i128::MAX,
-        i128::MIN,
-        i128::MAX - 1,
-        i128::MIN + 1,
-    ];
+    let extreme_amounts = [i128::MAX, i128::MIN, i128::MAX - 1, i128::MIN + 1];
 
     for &amount in &extreme_amounts {
-        for &bps in [1_u32, 5_000, 10_000] {
+        for &bps in &[1_u32, 5_000, 10_000] {
             let result = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
             // Should never panic and should always satisfy bounds
-            assert_bounds(result, amount, &format!("Extreme amount={amount} bps={bps}"));
+            assert_bounds(result, amount, "Extreme amount");
         }
     }
 }
-

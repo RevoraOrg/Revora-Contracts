@@ -32,60 +32,72 @@ fn fixture_topics_have_stable_order_and_shape() {
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &7u64);
-    assert_eq!(fixtures.len(), 15);
+    let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &7u64);
+    assert_eq!(v2_fixtures.len(), 15);
+    assert_eq!(v3_fixtures.len(), 15);
 
-    let f0 = fixtures.get(0).unwrap();
+    let f0 = v2_fixtures.get(0).unwrap();
     assert_eq!(f0.version, 2);
     assert_eq!(f0.event_type, symbol_short!("offer"));
     assert_eq!(f0.period_id, 0);
 
-    let f1 = fixtures.get(1).unwrap();
+    let f1 = v2_fixtures.get(1).unwrap();
     assert_eq!(f1.event_type, symbol_short!("rv_init"));
     assert_eq!(f1.period_id, 7);
 
-    let f2 = fixtures.get(2).unwrap();
+    let f2 = v2_fixtures.get(2).unwrap();
     assert_eq!(f2.event_type, symbol_short!("rv_ovr"));
     assert_eq!(f2.period_id, 7);
 
-    let f3 = fixtures.get(3).unwrap();
+    let f3 = v2_fixtures.get(3).unwrap();
     assert_eq!(f3.event_type, symbol_short!("rv_rej"));
     assert_eq!(f3.period_id, 7);
 
-    let f4 = fixtures.get(4).unwrap();
+    let f4 = v2_fixtures.get(4).unwrap();
     assert_eq!(f4.event_type, symbol_short!("rv_rep"));
     assert_eq!(f4.period_id, 7);
 
-    let f5 = fixtures.get(5).unwrap();
+    let f5 = v2_fixtures.get(5).unwrap();
     assert_eq!(f5.event_type, symbol_short!("claim"));
     assert_eq!(f5.period_id, 0);
 
-    let f6 = fixtures.get(6).unwrap();
+    let f6 = v2_fixtures.get(6).unwrap();
     assert_eq!(f6.event_type, symbol_short!("admin_set"));
 
-    let f7 = fixtures.get(7).unwrap();
+    let f7 = v2_fixtures.get(7).unwrap();
     assert_eq!(f7.event_type, symbol_short!("fee_set"));
 
-    let f8 = fixtures.get(8).unwrap();
+    let f8 = v2_fixtures.get(8).unwrap();
     assert_eq!(f8.event_type, symbol_short!("fee_ast"));
 
-    let f9 = fixtures.get(9).unwrap();
+    let f9 = v2_fixtures.get(9).unwrap();
     assert_eq!(f9.event_type, symbol_short!("fee_off"));
 
-    let f10 = fixtures.get(10).unwrap();
+    let f10 = v2_fixtures.get(10).unwrap();
     assert_eq!(f10.event_type, symbol_short!("conc_lim"));
 
-    let f11 = fixtures.get(11).unwrap();
+    let f11 = v2_fixtures.get(11).unwrap();
     assert_eq!(f11.event_type, symbol_short!("rnd_mode"));
 
-    let f12 = fixtures.get(12).unwrap();
+    let f12 = v2_fixtures.get(12).unwrap();
     assert_eq!(f12.event_type, symbol_short!("meta_key"));
 
-    let f13 = fixtures.get(13).unwrap();
+    let f13 = v2_fixtures.get(13).unwrap();
     assert_eq!(f13.event_type, symbol_short!("meta_del"));
 
-    let f14 = fixtures.get(14).unwrap();
+    let f14 = v2_fixtures.get(14).unwrap();
     assert_eq!(f14.event_type, symbol_short!("ms_init"));
+
+    for i in 0..15 {
+        let v3 = v3_fixtures.get(i).unwrap();
+        assert_eq!(v3.version, 3);
+        assert_eq!(v3.event_type, v2_fixtures.get(i).unwrap().event_type);
+        assert_eq!(v3.period_id, v2_fixtures.get(i).unwrap().period_id);
+        assert_eq!(v3.issuer, issuer);
+        assert_eq!(v3.namespace, ns);
+        assert_eq!(v3.token, token);
+        assert_eq!(v3._reserved, 0);
+    }
 }
 
 #[test]
@@ -98,13 +110,21 @@ fn fixture_topics_bind_to_requested_identity() {
     let token = Address::generate(&env);
     let ns = symbol_short!("abc");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
-    for i in 0..fixtures.len() {
-        let f = fixtures.get(i).unwrap();
+    let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
+    for i in 0..v2_fixtures.len() {
+        let f = v2_fixtures.get(i).unwrap();
         assert_eq!(f.issuer, issuer);
         assert_eq!(f.namespace, ns);
         assert_eq!(f.token, token);
         assert_eq!(f.version, 2);
+    }
+    for i in 0..v3_fixtures.len() {
+        let f = v3_fixtures.get(i).unwrap();
+        assert_eq!(f.issuer, issuer);
+        assert_eq!(f.namespace, ns);
+        assert_eq!(f.token, token);
+        assert_eq!(f.version, 3);
+        assert_eq!(f._reserved, 0);
     }
 }
 

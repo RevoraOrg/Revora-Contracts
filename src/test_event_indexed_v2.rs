@@ -9,6 +9,7 @@
 //! - **rv_rej**: Rejected duplicate report attempt (override_existing=false)
 //! - **rv_rep**: Unconditional report receipt (always emitted)
 //! - **claim**: Holder claim event (period_id=0, not period-scoped)
+//! - **acc_idx**: Accrual index advance on every accepted revenue report (feat/accrual-index-event)
 //!
 //! ## Assertions
 //! - Topic tuple order: `(EVENT_INDEXED_V2, EventIndexTopicV2)`
@@ -75,7 +76,7 @@ fn event_indexed_v2_rv_init_topic_and_data_shape() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_init"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_init"), before)
         .expect("rv_init EVENT_INDEXED_V2 must be emitted on initial report");
 
     // Topic shape
@@ -103,7 +104,7 @@ fn event_indexed_v2_rv_rej_topic_and_data_shape() {
     // Same period_id + override_existing=false → rv_rej
     client.report_revenue(&issuer, &ns, &token, &payout, &20_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rej"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rej"), before)
         .expect("rv_rej EVENT_INDEXED_V2 must be emitted on duplicate report");
 
     assert_eq!(topic.version, 2);
@@ -131,7 +132,7 @@ fn event_indexed_v2_rv_ovr_topic_and_data_shape() {
     // override_existing=true → rv_ovr
     client.report_revenue(&issuer, &ns, &token, &payout, &15_000, &1, &true);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_ovr"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_ovr"), before)
         .expect("rv_ovr EVENT_INDEXED_V2 must be emitted on override");
 
     assert_eq!(topic.version, 2);
@@ -157,7 +158,7 @@ fn event_indexed_v2_rv_rep_topic_and_data_shape() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before)
         .expect("rv_rep EVENT_INDEXED_V2 must be emitted unconditionally");
 
     assert_eq!(topic.version, 2);
@@ -182,7 +183,7 @@ fn event_indexed_v2_rv_rep_actual_override_true_on_correction() {
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token, &payout, &15_000, &1, &true);
 
-    let (_, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before as u32).unwrap();
+    let (_, data) = find_indexed_v2(&env, symbol_short!("rv_rep"), before).unwrap();
     let (_, _, actual_override): (i128, Address, bool) = data.into_val(&env);
     assert!(actual_override);
 }
@@ -201,19 +202,19 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
-    let payout = env.register_stellar_asset_contract(admin.clone());
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0);
 
     let holder = Address::generate(&env);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
-    let (topic, data) = find_indexed_v2(&env, symbol_short!("claim"), before as u32)
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("claim"), before)
         .expect("claim EVENT_INDEXED_V2 must be emitted");
 
     assert_eq!(topic.version, 2);
@@ -239,20 +240,20 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
-    let payout = env.register_stellar_asset_contract(admin.clone());
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0);
 
     let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
-    let (topic, _) = find_indexed_v2(&env, symbol_short!("claim"), before as u32).unwrap();
+    let (topic, _) = find_indexed_v2(&env, symbol_short!("claim"), before).unwrap();
     assert_eq!(topic.period_id, 0);
 }
 
@@ -278,13 +279,13 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
 
     let before_a = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_a, &payout_a, &10_000, &1, &false);
-    let (_, data_a) = find_indexed_v2(&env, symbol_short!("rv_init"), before_a as u32).unwrap();
+    let (_, data_a) = find_indexed_v2(&env, symbol_short!("rv_init"), before_a).unwrap();
     let (_, asset_a): (i128, Address) = data_a.into_val(&env);
     assert_eq!(asset_a, payout_a);
 
     let before_b = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_b, &payout_b, &20_000, &1, &false);
-    let (_, data_b) = find_indexed_v2(&env, symbol_short!("rv_init"), before_b as u32).unwrap();
+    let (_, data_b) = find_indexed_v2(&env, symbol_short!("rv_init"), before_b).unwrap();
     let (_, asset_b): (i128, Address) = data_b.into_val(&env);
     assert_eq!(asset_b, payout_b);
 }
@@ -302,7 +303,7 @@ fn event_indexed_v2_version_field_always_2() {
     let ev_idx2 = symbol_short!("ev_idx2");
     let all = env.events().all();
     let mut count = 0u32;
-    for i in before as u32..all.len() {
+    for i in before..all.len() {
         let (_, topics, _) = all.get(i).unwrap();
         if topics.len() >= 2 {
             let t0: Symbol = topics.get(0).unwrap().into_val(&env);
@@ -314,4 +315,109 @@ fn event_indexed_v2_version_field_always_2() {
         }
     }
     assert!(count >= 2, "expected at least rv_init + rv_rep indexed events");
+}
+
+// ── acc_idx ───────────────────────────────────────────────────────────────────
+
+/// Pins the topic structure and data shape for `acc_idx` (accrual index advance).
+/// Emitted on every accepted revenue report with a positive amount.
+#[test]
+fn event_indexed_v2_acc_idx_topic_and_data_shape() {
+    let (env, client, issuer, ns, token, payout) = setup();
+    let before = env.events().all().len();
+    client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
+
+    let (topic, data) = find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32)
+        .expect("acc_idx EVENT_INDEXED_V2 must be emitted on accepted revenue report");
+
+    // Topic shape: standard v2 offering identity + period_id
+    assert_eq!(topic.version, 2);
+    assert_eq!(topic.event_type, symbol_short!("acc_idx"));
+    assert_eq!(topic.issuer, issuer);
+    assert_eq!(topic.namespace, ns);
+    assert_eq!(topic.token, token);
+    assert_eq!(topic.period_id, 1);
+
+    // Data shape: (new_idx_e18: i128,) — single-element tuple, strictly positive
+    let (new_idx_e18,): (i128,) = data.into_val(&env);
+    assert!(new_idx_e18 > 0, "accrual index must be positive after a positive-amount report");
+}
+
+/// `acc_idx` index is strictly increasing across successive periods.
+#[test]
+fn event_indexed_v2_acc_idx_monotonically_increasing() {
+    let (env, client, issuer, ns, token, payout) = setup();
+
+    let before1 = env.events().all().len();
+    client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
+    let (_, data1) = find_indexed_v2(&env, symbol_short!("acc_idx"), before1 as u32).unwrap();
+    let (idx1,): (i128,) = data1.into_val(&env);
+
+    let before2 = env.events().all().len();
+    client.report_revenue(&issuer, &ns, &token, &payout, &20_000, &2, &false);
+    let (_, data2) = find_indexed_v2(&env, symbol_short!("acc_idx"), before2 as u32).unwrap();
+    let (idx2,): (i128,) = data2.into_val(&env);
+
+    assert!(idx2 > idx1, "acc_idx must increase with each new period report");
+}
+
+/// `acc_idx` is emitted on override (`rv_ovr`), reflecting the updated index.
+#[test]
+fn event_indexed_v2_acc_idx_emitted_on_override() {
+    let (env, client, issuer, ns, token, payout) = setup();
+    client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
+
+    let before = env.events().all().len();
+    client.report_revenue(&issuer, &ns, &token, &payout, &20_000, &1, &true);
+
+    let (topic, _data) = find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32)
+        .expect("acc_idx must be emitted on override (rv_ovr)");
+
+    assert_eq!(topic.event_type, symbol_short!("acc_idx"));
+    assert_eq!(topic.period_id, 1);
+}
+
+/// `acc_idx` is NOT emitted when a duplicate report is rejected (`rv_rej`).
+/// Security: rejected duplicates must never advance the accrual index.
+#[test]
+fn event_indexed_v2_acc_idx_not_emitted_on_rejected_duplicate() {
+    let (env, client, issuer, ns, token, payout) = setup();
+    client.report_revenue(&issuer, &ns, &token, &payout, &10_000, &1, &false);
+
+    let before = env.events().all().len();
+    // Same period_id + override_existing=false → rv_rej, must not emit acc_idx
+    client.report_revenue(&issuer, &ns, &token, &payout, &20_000, &1, &false);
+
+    let result = find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32);
+    assert!(result.is_none(), "acc_idx must NOT be emitted on rejected duplicate (rv_rej)");
+}
+
+/// `acc_idx` is NOT emitted when amount is zero (no-op report).
+/// Security: zero-amount reports must not advance the accrual index.
+#[test]
+fn event_indexed_v2_acc_idx_not_emitted_on_zero_amount() {
+    let (env, client, issuer, ns, token, payout) = setup();
+    let before = env.events().all().len();
+    // amount=0 is allowed by the RevenueReport validation matrix but is a no-op for the index
+    client.report_revenue(&issuer, &ns, &token, &payout, &0, &1, &false);
+
+    let result = find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32);
+    assert!(result.is_none(), "acc_idx must NOT be emitted when amount=0");
+}
+
+/// `acc_idx` `period_id` in the topic always matches the reported period.
+#[test]
+fn event_indexed_v2_acc_idx_period_id_matches_reported_period() {
+    let (env, client, issuer, ns, token, payout) = setup();
+
+    for period in [1u64, 2, 3] {
+        let before = env.events().all().len();
+        client.report_revenue(&issuer, &ns, &token, &payout, &5_000, &period, &false);
+        let (topic, _) =
+            find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32).unwrap();
+        assert_eq!(
+            topic.period_id, period,
+            "acc_idx topic.period_id must equal the reported period_id"
+        );
+    }
 }

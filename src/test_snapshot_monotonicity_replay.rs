@@ -79,7 +79,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &5_000,
         &payout_asset,
         &0,
-    );
+    &None);
 
     // Enable snapshot distribution for this offering.
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
