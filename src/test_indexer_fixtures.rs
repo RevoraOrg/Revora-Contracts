@@ -16,7 +16,7 @@ fn setup_with_offering(env: &Env) -> (RevoraRevenueShareClient, Address, Address
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &None);
     (client, admin, token, payout_asset)
 }
 
@@ -130,7 +130,7 @@ fn register_offering_emits_ofr_reg2_v2_event() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &None);
 
     let events = env.events().all();
     assert!(events.len() > before, "register_offering must emit at least one event");
@@ -156,7 +156,7 @@ fn register_offering_v2_event_data_starts_with_version_2() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0);
+    client.register_offering(&admin, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &None);
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);

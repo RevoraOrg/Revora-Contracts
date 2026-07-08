@@ -193,7 +193,7 @@ fn cross_contract_registry_check_before_offering() {
     // Step 3: Now register offering in Revora (after registry approval)
     // In production, register_offering would call registry.is_approved() internally
     assert!(registry.is_approved(&token));
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
 
     // Verify offering was created
     let offering = revora.get_offering(&issuer, &symbol_short!("def"), &token);
@@ -285,7 +285,7 @@ fn cross_contract_oracle_revenue_valuation() {
     let payout_asset = Address::generate(&env);
 
     // Register offering
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
 
     // Report revenue
     revora.report_revenue(
@@ -356,7 +356,7 @@ fn cross_contract_full_workflow_registry_then_offering() {
     assert!(registry.is_approved(&token));
 
     // Step 3: Register offering in Revora
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &3_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &3_000, &payout_asset, &0, &None);
 
     // Step 4: Report revenue
     revora.report_revenue(
@@ -430,7 +430,7 @@ fn cross_contract_error_in_registry_does_not_affect_revora() {
 
     // Register token and offering
     registry.register_token(&admin, &token);
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
 
     // Cause an error in registry (duplicate registration)
     let err = registry.try_register_token(&admin, &token);
@@ -458,7 +458,7 @@ fn cross_contract_revora_operations_independent_of_oracle_state() {
     let payout_asset = Address::generate(&env);
 
     // Revora works fine without any oracle prices set
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
     revora.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -502,13 +502,13 @@ fn cross_contract_concurrent_state_changes() {
     let payout_3 = Address::generate(&env);
 
     registry.register_token(&admin, &token_1);
-    revora.register_offering(&issuer, &symbol_short!("def"), &token_1, &1_000, &payout_1, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token_1, &1_000, &payout_1, &0, &None);
 
     registry.register_token(&admin, &token_2);
-    revora.register_offering(&issuer, &symbol_short!("def"), &token_2, &2_000, &payout_2, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token_2, &2_000, &payout_2, &0, &None);
 
     registry.register_token(&admin, &token_3);
-    revora.register_offering(&issuer, &symbol_short!("def"), &token_3, &3_000, &payout_3, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token_3, &3_000, &payout_3, &0, &None);
 
     // Verify both contracts have consistent state
     assert_eq!(registry.get_token_count(), 3);
@@ -542,7 +542,7 @@ fn cross_contract_oracle_price_updates_across_revenue_reports() {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    revora.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
 
     // Report revenue at $1.00
     revora.report_revenue(
@@ -624,7 +624,7 @@ fn cross_contract_stress_revora_with_registry_and_oracle() {
             &((i + 1) * 1_000),
             &payout,
             &0,
-        );
+        &None);
         oracle.set_price(&admin, &payout, &((i as i128 + 1) * 1_000_000), &1000);
         revora.report_revenue(
             &issuer,

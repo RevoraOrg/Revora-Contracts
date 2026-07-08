@@ -49,6 +49,9 @@
 #![cfg(test)]
 extern crate std;
 
+extern crate std;
+use std::format;
+
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use soroban_sdk::Env;
 

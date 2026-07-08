@@ -27,7 +27,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let payout_asset = Address::generate(&env);
     let namespace = symbol_short!("ns");
 
-    client.register_offering(&issuer, &namespace, &token, &5000, &payout_asset, &0);
+    client.register_offering(&issuer, &namespace, &token, &5000, &payout_asset, &0, &None);
 
     (env, client, issuer, token, payout_asset)
 }
@@ -52,14 +52,14 @@ fn test_register_duplicate_offering_is_idempotent() {
     let payout_asset = Address::generate(&env);
 
     // First registration
-    client.register_offering(&issuer, &namespace, &token, &5000, &payout_asset, &0);
+    client.register_offering(&issuer, &namespace, &token, &5000, &payout_asset, &0, &None);
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 
     let offering1 = client.get_offering(&issuer, &namespace, &token).unwrap();
     assert_eq!(offering1.revenue_share_bps, 5000);
 
     // Second registration (same identity, different bps)
-    client.register_offering(&issuer, &namespace, &token, &6000, &payout_asset, &0);
+    client.register_offering(&issuer, &namespace, &token, &6000, &payout_asset, &0, &None);
 
     // Count should still be 1
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
@@ -79,9 +79,9 @@ fn test_pagination_stability_with_idempotency() {
     let token_b = Address::generate(&env);
 
     // Register A, then B, then A again
-    client.register_offering(&issuer, &namespace, &token_a, &1000, &payout_asset, &0);
-    client.register_offering(&issuer, &namespace, &token_b, &2000, &payout_asset, &0);
-    client.register_offering(&issuer, &namespace, &token_a, &3000, &payout_asset, &0);
+    client.register_offering(&issuer, &namespace, &token_a, &1000, &payout_asset, &0, &None);
+    client.register_offering(&issuer, &namespace, &token_b, &2000, &payout_asset, &0, &None);
+    client.register_offering(&issuer, &namespace, &token_a, &3000, &payout_asset, &0, &None);
 
     let (offerings, _) = client.get_offerings_page(&issuer, &namespace, &0, &10);
 
@@ -98,8 +98,8 @@ fn test_get_offering_matches_first_registration() {
     let namespace = symbol_short!("ns");
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &namespace, &token, &1000, &payout_asset, &0);
-    client.register_offering(&issuer, &namespace, &token, &2000, &payout_asset, &0);
+    client.register_offering(&issuer, &namespace, &token, &1000, &payout_asset, &0, &None);
+    client.register_offering(&issuer, &namespace, &token, &2000, &payout_asset, &0, &None);
 
     let offering = client.get_offering(&issuer, &namespace, &token).unwrap();
     assert_eq!(offering.revenue_share_bps, 1000);
