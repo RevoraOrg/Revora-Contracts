@@ -47,6 +47,7 @@
 //! holds for all i128 extremes.
 
 #![cfg(test)]
+extern crate std;
 
 extern crate alloc;
 
@@ -116,7 +117,7 @@ fn truncation_table_driven() {
             result, expected,
             "Truncation: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("Truncation amount={amount} bps={bps}"));
+        assert_bounds(result, amount, &std::format!("Truncation amount={amount} bps={bps}"));
     }
 }
 
@@ -159,7 +160,7 @@ fn round_half_up_table_driven() {
             result, expected,
             "RoundHalfUp: amount={amount}, bps={bps} → expected {expected}, got {result}"
         );
-        assert_bounds(result, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+        assert_bounds(result, amount, &std::format!("RoundHalfUp amount={amount} bps={bps}"));
     }
 }
 
@@ -596,8 +597,16 @@ fn remainder_product_bound_holds_for_all_bps() {
             let result_round = c.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
 
             // Verify bounds invariant
-            assert_bounds(result_trunc, amount, &format!("Truncation amount={amount} bps={bps}"));
-            assert_bounds(result_round, amount, &format!("RoundHalfUp amount={amount} bps={bps}"));
+            assert_bounds(
+                result_trunc,
+                amount,
+                &std::format!("Truncation amount={amount} bps={bps}"),
+            );
+            assert_bounds(
+                result_round,
+                amount,
+                &std::format!("RoundHalfUp amount={amount} bps={bps}"),
+            );
 
             // Verify that the result is consistent with the decomposition formula
             // amount = q * 10_000 + r, share = q * bps + (r * bps) / 10_000
@@ -629,7 +638,7 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
         for bps in [1_u32, 5_000, 10_000] {
             let result = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
             // Should never panic and should always satisfy bounds
-            assert_bounds(result, amount, &format!("Extreme amount={amount} bps={bps}"));
+            assert_bounds(result, amount, &std::format!("Extreme amount={amount} bps={bps}"));
         }
     }
 }

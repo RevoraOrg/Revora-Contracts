@@ -18,7 +18,7 @@ fn setup_snapshot_test(
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &None);
     (env, client, issuer, token, payout_asset, contract_id)
 }
 

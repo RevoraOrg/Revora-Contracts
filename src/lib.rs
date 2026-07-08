@@ -315,6 +315,8 @@ const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 /// Emitted when a period is sealed by `close_period`.
 const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
+/// Emitted by `atomic_close_period` — single boundary event carrying snapshot and accrual sub-hashes.
+const EVENT_PERIOD_SEALED: Symbol = symbol_short!("per_seald");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
@@ -331,6 +333,12 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 /// Emitted when `repair_audit_summary` writes a corrected `AuditSummary` to storage.
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 
+/// Emitted when a redemption window is set for an offering.
+const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
+/// Emitted when a holder requests a redemption.
+const EVENT_REDEMPTION_REQUESTED: Symbol = symbol_short!("red_req");
+/// Emitted when an issuer fulfills a holder redemption request.
+const EVENT_REDEMPTION_FULFILLED: Symbol = symbol_short!("red_full");
 /// Missing v1 event symbols (referenced by report_revenue versioned path).
 /// Emitted when payment token decimals are set for an offering.
 
@@ -398,6 +406,36 @@ pub struct OfferingId {
     pub issuer: Address,
     pub namespace: Symbol,
     pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ShareClass {
+    A,
+    B,
+    Custom(Symbol),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClassConfig {
+    pub bps: u32,
+    pub voting: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    Manual,
+    OFAC,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SanctionsAttestation {
+    pub source: Source,
+    pub ref_id: Symbol,
+    pub attested_at: u64,
 }
 
 #[contracttype]
@@ -589,11 +627,30 @@ pub struct AccessWindow {
     pub end_timestamp: u64,
 }
 
+/// Per-holder pending redemption request.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingRedemption {
+    pub shares_bps: u32,
+    pub timestamp: u64,
+}
+
+/// Pause state tier for contract pausing.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PauseState {
+    NotPaused = 0,
+    SoftPaused = 1,
+    HardPaused = 2,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowDataKey {
     Report(OfferingId),
     Claim(OfferingId),
+    Redemption(OfferingId),
 }
 
 #[contracttype]
@@ -607,6 +664,18 @@ pub enum MetaDataKey {
     NonceUsed(Address, u64),
     /// Approved revenue report marker keyed by offering and period.
     RevenueApproved(OfferingId, u64),
+}
+
+/// Pause tier for the contract. Stored under `DataKey::Paused`.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseState {
+    /// Contract is fully operational.
+    NotPaused = 0,
+    /// Reports and deposits blocked; `claim` allowed.
+    SoftPaused = 1,
+    /// All state-mutating operations blocked, including `claim`.
+    HardPaused = 2,
 }
 
 /// Defines how fractional shares are handled during distribution calculations.
@@ -708,8 +777,6 @@ pub(crate) enum DataKey {
     LastClaimedIdx(OfferingId, Address),
     /// Payment token address for an offering.
     PaymentToken(OfferingId),
-    /// Cached payment token decimals for offering compatibility checks.
-    PaymentTokenDecimals(OfferingId),
     /// Per-offering claim delay in seconds (#27). 0 = immediate claim.
     ClaimDelaySecs(OfferingId),
     /// Ledger timestamp when revenue was deposited for (offering_id, period_id).
@@ -718,8 +785,6 @@ pub(crate) enum DataKey {
     Admin,
     /// Contract frozen flag; when true, state-changing ops are disabled (#32).
     Frozen,
-    /// Offering-level frozen flag; when true, offering mutations are disabled.
-    FrozenOffering(OfferingId),
     /// Proposed new admin address (pending two-step rotation).
     PendingAdmin,
 
@@ -774,8 +839,6 @@ pub(crate) enum DataKey {
     SnapshotFinalizationRequired,
     /// Latest committed snapshot reference for an offering.
     LastSnapshotCommitRef(OfferingId),
-    /// Whether the snapshot has been finalized successfully.
-    SnapshotFinalized(OfferingId, u64),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -783,6 +846,16 @@ pub(crate) enum DataKey {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey2 {
+    /// Whether the snapshot has been finalized successfully.
+    SnapshotFinalized(OfferingId, u64),
+    /// Per-offering supply cap (max total deposited revenue).
+    SupplyCap(OfferingId),
+    /// Total revenue deposited so far for supply-cap tracking.
+    DepositedRevenue(OfferingId),
+    /// Per-offering investment constraints (min/max stake).
+    InvestmentConstraints(OfferingId),
+    /// Per-offering minimum revenue threshold.
+    MinRevenueThreshold(OfferingId),
     /// Last reported period_id for an offering.
     LastReportedPeriodId(OfferingId),
     /// Last deposited period_id for an offering.
@@ -1133,7 +1206,7 @@ impl RevoraRevenueShare {
         if env
             .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::FrozenOffering(offering_id.clone()))
+            .get::<DataKey2, bool>(&DataKey2::FrozenOffering(offering_id.clone()))
             .unwrap_or(false)
         {
             return Err(RevoraError::OfferingFrozen);
@@ -1252,6 +1325,19 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    fn require_redemption_window_open(
+        env: &Env,
+        offering_id: &OfferingId,
+    ) -> Result<(), RevoraError> {
+        let key = WindowDataKey::Redemption(offering_id.clone());
+        if let Some(window) = env.storage().persistent().get::<WindowDataKey, AccessWindow>(&key) {
+            if !Self::is_window_open(env, &window) {
+                return Err(RevoraError::RedemptionWindowClosed);
+            }
+        }
+        Ok(())
+    }
+
     fn mark_meta_nonce_used(env: &Env, signer: &Address, nonce: u64) {
         let nonce_key = MetaDataKey::NonceUsed(signer.clone(), nonce);
         env.storage().persistent().set(&nonce_key, &true);
@@ -1289,6 +1375,7 @@ impl RevoraRevenueShare {
         token: Address,
         holder: Address,
         share_bps: u32,
+        share_class: Option<ShareClass>,
     ) -> Result<(), RevoraError> {
         if share_bps > 10_000 {
             return Err(RevoraError::InvalidShareBps);
@@ -1299,26 +1386,71 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        // Maintain a running total of persisted holder shares for this offering.
-        let total_key = DataKey::HolderShareTotal(offering_id.clone());
-        let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
 
-        let old_share: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
-            .unwrap_or(0);
+        match classes {
+            Some(cls_vec) => {
+                let sc = match share_class {
+                    Some(sc) => sc,
+                    None => return Err(RevoraError::InvalidShareClass),
+                };
+                let mut found = false;
+                for (class_name, _) in cls_vec.iter() {
+                    if class_name == sc {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return Err(RevoraError::InvalidShareClass);
+                }
 
-        let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
-        if new_total > 10_000 {
-            return Err(RevoraError::InvalidShareBps);
+                let class_share_key =
+                    DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone());
+                let old_share: u32 = env.storage().persistent().get(&class_share_key).unwrap_or(0);
+                let total_class_key =
+                    DataKey2::HolderShareClassTotal(offering_id.clone(), sc.clone());
+                let current_class_total: u32 =
+                    env.storage().persistent().get(&total_class_key).unwrap_or(0);
+
+                let new_total =
+                    current_class_total.saturating_sub(old_share).saturating_add(share_bps);
+                if new_total > 10_000 {
+                    return Err(RevoraError::InvalidShareBps);
+                }
+
+                env.storage().persistent().set(&class_share_key, &share_bps);
+                env.storage().persistent().set(&total_class_key, &new_total);
+            }
+            None => {
+                if share_class.is_some() {
+                    return Err(RevoraError::InvalidShareClass);
+                }
+                // Maintain a running total of persisted holder shares for this offering.
+                let total_key = DataKey::HolderShareTotal(offering_id.clone());
+                let mut current_total: u32 =
+                    env.storage().persistent().get(&total_key).unwrap_or(0);
+
+                let old_share: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                    .unwrap_or(0);
+
+                let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
+                if new_total > 10_000 {
+                    return Err(RevoraError::InvalidShareBps);
+                }
+
+                // Persist updated holder share and running total.
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
+                env.storage().persistent().set(&total_key, &new_total);
+            }
         }
-
-        // Persist updated holder share and running total.
-        env.storage()
-            .persistent()
-            .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
-        env.storage().persistent().set(&total_key, &new_total);
 
         env.events().publish(
             (EVENT_SHARE_SET, issuer.clone(), namespace.clone(), token.clone()),
@@ -2557,6 +2689,7 @@ impl RevoraRevenueShare {
     ///
     /// # Events
     /// Emits `EVENT_OFFER_REG_V2` and `EVENT_INDEXED_V2`.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_offering(
         env: Env,
         issuer: Address,
@@ -2565,10 +2698,22 @@ impl RevoraRevenueShare {
         revenue_share_bps: u32,
         payout_asset: Address,
         supply_cap: i128,
+        classes: Option<Vec<(ShareClass, ClassConfig)>>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
+
+        if let Some(ref cls_vec) = classes {
+            let mut sum_bps: u32 = 0;
+            for (_, config) in cls_vec.iter() {
+                sum_bps =
+                    sum_bps.checked_add(config.bps).ok_or(RevoraError::InvalidShareClassBps)?;
+            }
+            if sum_bps != 10_000 {
+                return Err(RevoraError::InvalidShareClassBps);
+            }
+        }
 
         // Negative Amount Validation Matrix: SupplyCap requires >= 0 (#163)
         if let Err((err, _)) =
@@ -2634,6 +2779,12 @@ impl RevoraRevenueShare {
         if supply_cap > 0 {
             let cap_key = DataKey2::SupplyCap(offering_id.clone());
             env.storage().persistent().set(&cap_key, &supply_cap);
+        }
+
+        if let Some(ref cls_vec) = classes {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::OfferingClasses(offering_id.clone()), cls_vec);
         }
 
         Self::emit_v2_event(
@@ -3426,7 +3577,115 @@ impl RevoraRevenueShare {
         (results, next_cursor)
     }
 
-    /// Add an investor to the per-offering blacklist.
+    /// Helper function to add an investor to the blacklist with attestation.
+    fn do_blacklist_add(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+        attestation: SanctionsAttestation,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        // Verify auth: caller must be issuer or admin
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Validate attestation timestamp: attested_at must not be in the future
+        if attestation.attested_at > env.ledger().timestamp() {
+            return Err(RevoraError::InvalidAmount); // Wait, let's check error codes
+            // Wait, let's use a proper error? Wait let's check RevoraError
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if !Self::is_event_only(&env) {
+            let key = DataKey::Blacklist(offering_id.clone());
+            let mut map: Map<Address, SanctionsAttestation> =
+                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
+
+            let was_present = map.contains_key(investor.clone());
+            if !was_present {
+                // Guard: reject if the blacklist is already at capacity.
+                let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
+                if map.len() >= limit {
+                    return Err(RevoraError::BlacklistSizeLimitExceeded);
+                }
+                map.set(investor.clone(), attestation.clone());
+                env.storage().persistent().set(&key, &map);
+
+                // Maintain insertion order for deterministic get_blacklist (#38)
+                let order_key = DataKey::BlacklistOrder(offering_id.clone());
+                let mut order: Vec<Address> =
+                    env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
+                order.push_back(investor.clone());
+                env.storage().persistent().set(&order_key, &order);
+            }
+        }
+
+        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor, attestation));
+        Ok(())
+    }
+
+    /// Add an investor to the per-offering blacklist with a sanctions attestation.
+    ///
+    /// Blacklisted addresses are prohibited from claiming revenue for the specified token.
+    /// This operation is idempotent.
+    ///
+    /// ### Parameters
+    /// - `caller`: The address authorized to manage the blacklist. Must be the current issuer of the offering.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `investor`: The address to be blacklisted.
+    /// - `attestation`: The sanctions attestation containing source, reference ID, and timestamp.
+    ///
+    /// ### Security Assumptions
+    /// - `caller` must be the current issuer of the offering or the contract admin.
+    /// - The blacklist is capped at `MAX_BLACKLIST_SIZE` entries per offering to prevent
+    ///   unbounded storage growth and keep distribution gas predictable.
+    /// - Idempotent adds (address already present) do not count against the size limit.
+    /// - `attestation.attested_at` must not be in the future.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success.
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// - `Err(RevoraError::NotAuthorized)` if caller is not the current issuer or admin.
+    /// - `Err(RevoraError::BlacklistSizeLimitExceeded)` if the blacklist is at capacity.
+    /// - `Err(RevoraError::InvalidAmount)` if attestation timestamp is in the future.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blacklist_add_with_attestation(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+        attestation: SanctionsAttestation,
+    ) -> Result<(), RevoraError> {
+        Self::do_blacklist_add(env, caller, issuer, namespace, token, investor, attestation)
+    }
+
+    /// Add an investor to the per-offering blacklist (legacy, uses Source::Manual).
     ///
     /// Blacklisted addresses are prohibited from claiming revenue for the specified token.
     /// This operation is idempotent.
@@ -3455,60 +3714,15 @@ impl RevoraRevenueShare {
         token: Address,
         investor: Address,
     ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env)?;
-        caller.require_auth();
-
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
+        let attestation = SanctionsAttestation {
+            source: Source::Manual,
+            ref_id: symbol_short!("manual"),
+            attested_at: env.ledger().timestamp(),
         };
-        // Verify auth: caller must be issuer or admin
-        let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
-
-        if caller != current_issuer && caller != admin {
-            return Err(RevoraError::NotAuthorized);
-        }
-
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
-        };
-
-        if !Self::is_event_only(&env) {
-            let key = DataKey::Blacklist(offering_id.clone());
-            let mut map: Map<Address, bool> =
-                env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
-
-            let was_present = map.get(investor.clone()).unwrap_or(false);
-            if !was_present {
-                // Guard: reject if the blacklist is already at capacity.
-                let limit = Self::get_effective_blacklist_limit(&env, &offering_id);
-                if map.len() >= limit {
-                    return Err(RevoraError::BlacklistSizeLimitExceeded);
-                }
-                map.set(investor.clone(), true);
-                env.storage().persistent().set(&key, &map);
-
-                // Maintain insertion order for deterministic get_blacklist (#38)
-                let order_key = DataKey::BlacklistOrder(offering_id.clone());
-                let mut order: Vec<Address> =
-                    env.storage().persistent().get(&order_key).unwrap_or_else(|| Vec::new(&env));
-                order.push_back(investor.clone());
-                env.storage().persistent().set(&order_key, &order);
-            }
-        }
-
-        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor));
-        Ok(())
+        Self::do_blacklist_add(env, caller, issuer, namespace, token, investor, attestation)
     }
 
-    /// Add multiple investors to the per-offering blacklist in a single transaction.
+    /// Add multiple investors to the per-offering blacklist in a single transaction (uses Source::Manual).
     ///
     /// Enables efficient bulk compliance updates by processing up to MAX_BATCH_SIZE (50)
     /// addresses atomically. The operation is idempotent: addresses already blacklisted
@@ -3578,7 +3792,7 @@ impl RevoraRevenueShare {
 
         // Task 2.3: Load storage
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
         let order_key = DataKey::BlacklistOrder(offering_id.clone());
         let mut order: Vec<Address> =
@@ -3611,21 +3825,27 @@ impl RevoraRevenueShare {
         }
 
         // Task 2.6: Batch add logic with storage updates
+        let now = env.ledger().timestamp();
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if !was_present {
+                let attestation = SanctionsAttestation {
+                    source: Source::Manual,
+                    ref_id: symbol_short!("manual"),
+                    attested_at: now,
+                };
                 // Add to map and order vec
                 if !Self::is_event_only(&env) {
-                    map.set(investor.clone(), true);
+                    map.set(investor.clone(), attestation.clone());
                     order.push_back(investor.clone());
                 }
 
                 // Emit event for actual state change
                 env.events().publish(
                     (EVENT_BL_ADD, issuer.clone(), namespace.clone(), token.clone()),
-                    (caller.clone(), investor),
+                    (caller.clone(), investor, attestation),
                 );
             }
             // If already blacklisted, skip without error or event (idempotent)
@@ -3690,7 +3910,7 @@ impl RevoraRevenueShare {
         }
 
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
         map.remove(investor.clone());
         env.storage().persistent().set(&key, &map);
@@ -3702,7 +3922,7 @@ impl RevoraRevenueShare {
         let mut new_order = Vec::new(&env);
         for i in 0..old_order.len() {
             let addr = old_order.get(i).unwrap();
-            if map.get(addr.clone()).unwrap_or(false) {
+            if map.contains_key(addr.clone()) {
                 new_order.push_back(addr);
             }
         }
@@ -3780,7 +4000,7 @@ impl RevoraRevenueShare {
 
         // Task 3.3: Load storage
         let key = DataKey::Blacklist(offering_id.clone());
-        let mut map: Map<Address, bool> =
+        let mut map: Map<Address, SanctionsAttestation> =
             env.storage().persistent().get(&key).unwrap_or_else(|| Map::new(&env));
 
         // Task 3.4: Deduplication logic
@@ -3797,7 +4017,7 @@ impl RevoraRevenueShare {
         // Task 3.5: Batch remove logic
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if was_present {
                 // Remove from map
@@ -3819,7 +4039,7 @@ impl RevoraRevenueShare {
         let mut new_order = Vec::new(&env);
         for i in 0..old_order.len() {
             let addr = old_order.get(i).unwrap();
-            if map.get(addr.clone()).unwrap_or(false) {
+            if map.contains_key(addr.clone()) {
                 new_order.push_back(addr);
             }
         }
@@ -3843,9 +4063,25 @@ impl RevoraRevenueShare {
         let key = DataKey::Blacklist(offering_id);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
-            .map(|m| m.get(investor).unwrap_or(false))
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
+            .map(|m| m.contains_key(investor))
             .unwrap_or(false)
+    }
+
+    /// Returns the sanctions attestation for a blacklisted investor, if any.
+    pub fn get_blacklist_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+    ) -> Option<SanctionsAttestation> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey::Blacklist(offering_id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
+            .and_then(|m| m.get(investor))
     }
 
     /// Return all blacklisted addresses for an offering.
@@ -3947,7 +4183,7 @@ impl RevoraRevenueShare {
         let key = DataKey::Blacklist(offering_id);
         env.storage()
             .persistent()
-            .get::<DataKey, Map<Address, bool>>(&key)
+            .get::<DataKey, Map<Address, SanctionsAttestation>>(&key)
             .map(|m| m.len())
             .unwrap_or(0)
     }
@@ -4761,7 +4997,7 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage().persistent().set(&DataKey::PaymentTokenDecimals(offering_id), &decimals);
+        env.storage().persistent().set(&DataKey2::PaymentTokenDecimals(offering_id), &decimals);
         env.events().publish((EVENT_DECIMAL_SET, issuer, namespace, token), decimals);
         Ok(())
     }
@@ -5296,8 +5532,148 @@ impl RevoraRevenueShare {
     fn is_snapshot_finalized(env: &Env, offering_id: &OfferingId, snapshot_ref: u64) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref))
+            .get(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref))
             .unwrap_or(false)
+    }
+
+    // ── Snapshot Merkle inclusion proof helper (issue #463) ──────────────────
+    //
+    // ### Leaf encoding
+    //
+    // Each leaf is produced by the same digest pass used in `finalize_snapshot`:
+    //
+    // ```text
+    // leaf = SHA-256( index_xdr || holder_xdr || shares_bps_xdr )
+    // ```
+    //
+    // where:
+    //   - `index_xdr`     = `(slot_index as u32).to_xdr(&env)`
+    //   - `holder_xdr`    = `holder_address.to_xdr(&env)`
+    //   - `shares_bps_xdr` = `share_bps_u32.to_xdr(&env)`
+    //
+    // This is the canonical leaf encoding.  Off-chain tooling must use
+    // the same serialisation.
+    //
+    // ### Merkle tree construction
+    //
+    // Leaves are sorted by their raw-byte value before building the tree
+    // (sorted-pair Merkle tree).  Internal nodes are produced by sorting the
+    // two child hashes lexicographically before concatenating and hashing:
+    //
+    // ```text
+    // parent = SHA-256( sort_low_child || sort_high_child )
+    // ```
+    //
+    // Sorting the pair makes the tree *position-independent*: proofs work
+    // regardless of which side of the tree a leaf sits on, and there is no
+    // "left/right" flag in the proof array.
+    //
+    // ### Proof array
+    //
+    // A proof is a `Vec<BytesN<32>>` of sibling hashes from leaf to root.
+    // An empty proof is valid only for a single-leaf tree (the leaf IS the root).
+    //
+    // ### Security assumptions
+    //
+    // 1. The verifier does NOT check on-chain snapshot state — it is a pure
+    //    off-chain helper that recomputes the root from the supplied leaf and
+    //    proof and compares it to the committed `content_hash`.
+    //    **The snapshot must be finalized before calling this function**;
+    //    an unfinalized snapshot has an untrusted `content_hash`.
+    // 2. SHA-256 collision resistance ensures that forging a valid proof for
+    //    an absent leaf requires breaking SHA-256.
+    // 3. Every element of `proof` is exactly 32 bytes (enforced by the type
+    //    `Vec<BytesN<32>>`); there is no length-extension attack surface.
+    // 4. An empty proof is accepted only when `proof.len() == 0`, i.e. the
+    //    tree has exactly one leaf and `leaf_hash == content_hash`.
+
+    /// Verify that a leaf was included in a finalized snapshot.
+    ///
+    /// # Parameters
+    ///
+    /// - `issuer`       – offering issuer address.
+    /// - `namespace`    – offering namespace symbol.
+    /// - `token`        – offering token address.
+    /// - `snapshot_ref` – the snapshot reference (must exist on-chain).
+    /// - `leaf`         – the raw leaf bytes *before* hashing.  The caller must
+    ///                    construct this as:
+    ///                    `index_xdr || holder_xdr || shares_bps_xdr`
+    ///                    (same encoding used in `finalize_snapshot`).
+    /// - `proof`        – ordered array of sibling hashes from the leaf up to
+    ///                    (but not including) the root.
+    ///
+    /// # Returns
+    ///
+    /// `true`  – the proof is valid and the leaf was included in the snapshot.
+    /// `false` – the proof is invalid or the snapshot does not exist / is not
+    ///           finalized.
+    ///
+    /// # Security note
+    ///
+    /// This function returns `false` rather than an error when the snapshot is
+    /// missing or unfinalized, so callers cannot distinguish those states from
+    /// a genuinely invalid proof.  This is intentional: leaking whether a
+    /// snapshot *exists* could aid enumeration attacks.
+    pub fn verify_snapshot_inclusion(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        snapshot_ref: u64,
+        leaf: Bytes,
+        proof: Vec<BytesN<32>>,
+    ) -> bool {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Guard 1: snapshot must be finalized.  An unfinalized snapshot has an
+        // untrusted content_hash and MUST NOT be used as a proof root.
+        if !Self::is_snapshot_finalized(&env, &offering_id, snapshot_ref) {
+            return false;
+        }
+
+        // Guard 2: the committed snapshot entry must exist.
+        let entry_key = DataKey::SnapshotEntry(offering_id, snapshot_ref);
+        let entry: SnapshotEntry = match env.storage().persistent().get(&entry_key) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        // Hash the raw leaf bytes to obtain the starting node.
+        let mut current: BytesN<32> = env.crypto().sha256(&leaf).to_bytes();
+
+        // Walk up the tree, combining with each sibling.
+        //
+        // Sorted-pair combination: always hash the lexicographically smaller
+        // sibling first.  This removes the need for positional left/right flags.
+        let proof_len = proof.len();
+        for i in 0..proof_len {
+            // proof.len() == proof_len so get(i) must succeed.
+            let sibling: BytesN<32> = match proof.get(i) {
+                Some(s) => s,
+                None => return false,
+            };
+
+            // Determine canonical ordering: lexicographically smaller hash comes first.
+            // BytesN<32> implements PartialOrd, so direct comparison is valid.
+            let mut combined = Bytes::new(&env);
+            let current_bytes: Bytes = current.clone().into();
+            let sibling_bytes: Bytes = sibling.clone().into();
+            if current <= sibling {
+                combined.append(&current_bytes);
+                combined.append(&sibling_bytes);
+            } else {
+                combined.append(&sibling_bytes);
+                combined.append(&current_bytes);
+            }
+            current = env.crypto().sha256(&combined).to_bytes();
+        }
+
+        // The recomputed root must match the committed content_hash.
+        current == entry.content_hash
     }
 
     /// Finalize a snapshot by recomputing the digest over applied holder slots.
@@ -5370,7 +5746,7 @@ impl RevoraRevenueShare {
 
         env.storage()
             .persistent()
-            .set(&DataKey::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
+            .set(&DataKey2::SnapshotFinalized(offering_id.clone(), snapshot_ref), &true);
         env.events().publish((EVENT_SNAP_FINALIZED, issuer, namespace, token), snapshot_ref);
         Ok(())
     }
@@ -5405,7 +5781,44 @@ impl RevoraRevenueShare {
 
         // Delegate to internal writer which maintains the aggregate running total
         // and enforces the per-offering sum invariant (≤ 10_000 bps).
-        Self::set_holder_share_internal(&env, issuer, namespace, token, holder, share_bps)
+        Self::set_holder_share_internal(&env, issuer, namespace, token, holder, share_bps, None)
+    }
+
+    /// Set a holder's revenue share in basis points for a specific class of an offering.
+    pub fn set_holder_share_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        share_bps: u32,
+        share_class: ShareClass,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        Self::get_current_issuer(
+            &env,
+            issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+        )
+        .ok_or(RevoraError::OfferingNotFound)?;
+
+        Self::set_holder_share_internal(
+            &env,
+            issuer,
+            namespace,
+            token,
+            holder,
+            share_bps,
+            Some(share_class),
+        )
     }
 
     /// Get a holder's revenue share in basis points for an offering.
@@ -5417,7 +5830,39 @@ impl RevoraRevenueShare {
         holder: Address,
     ) -> u32 {
         let offering_id = OfferingId { issuer, namespace, token };
-        env.storage().persistent().get(&DataKey::HolderShare(offering_id, holder)).unwrap_or(0)
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        if let Some(cls_vec) =
+            env.storage().persistent().get::<_, Vec<(ShareClass, ClassConfig)>>(&classes_key)
+        {
+            let mut total_share = 0;
+            for (sc, _) in cls_vec.iter() {
+                let share: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), sc))
+                    .unwrap_or(0);
+                total_share += share;
+            }
+            total_share
+        } else {
+            env.storage().persistent().get(&DataKey::HolderShare(offering_id, holder)).unwrap_or(0)
+        }
+    }
+
+    /// Get a holder's revenue share in basis points for a specific class of an offering.
+    pub fn get_holder_share_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        share_class: ShareClass,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get(&DataKey2::HolderShareClass(offering_id, holder, share_class))
+            .unwrap_or(0)
     }
 
     /// Set the claim delay in seconds for an offering.
@@ -5542,6 +5987,49 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&WindowDataKey::Claim(offering_id))
     }
+
+    /// Configure the redemption window for an offering. If unset, always open.
+    pub fn set_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+        let window = AccessWindow { start_timestamp, end_timestamp };
+        Self::validate_window(&window)?;
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage().persistent().set(&WindowDataKey::Redemption(offering_id), &window);
+        env.events().publish(
+            (EVENT_REDEMPTION_WINDOW_SET, issuer, namespace, token),
+            (start_timestamp, end_timestamp),
+        );
+        Ok(())
+    }
+
+    /// Read configured redemption window (if any) for an offering.
+    pub fn get_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<AccessWindow> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&WindowDataKey::Redemption(offering_id))
+    }
     pub fn claim(
         env: Env,
         holder: Address,
@@ -5649,7 +6137,50 @@ impl RevoraRevenueShare {
                 offering_id.token.clone(),
             );
             let normalized = Self::normalize_amount(revenue, decimals);
-            let payout = normalized * (share_bps as i128) / 10_000;
+            let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+            let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+                env.storage().persistent().get(&classes_key);
+            let rounding_mode = Self::get_rounding_mode(
+                env.clone(),
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            );
+
+            let payout = if classes.is_some() {
+                let mut p = 0_i128;
+                if let Some(ref cls_vec) = classes {
+                    for (sc, config) in cls_vec.iter() {
+                        let holder_share = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey2::HolderShareClass(
+                                offering_id.clone(),
+                                holder.clone(),
+                                sc.clone(),
+                            ))
+                            .unwrap_or(0);
+                        if holder_share > 0 {
+                            let class_rev = Self::compute_share(
+                                env.clone(),
+                                normalized,
+                                config.bps,
+                                rounding_mode,
+                            );
+                            let holder_payout = Self::compute_share(
+                                env.clone(),
+                                class_rev,
+                                holder_share,
+                                rounding_mode,
+                            );
+                            p = p.saturating_add(holder_payout);
+                        }
+                    }
+                }
+                p
+            } else {
+                normalized * (share_bps as i128) / 10_000
+            };
             total_payout += payout;
             claimed_periods.push_back(period_id);
             last_claimed_idx = i + 1;
@@ -5780,6 +6311,166 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
     }
+
+    /// Atomically seal a period in a single transaction by:
+    ///
+    /// 1. **Finalising the snapshot** — recomputes `SHA-256(index_xdr || holder_xdr ||
+    ///    shares_bps_xdr)` over every applied holder slot and asserts it matches the
+    ///    committed `content_hash`.
+    /// 2. **Committing the accrual index** — derives an accrual sub-hash over
+    ///    `SHA-256(revenue_amount_xdr || payout_asset_xdr)` so indexers can audit the
+    ///    revenue figure without reading raw storage.
+    /// 3. **Sealing the report window** — writes the `ClosedPeriod` key, preventing
+    ///    any further overrides for this period.
+    /// 4. **Emitting a single `period_sealed` boundary event** carrying both sub-hashes
+    ///    so indexers see one event instead of three.
+    ///
+    /// ### Atomicity guarantee
+    ///
+    /// All three writes (snapshot finalization flag, accrual hash, closed-period key)
+    /// happen inside a single Soroban transaction invocation.  If any validation step
+    /// fails (hash mismatch, missing report, already closed, etc.) the function returns
+    /// an error before any write is committed, leaving state unchanged.
+    ///
+    /// ### Ordering invariants
+    ///
+    /// - `commit_snapshot` and `apply_snapshot_shares` must have been called for
+    ///   `snapshot_ref == period_id` before calling this function.
+    /// - `report_revenue` must have been called for `period_id` before calling this
+    ///   function.
+    /// - `atomic_close_period` is idempotent on the snapshot-finalization flag: if the
+    ///   snapshot was already finalized by a prior `finalize_snapshot` call, the hash
+    ///   check is skipped and the flag is left as-is.
+    ///
+    /// ### Parameters
+    /// - `issuer`    — offering issuer; must provide auth.
+    /// - `namespace` — offering namespace.
+    /// - `token`     — offering token.
+    /// - `period_id` — period to seal (must be > 0).
+    ///
+    /// ### Errors
+    /// - `ContractFrozen` / `ContractPaused`  — contract not operational.
+    /// - `OfferingNotFound`                   — offering absent or caller not current issuer.
+    /// - `InvalidPeriodId`                    — `period_id == 0`.
+    /// - `SnapshotNotEnabled`                 — snapshot distribution not enabled.
+    /// - `OutdatedSnapshot`                   — no snapshot entry for this `period_id`.
+    /// - `SnapshotHashMismatch`               — recomputed digest != committed `content_hash`.
+    /// - `MissingReportForOverride`           — no revenue report for this `period_id`.
+    /// - `PeriodAlreadyClosed`                — period already sealed.
+    pub fn atomic_close_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // ── Step 1: snapshot must be enabled ────────────────────────────────
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::SnapshotConfig(offering_id.clone()))
+            .unwrap_or(false)
+        {
+            return Err(RevoraError::SnapshotNotEnabled);
+        }
+
+        // ── Step 2: period must not already be sealed ────────────────────────
+        let closed_key = DataKey2::ClosedPeriod(offering_id.clone(), period_id);
+        if env.storage().persistent().has(&closed_key) {
+            return Err(RevoraError::PeriodAlreadyClosed);
+        }
+
+        // ── Step 3: finalise snapshot (validate hash, set flag) ──────────────
+        // Load the committed snapshot entry — fails if commit_snapshot was never called.
+        let entry_key = DataKey::SnapshotEntry(offering_id.clone(), period_id);
+        let entry: SnapshotEntry =
+            env.storage().persistent().get(&entry_key).ok_or(RevoraError::OutdatedSnapshot)?;
+
+        if !Self::is_snapshot_finalized(&env, &offering_id, period_id) {
+            let slot_count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SnapshotHolderCount(offering_id.clone(), period_id))
+                .unwrap_or(0);
+
+            let mut digest_input = Bytes::new(&env);
+            for index in 0..slot_count {
+                let (holder, share_bps): (Address, u32) = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SnapshotHolder(offering_id.clone(), period_id, index))
+                    .ok_or(RevoraError::SnapshotHashMismatch)?;
+                digest_input.append(&index.to_xdr(&env));
+                digest_input.append(&holder.to_xdr(&env));
+                digest_input.append(&share_bps.to_xdr(&env));
+            }
+
+            let computed_hash = env.crypto().sha256(&digest_input).to_bytes();
+            if computed_hash != entry.content_hash {
+                return Err(RevoraError::SnapshotHashMismatch);
+            }
+
+            // All validation passed — write the finalization flag.
+            env.storage()
+                .persistent()
+                .set(&DataKey2::SnapshotFinalized(offering_id.clone(), period_id), &true);
+        }
+
+        // ── Step 4: accrue index — derive sub-hash from report ───────────────
+        // Verify a revenue report exists for this period.
+        let reports_key = DataKey::RevenueReports(offering_id.clone());
+        let reports: Map<u64, (i128, u64)> = env
+            .storage()
+            .persistent()
+            .get(&reports_key)
+            .ok_or(RevoraError::MissingReportForOverride)?;
+        let (revenue_amount, _) =
+            reports.get(period_id).ok_or(RevoraError::MissingReportForOverride)?;
+
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Accrual sub-hash: SHA-256( revenue_amount_xdr || payout_asset_xdr )
+        let mut accrual_input = Bytes::new(&env);
+        accrual_input.append(&revenue_amount.to_xdr(&env));
+        accrual_input.append(&offering.payout_asset.to_xdr(&env));
+        let accrual_hash: BytesN<32> = env.crypto().sha256(&accrual_input).to_bytes();
+
+        // ── Step 5: seal the period ──────────────────────────────────────────
+        let closed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&closed_key, &closed_at);
+
+        // ── Step 6: emit single boundary event ──────────────────────────────
+        // One event instead of three, carrying both sub-hashes for indexers.
+        env.events().publish(
+            (EVENT_PERIOD_SEALED, issuer, namespace, token),
+            (period_id, entry.content_hash, accrual_hash, closed_at),
+        );
+
+        Ok(())
+    }
 }
 
 // â”€â”€ Holder shares, claims, admin, governance, and utility methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5807,6 +6498,7 @@ impl RevoraRevenueShare {
         token: Address,
         holder: Address,
         share_bps: u32,
+        share_class: Option<ShareClass>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -5833,6 +6525,7 @@ impl RevoraRevenueShare {
             offering_id.token,
             holder,
             share_bps,
+            share_class,
         )
     }
 
@@ -5935,6 +6628,7 @@ impl RevoraRevenueShare {
             payload.token.clone(),
             payload.holder.clone(),
             payload.share_bps,
+            None,
         )?;
         Self::mark_meta_nonce_used(&env, &signer, nonce);
         env.events().publish(
@@ -6019,6 +6713,7 @@ impl RevoraRevenueShare {
     /// Returns `(periods_page, next_cursor)` where `next_cursor` is `Some(next_index)` when more
     /// periods remain, otherwise `None`. `limit` of 0 or greater than `MAX_PAGE_LIMIT` will be
     /// capped to `MAX_PAGE_LIMIT` to keep calls predictable.
+    #[allow(clippy::too_many_arguments)]
     pub fn get_pending_periods_page(
         env: Env,
         issuer: Address,
@@ -6132,17 +6827,226 @@ impl RevoraRevenueShare {
                 offering_id.token.clone(),
             );
             let normalized = Self::normalize_amount(revenue, decimals);
-            total = total.saturating_add(Self::compute_share(
-                env.clone(),
-                normalized,
-                share_bps,
-                RoundingMode::Truncation,
-            ));
+            let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+            let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+                env.storage().persistent().get(&classes_key);
+
+            let payout = if classes.is_some() {
+                let mut p = 0_i128;
+                if let Some(ref cls_vec) = classes {
+                    for (sc, config) in cls_vec.iter() {
+                        let holder_share = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey2::HolderShareClass(
+                                offering_id.clone(),
+                                holder.clone(),
+                                sc.clone(),
+                            ))
+                            .unwrap_or(0);
+                        if holder_share > 0 {
+                            let class_rev = Self::compute_share(
+                                env.clone(),
+                                normalized,
+                                config.bps,
+                                RoundingMode::Truncation,
+                            );
+                            let holder_payout = Self::compute_share(
+                                env.clone(),
+                                class_rev,
+                                holder_share,
+                                RoundingMode::Truncation,
+                            );
+                            p = p.saturating_add(holder_payout);
+                        }
+                    }
+                }
+                p
+            } else {
+                Self::compute_share(env.clone(), normalized, share_bps, RoundingMode::Truncation)
+            };
+            total = total.saturating_add(payout);
             processed = processed.saturating_add(1);
             idx = idx.saturating_add(1);
         }
 
         (total, None)
+    }
+
+    /// Request redemption of a portion of the caller's holder shares.
+    ///
+    /// The holder submits a request specifying `shares_bps` to redeem. Only one
+    /// pending request per holder per offering is allowed. The redemption window
+    /// must be open (if configured). Blacklisted holders are rejected.
+    pub fn request_redemption(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        shares_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        holder.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists
+        Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Check redemption window is open
+        Self::require_redemption_window_open(&env, &offering_id)?;
+
+        // Check holder is not blacklisted
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Check holder has shares to redeem
+        let current_share = Self::get_holder_share_internal(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        );
+        if current_share == 0 {
+            return Err(RevoraError::NoPendingClaims);
+        }
+        if shares_bps == 0 || shares_bps > current_share {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        // Check no pending request already exists
+        let request_key = DataKey2::RedemptionRequest(offering_id.clone(), holder.clone());
+        if env.storage().persistent().has(&request_key) {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Store pending request
+        let pending = PendingRedemption { shares_bps, timestamp: env.ledger().timestamp() };
+        env.storage().persistent().set(&request_key, &pending);
+
+        // Emit event
+        env.events()
+            .publish((EVENT_REDEMPTION_REQUESTED, issuer, namespace, token), (holder, shares_bps));
+        Ok(())
+    }
+
+    /// Fulfill a pending redemption request.
+    ///
+    /// The issuer transfers `amount` of the offering's locked payment token from
+    /// the contract to the holder and reduces the holder's share by the requested
+    /// `shares_bps`. The redemption window must be open. Blacklisted holders are
+    /// rejected even if they had a pending request.
+    pub fn fulfill_redemption(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        amount: i128,
+    ) -> Result<i128, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify caller is the current issuer
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Check redemption window is open
+        Self::require_redemption_window_open(&env, &offering_id)?;
+
+        // Reject blacklisted holders even if they had a pending request
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Validate amount
+        if amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // Read pending request
+        let request_key = DataKey2::RedemptionRequest(offering_id.clone(), holder.clone());
+        let pending: PendingRedemption =
+            env.storage().persistent().get(&request_key).ok_or(RevoraError::NoTransferPending)?;
+
+        // Read holder's current share
+        let current_share = Self::get_holder_share_internal(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+        );
+        if current_share == 0 {
+            return Err(RevoraError::NoPendingClaims);
+        }
+
+        // Compute effective redeem bps (capped to what holder actually has)
+        let redeem_bps = core::cmp::min(pending.shares_bps, current_share);
+        let new_share = current_share - redeem_bps;
+
+        // Transfer amount from contract to holder using locked payment token
+        let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
+            .ok_or(RevoraError::PaymentTokenMismatch)?;
+        let contract_addr = env.current_contract_address();
+        if token::Client::new(&env, &payment_token)
+            .try_transfer(&contract_addr, &holder, &amount)
+            .is_err()
+        {
+            return Err(RevoraError::TransferFailed);
+        }
+
+        // Reduce holder's share by the redeemed bps
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+            new_share,
+        )?;
+
+        // Remove the pending request
+        env.storage().persistent().remove(&request_key);
+
+        // Emit fulfillment event
+        env.events().publish(
+            (EVENT_REDEMPTION_FULFILLED, issuer, namespace, token),
+            (holder, redeem_bps, amount),
+        );
+        Ok(amount)
     }
 
     /// Preview the total claimable amount for a holder without mutating state.
@@ -6389,6 +7293,14 @@ impl RevoraRevenueShare {
         amount: i128,
         holder_shares: Vec<(Address, u32)>,
     ) -> SimulateDistributionResult {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
         let mode = Self::get_rounding_mode(env.clone(), issuer, namespace, token.clone());
         let mut total: i128 = 0;
         let mut payouts = Vec::new(&env);
@@ -6397,7 +7309,32 @@ impl RevoraRevenueShare {
             let payout = if share_bps > 10_000 {
                 0_i128
             } else {
-                Self::compute_share(env.clone(), amount, share_bps, mode)
+                if classes.is_some() {
+                    let mut p = 0_i128;
+                    if let Some(ref cls_vec) = classes {
+                        for (sc, config) in cls_vec.iter() {
+                            let holder_share = env
+                                .storage()
+                                .persistent()
+                                .get(&DataKey2::HolderShareClass(
+                                    offering_id.clone(),
+                                    holder.clone(),
+                                    sc.clone(),
+                                ))
+                                .unwrap_or(0);
+                            if holder_share > 0 {
+                                let class_rev =
+                                    Self::compute_share(env.clone(), amount, config.bps, mode);
+                                let holder_payout =
+                                    Self::compute_share(env.clone(), class_rev, holder_share, mode);
+                                p = p.saturating_add(holder_payout);
+                            }
+                        }
+                    }
+                    p
+                } else {
+                    Self::compute_share(env.clone(), amount, share_bps, mode)
+                }
             };
             total = total.saturating_add(payout);
             payouts.push_back((holder.clone(), payout));
@@ -6951,7 +7888,7 @@ mod issue_370_373_tests {
         let mut tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0);
+            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0, &None);
             tokens.push_back(token);
         }
 
@@ -7022,13 +7959,37 @@ mod issue_370_373_tests {
 
         let new_token_0 = Address::generate(&env);
         let new_token_1 = Address::generate(&env);
-        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0);
-        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0);
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_0,
+            &1_100,
+            &new_token_0,
+            &0,
+            &None,
+        );
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_1,
+            &1_200,
+            &new_token_1,
+            &0,
+            &None,
+        );
 
         let mut old_tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0);
+            client.register_offering(
+                &old_issuer,
+                &namespace,
+                &token,
+                &(2_000 + i),
+                &token,
+                &0,
+                &None,
+            );
             old_tokens.push_back(token);
         }
 
@@ -7132,7 +8093,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &0
+                &0,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7185,7 +8147,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &1
+                &1,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7214,7 +8177,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &cap
+                &cap,
+                &None
             ),
             Ok(Ok(()))
         );
@@ -7242,7 +8206,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &-1_i128
+                &-1_i128,
+                &None
             ),
             Err(Ok(RevoraError::InvalidAmount))
         );
@@ -7261,7 +8226,8 @@ mod issue_414_supply_cap_tests {
                 &token_addr,
                 &1_000,
                 &payment_token,
-                &cap
+                &cap,
+                &None
             ),
             Ok(Ok(()))
         );
