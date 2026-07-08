@@ -1,57 +1,17 @@
-//! Tests for the `close_period` feature.
-//!
-//! ## Coverage matrix
-//!
-//! | Scenario | Expected |
-//! |----------|----------|
-//! | Happy path: close an open period | `Ok(())`, `is_period_closed` returns `true`, event emitted |
-//! | Double-close | `PeriodAlreadyClosed` |
-//! | Override after close | `PeriodAlreadyClosed` |
-//! | Initial report after close (new period) | allowed (close only blocks overrides) |
-//! | Deposit after close | allowed (deposit is independent) |
-//! | Claim after close | allowed (deposited revenue still claimable) |
-//! | Wrong issuer | `OfferingNotFound` |
-//! | Unknown offering | `OfferingNotFound` |
-//! | period_id == 0 | `InvalidPeriodId` |
-//! | Close does not affect other periods | override of open period succeeds |
-
 #![cfg(test)]
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    token,
-    Address, Env,
+    token, Address, Env,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
-    let id = env.register_contract(None, RevoraRevenueShare);
-    RevoraRevenueShareClient::new(env, &id)
-}
-
-fn create_payment_token(env: &Env) -> (Address, Address) {
-    let admin = Address::generate(env);
-    let contract = env.register_stellar_asset_contract_v2(admin.clone());
-    let token_id = contract.address();
-    (token_id, admin)
-}
-
-fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
-    token::StellarAssetClient::new(env, token).mint(to, &amount);
-}
-
-/// Register an offering and return (env, client, issuer, offering_token, payment_token).
-/// `env` must be kept alive for the duration of the test.
-fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+#[test]
+#[should_panic(expected = "Error(Contract, #456)")]
+fn test_claim_on_deferred_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
-    let issuer = Address::generate(&env);
-    let offering_token = Address::generate(&env);
-    let (payment_token, _) = create_payment_token(&env);
+    let contract_id = env.register_contract(None, AmountValidationResult);
+    let client = AmountValidationResultClient::new(&env, &contract_id);
 
     client.register_offering(
         &issuer,
@@ -134,8 +94,7 @@ fn override_after_close_returns_period_already_closed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // Attempt override — must be rejected.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -149,9 +108,11 @@ fn initial_report_for_new_period_after_close_is_allowed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // A brand-new period 2 (initial report, not an override) must still be accepted.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
-    assert!(result.is_ok(), "initial report for a new period should succeed after closing period 1");
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
+    assert!(
+        result.is_ok(),
+        "initial report for a new period should succeed after closing period 1"
+    );
 }
 
 #[test]
@@ -206,8 +167,7 @@ fn close_period_does_not_affect_other_periods() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &2));
 
     // Override of period 2 must still succeed.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
     assert!(result.is_ok(), "override of an open period must succeed");
 }
 
@@ -222,4 +182,102 @@ fn close_period_wrong_issuer_returns_not_found() {
     let attacker = Address::generate(&env);
     let result = client.try_close_period(&attacker, &ns, &token, &1);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+// ── Gas-bound tests: linear-in-holders cost ──────────────────────────────────
+
+/// Helper to compute CPU instruction delta of `close_period` call.
+fn measure_cpu_for_n_holders(n: u32) -> u64 {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &offering_token, &10_000, &payment_token, &0);
+
+    for _ in 0..n {
+        let holder = Address::generate(&env);
+        client.set_holder_share(&issuer, &ns, &offering_token, &holder, &1);
+    }
+
+    let before = env.budget().cpu_instruction_count();
+    client.close_period(&issuer, &ns, &offering_token, &1);
+    let after = env.budget().cpu_instruction_count();
+    after.saturating_sub(before)
+}
+
+/// Compute R² (coefficient of determination) for a linear fit of (x,y) points.
+fn r_squared(points: &[(f64, f64)]) -> f64 {
+    let n = points.len() as f64;
+    if n < 2 {
+        return 0.0;
+    }
+
+    let mean_y = points.iter().map(|(_, y)| y).sum::<f64>() / n;
+    let ss_total: f64 = points.iter().map(|(_, y)| (y - mean_y).powi(2)).sum();
+    if ss_total == 0.0 {
+        return 1.0;
+    }
+
+    let sum_x = points.iter().map(|(x, _)| x).sum::<f64>();
+    let sum_y = points.iter().map(|(_, y)| y).sum::<f64>();
+    let sum_x_sq = points.iter().map(|(x, _)| x.powi(2)).sum::<f64>();
+    let sum_xy = points.iter().map(|(x, y)| x * y).sum::<f64>();
+
+    let slope_numerator = n * sum_xy - sum_x * sum_y;
+    let slope_denominator = n * sum_x_sq - sum_x.powi(2);
+    if slope_denominator == 0.0 {
+        return 0.0;
+    }
+
+    let slope = slope_numerator / slope_denominator;
+    let intercept = (sum_y - slope * sum_x) / n;
+
+    let ss_residual: f64 = points.iter()
+        .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
+        .sum();
+
+    1.0 - (ss_residual / ss_total)
+}
+
+/// Test that close_period cost grows linearly with holder count (R² > 0.98).
+#[test]
+fn close_period_cpu_grows_linearly_with_holders() {
+    let test_counts = [1u32, 10u32, 100u32, 1000u32];
+    let mut points = Vec::new();
+
+    for n in test_counts {
+        let cpu = measure_cpu_for_n_holders(n) as f64;
+        points.push((n as f64, cpu));
+    }
+
+    let r2 = r_squared(&points);
+    assert!(r2 > 0.98, "R² = {:.4} is below threshold of 0.98", r2);
+}
+
+/// Test that zero-holder offering closes with constant cost.
+#[test]
+fn close_period_zero_holders_has_constant_cost() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let ns = symbol_short!("ns");
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &ns, &token, &10_000, &payment_token, &0);
+
+    let before = env.budget().cpu_instruction_count();
+    client.close_period(&issuer, &ns, &token, &1);
+    let after = env.budget().cpu_instruction_count();
+
+    assert!(after - before > 0, "CPU cost must be positive");
+    // Assert that cost is within a reasonable constant bound
+    assert!(after - before < 5_000_000, "CPU cost {} exceeded constant bound", after - before);
 }

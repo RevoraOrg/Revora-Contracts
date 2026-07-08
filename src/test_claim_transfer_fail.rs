@@ -41,8 +41,8 @@
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, token, Address,
-    Env, String,
+    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
+    String,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -223,11 +223,14 @@ fn setup_claim_fail() -> (
 
     revora.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &10_000,
         &fail_token_id,
         &0,
+        &None,
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
 
@@ -437,7 +440,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (env, revora_id, revora, _fail_token_id, _fail_token, issuer, offering_token_a, holder) =
         setup_claim_fail();
 
-    // Register a second offering with a normal Stellar asset token
+    // Register a second offering backed by a normal (unarmed) token so its claim succeeds.
     let offering_token_b = Address::generate(&env);
     let admin_b = Address::generate(&env);
     let payout_b = env.register_stellar_asset_contract_v2(admin_b.clone());
@@ -469,7 +472,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let r_a = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token_a, &50);
     assert!(matches!(r_a.err(), Some(Ok(RevoraError::TransferFailed))));
 
-    // Claim on offering B succeeds (normal token)
+    // Claim on offering B succeeds (normal Stellar asset token)
     let r_b = revora.try_claim(&holder, &issuer, &symbol_short!("def"), &offering_token_b, &50);
     assert!(r_b.is_ok(), "sibling offering claim must succeed, got {r_b:?}");
 
