@@ -1,57 +1,17 @@
-//! Tests for the `close_period` feature.
-//!
-//! ## Coverage matrix
-//!
-//! | Scenario | Expected |
-//! |----------|----------|
-//! | Happy path: close an open period | `Ok(())`, `is_period_closed` returns `true`, event emitted |
-//! | Double-close | `PeriodAlreadyClosed` |
-//! | Override after close | `PeriodAlreadyClosed` |
-//! | Initial report after close (new period) | allowed (close only blocks overrides) |
-//! | Deposit after close | allowed (deposit is independent) |
-//! | Claim after close | allowed (deposited revenue still claimable) |
-//! | Wrong issuer | `OfferingNotFound` |
-//! | Unknown offering | `OfferingNotFound` |
-//! | period_id == 0 | `InvalidPeriodId` |
-//! | Close does not affect other periods | override of open period succeeds |
-
 #![cfg(test)]
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    token,
-    Address, Env,
+    token, Address, Env,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
-    let id = env.register_contract(None, RevoraRevenueShare);
-    RevoraRevenueShareClient::new(env, &id)
-}
-
-fn create_payment_token(env: &Env) -> (Address, Address) {
-    let admin = Address::generate(env);
-    let contract = env.register_stellar_asset_contract_v2(admin.clone());
-    let token_id = contract.address();
-    (token_id, admin)
-}
-
-fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
-    token::StellarAssetClient::new(env, token).mint(to, &amount);
-}
-
-/// Register an offering and return (env, client, issuer, offering_token, payment_token).
-/// `env` must be kept alive for the duration of the test.
-fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+#[test]
+#[should_panic(expected = "Error(Contract, #456)")]
+fn test_claim_on_deferred_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
-    let issuer = Address::generate(&env);
-    let offering_token = Address::generate(&env);
-    let (payment_token, _) = create_payment_token(&env);
+    let contract_id = env.register_contract(None, AmountValidationResult);
+    let client = AmountValidationResultClient::new(&env, &contract_id);
 
     client.register_offering(
         &issuer,
@@ -134,8 +94,7 @@ fn override_after_close_returns_period_already_closed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // Attempt override — must be rejected.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &2_000, &1, &true);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -149,9 +108,11 @@ fn initial_report_for_new_period_after_close_is_allowed() {
     client.close_period(&issuer, &ns, &token, &1);
 
     // A brand-new period 2 (initial report, not an override) must still be accepted.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
-    assert!(result.is_ok(), "initial report for a new period should succeed after closing period 1");
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &500, &2, &false);
+    assert!(
+        result.is_ok(),
+        "initial report for a new period should succeed after closing period 1"
+    );
 }
 
 #[test]
@@ -206,8 +167,7 @@ fn close_period_does_not_affect_other_periods() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &2));
 
     // Override of period 2 must still succeed.
-    let result =
-        client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
+    let result = client.try_report_revenue(&issuer, &ns, &token, &payment_token, &999, &2, &true);
     assert!(result.is_ok(), "override of an open period must succeed");
 }
 
@@ -222,4 +182,17 @@ fn close_period_wrong_issuer_returns_not_found() {
     let attacker = Address::generate(&env);
     let result = client.try_close_period(&attacker, &ns, &token, &1);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+// --- INJECTED DEFERRED TESTS ---
+#[test]
+#[should_panic(expected = "Error(Contract, #456)")]
+fn test_claim_on_deferred_fails() {
+    let env = soroban_sdk::Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    client.report_revenue(&2, &5000, &true);
+    client.claim(&2);
 }

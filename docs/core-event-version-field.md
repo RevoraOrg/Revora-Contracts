@@ -139,5 +139,41 @@ Tests live in `src/test_indexer_fixtures.rs`.
 **Success Criteria**: 100% core events emit `(2u32, ...v2_data)` with correct topic, verified
 by automated tests in `src/test_indexer_fixtures.rs`.
 
+**Upgrade Path**: v3 bumps EVENT_SCHEMA_VERSION_V2 → 3 when storage schemas change.
+See `INDEXER_EVENT_SCHEMA_VERSION = 3` and the `EventIndexTopicV3` struct for the active schema.
+
+## Indexer Event Versioning (V2 → V3)
+
+### What Changed
+
+- Added `EVENT_INDEXED_V3` topic constant (`ev_idx3`).
+- Added `EventIndexTopicV3` struct — same shape as V2 plus a `_reserved: u32` field for future additive fields.
+- Added `emit_v2_and_v3()` helper that publishes both V2 and V3 events from all state-changing entries.
+- Bumped `INDEXER_EVENT_SCHEMA_VERSION` from 2 to 3.
+
+### Dual-Emission Strategy
+
+All state-changing entries now call `emit_v2_and_v3()` which publishes:
+1. **V2 event** at `EVENT_INDEXED_V2` (`ev_idx2`) with `version=2` — unchanged for existing subscribers.
+2. **V3 event** at `EVENT_INDEXED_V3` (`ev_idx3`) with `version=3` — for forward-compatible indexers.
+
+### Deprecation Policy
+
+- V2 events continue to emit for at least **two contract minor versions** after V3 introduction.
+- V2-only subscribers are safe during this window.
+- After the deprecation window, V2 emission may be removed.
+- V3 subscribers should validate `version == 3` and reject mismatches.
+
+### Migration Table
+
+| Aspect | V2 | V3 |
+|--------|----|----|
+| Topic symbol | `ev_idx2` | `ev_idx3` |
+| Struct | `EventIndexTopicV2` | `EventIndexTopicV3` |
+| `version` field | `2` | `3` |
+| `_reserved` | N/A | `u32` (always `0`) |
+| Emission | `env.events().publish((EVENT_INDEXED_V2, ...), ...)` | dual-emitted via `emit_v2_and_v3` |
+| Subscriber impact | Unchanged | New topic, validate version |
+
 **Upgrade Path**: v3 will bump `EVENT_SCHEMA_VERSION_V2 → 3` when storage schemas change;
 the constant guard test will catch any accidental early bump.

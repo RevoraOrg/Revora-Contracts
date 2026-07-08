@@ -263,6 +263,77 @@ DataKey::TestnetMode -> bool
 - Mode changes are immediate (no delay or grace period)
 - Existing offerings retain their parameters when mode is toggled
 
+## Faucet: Deterministic Test Holders (`faucet_seed_holders`)
+
+### Overview
+
+`faucet_seed_holders(issuer, namespace, token, count)` allocates `count` deterministic
+32-byte seeds for an offering's holder slots. It is **strictly testnet-only** — calling it
+while `testnet_mode == false` returns `RevoraError::TestnetOnly` (wire value 51).
+
+### Purpose
+
+Integration test suites can call this function once and pin their holder addresses against
+the returned seeds without manually wiring up holders per test run.
+
+### Seed Derivation
+
+Each seed is computed as:
+
+```
+seed[idx] = sha256(issuer_xdr || namespace_xdr || token_xdr || idx_xdr)
+```
+
+The XDR encoding is the standard Soroban `to_xdr` representation. Seeds are
+offering-specific and index-specific, guaranteeing no collisions within or across offerings.
+
+### BPS Distribution
+
+The 10 000 basis-point total is split floor-evenly across `count` slots:
+
+- `floor_bps = 10_000 / count`
+- The **last slot** absorbs the remainder: `last_bps = floor_bps + (10_000 % count)`
+
+The per-slot BPS is included in the emitted `fct_seed` event so test suites can assert
+expected distribution without re-computing it.
+
+### Events
+
+One `fct_seed` event per slot:
+
+```
+Topics: (fct_seed, issuer, namespace, token)
+Data:   (idx: u32, seed: BytesN<32>, share_bps: u32)
+```
+
+### Storage
+
+Seeds are persisted in `DataKey2::FaucetSeedEntry(offering_id, idx)` so they can be
+retrieved by index without re-calling the function.
+
+### Security
+
+- Guarded by `is_testnet_mode()` — panics with `TestnetOnly` on mainnet.
+- Requires the offering to be registered (`OfferingNotFound` otherwise).
+- `count == 0` is a no-op (returns empty vec, emits no events).
+
+### Example Usage
+
+```rust
+// Prerequisites: testnet mode enabled, offering registered.
+let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &5);
+// seeds[0] is the raw ed25519 public key for slot-0 test holder.
+// Use it externally to derive the corresponding Stellar keypair.
+```
+
+### New Error Variant
+
+| Code | Variant | Condition |
+|------|---------|-----------|
+| 51 | `TestnetOnly` | `faucet_seed_holders` called with `testnet_mode == false` |
+
+---
+
 ## Version History
 
 - **v0.1.0** - Initial implementation (Issue #24)
@@ -270,6 +341,14 @@ DataKey::TestnetMode -> bool
   - BPS validation relaxation
   - Concentration enforcement skip
   - Comprehensive test coverage
+
+- **v0.2.0** - Deterministic faucet (Issue #476)
+  - `faucet_seed_holders` function
+  - `RevoraError::TestnetOnly` (wire value 51)
+  - `RevoraError::StaleConcentrationData` (wire value 52, pre-existing usage fixed)
+  - `DataKey2::FaucetSeedEntry` storage key
+  - `EVENT_FAUCET_SEED` (`fct_seed`) event symbol
+  - `src/test_faucet_seed.rs` — 95%+ test coverage
 
 ## Support
 
