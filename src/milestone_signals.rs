@@ -51,7 +51,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let token = Address::generate(env);
     let payout = Address::generate(env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &None);
     (issuer, token, payout)
 }
 
@@ -469,8 +469,8 @@ fn milestone_audit_summary_isolated_per_offering() {
     let ns = symbol_short!("def");
 
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &ns, &token_a, &1_000u32, &payout, &0i128);
-    client.register_offering(&issuer, &ns, &token_b, &1_000u32, &payout, &0i128);
+    client.register_offering(&issuer, &ns, &token_a, &1_000u32, &payout, &0i128, &None);
+    client.register_offering(&issuer, &ns, &token_b, &1_000u32, &payout, &0i128, &None);
 
     client.report_revenue(&issuer, &ns, &token_a, &payout, &5_000i128, &1u64, &false);
 

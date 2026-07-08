@@ -66,7 +66,7 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
         &1_000,
         &payment_token,
         &0,
-    );
+    &None);
     mint(&env, &payment_token, &issuer, 1_000_000_000);
     (env, client, issuer, offering_token, payment_token)
 }
@@ -82,7 +82,7 @@ fn report_revenue_zero_period_id_rejected() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let result =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &100, &0, &false);
@@ -181,7 +181,7 @@ fn report_revenue_period_id_one_accepted() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let result =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &1, &false);
@@ -196,7 +196,7 @@ fn report_revenue_period_id_max_rejected() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let result = client.try_report_revenue(
         &issuer,
@@ -218,7 +218,7 @@ fn report_revenue_period_id_near_max_rejected() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let result = client.try_report_revenue(
         &issuer,
@@ -337,7 +337,7 @@ fn report_revenue_duplicate_without_override_no_state_change() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     client
         .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false)
@@ -361,7 +361,7 @@ fn report_revenue_duplicate_with_override_updates_state() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     client
         .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false)
@@ -388,7 +388,7 @@ fn negative_amount_rejected_before_period_id_check() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     // Negative amount with valid period_id
     let r =
@@ -404,7 +404,7 @@ fn zero_amount_accepted_by_report_revenue() {
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let r =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &0, &3, &false);
@@ -439,7 +439,7 @@ fn report_revenue_wrong_issuer_rejected() {
     let issuer = Address::generate(&env);
     let attacker = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
 
     let r = client.try_report_revenue(
         &attacker,
@@ -495,7 +495,7 @@ fn period_id_isolated_across_offerings() {
         &1_000,
         &payment_token,
         &0,
-    );
+    &None);
     client.register_offering(
         &issuer_b,
         &symbol_short!("def"),
@@ -503,7 +503,7 @@ fn period_id_isolated_across_offerings() {
         &1_000,
         &payment_token,
         &0,
-    );
+    &None);
 
     mint(&env, &payment_token, &issuer_a, 1_000_000);
     mint(&env, &payment_token, &issuer_b, 1_000_000);
@@ -536,8 +536,8 @@ fn report_revenue_period_id_isolated_across_offerings() {
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1_000, &token_a, &0);
-    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &1_000, &token_b, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &None);
+    client.register_offering(&issuer, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &None);
 
     client
         .report_revenue(&issuer, &symbol_short!("def"), &token_a, &token_a, &100, &9, &false)
@@ -565,7 +565,7 @@ fn frozen_contract_rejects_report_revenue() {
     let token = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &None);
     client.freeze();
 
     let r =
@@ -592,7 +592,7 @@ fn frozen_contract_rejects_deposit_revenue() {
         &1_000,
         &payment_token,
         &0,
-    );
+    &None);
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.freeze();
 
