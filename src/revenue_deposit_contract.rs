@@ -1,6 +1,6 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token::Client as TokenClient, Address,
-    Env, Map, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::Client as TokenClient,
+    Address, Env, Map, Vec,
 };
 
 /// Top-level storage keys stored in persistent contract storage.
@@ -11,6 +11,8 @@ pub enum DataKey {
     Admin,
     /// The token contract ID used for all deposits and claims.
     Token,
+    /// Authorized offering contract addresses allowed to deposit revenue.
+    AuthorizedOfferings,
     /// Counter tracking the next period ID to be assigned.
     PeriodCounter,
     /// All registered period IDs (Vec<u32>).
@@ -66,6 +68,8 @@ pub enum ContractError {
     Overflow = 10,
     /// No beneficiaries are registered; nothing to distribute.
     NoBeneficiaries = 11,
+    /// The caller is not an authorized offering contract.
+    UnauthorizedDepositor = 12,
 }
 
 #[contract]
@@ -82,8 +86,82 @@ impl RevenueDepositContract {
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Token, &token);
+        env.storage().persistent().set(&DataKey::AuthorizedOfferings, &Vec::<Address>::new(&env));
         env.storage().persistent().set(&DataKey::PeriodCounter, &0u32);
         env.storage().persistent().set(&DataKey::PeriodIds, &Vec::<u32>::new(&env));
+
+        Ok(())
+    }
+
+    /// Authorize `offering` to deposit revenue into this contract.
+    pub fn add_authorized_offering(env: Env, offering: Address) -> Result<(), ContractError> {
+        let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let mut offerings: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedOfferings)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if !offerings.contains(&offering) {
+            offerings.push_back(offering.clone());
+            env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
+        }
+
+        env.events().publish(&symbol_short!("dep_allow_add"), &offering);
+        Ok(())
+    }
+
+    /// Remove `offering` from the authorized depositors allowlist.
+    pub fn remove_authorized_offering(env: Env, offering: Address) -> Result<(), ContractError> {
+        let admin: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let mut offerings: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedOfferings)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let pos = offerings.iter().position(|entry| entry == offering).ok_or(ContractError::UnauthorizedDepositor)?;
+        offerings.remove(pos as u32);
+        env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
+
+        env.events().publish(&symbol_short!("dep_allow_rm"), &offering);
+        Ok(())
+    }
+
+    /// Deposit `amount` of the configured token into `period_id` from an authorized offering.
+    pub fn deposit(env: Env, caller: Address, period_id: u32, amount: i128) -> Result<(), ContractError> {
+        let offerings: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedOfferings)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if !offerings.contains(&caller) {
+            return Err(ContractError::UnauthorizedDepositor);
+        }
+
+        caller.require_auth();
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let mut period: Period = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Period(period_id))
+            .ok_or(ContractError::PeriodNotFound)?;
+
+        period.revenue_amount = period.revenue_amount.checked_add(amount).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&DataKey::Period(period_id), &period);
+
+        let token: Address = env.storage().persistent().get(&DataKey::Token).unwrap();
+        let token_client = TokenClient::new(&env, &token);
+        token_client.transfer(&caller, &env.current_contract_address(), &amount);
 
         Ok(())
     }
@@ -270,6 +348,14 @@ impl RevenueDepositContract {
     /// Return the token contract address.
     pub fn get_token(env: Env) -> Address {
         env.storage().persistent().get(&DataKey::Token).unwrap()
+    }
+
+    /// Return the list of authorized offering contract addresses.
+    pub fn get_authorized_offerings(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AuthorizedOfferings)
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Build a summary map of unclaimed amounts per period.
