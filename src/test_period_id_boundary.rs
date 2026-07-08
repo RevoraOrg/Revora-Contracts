@@ -61,6 +61,8 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &1_000,
@@ -491,6 +493,8 @@ fn period_id_isolated_across_offerings() {
 
     client.register_offering(
         &issuer_a,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token_a,
         &1_000,
@@ -500,6 +504,8 @@ fn period_id_isolated_across_offerings() {
         &0);
     client.register_offering(
         &issuer_b,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token_b,
         &1_000,
@@ -590,6 +596,8 @@ fn frozen_contract_rejects_deposit_revenue() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &1_000,

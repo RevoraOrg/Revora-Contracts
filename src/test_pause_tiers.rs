@@ -66,6 +66,8 @@ fn setup_with_offering(
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &10_000,

@@ -72,6 +72,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &5_000,

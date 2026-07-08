@@ -559,6 +559,8 @@ fn register_offering_missing_auth_no_mutation() {
 
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
@@ -820,6 +822,8 @@ fn register_offering_blocked_when_frozen() {
     let token = Address::generate(&env);
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
@@ -970,6 +974,8 @@ fn register_offering_invalid_bps_returns_typed_error() {
 
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &10_001u32,

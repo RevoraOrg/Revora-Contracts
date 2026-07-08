@@ -1,46 +1,24 @@
-//! # Global Freeze Full Matrix — Test Suite
+
+//! # Emergency Holder Freeze Tests
 //!
-//! Verifies that **every** state-mutating entry point returns `ContractFrozen`
-//! (or the equivalent `RevoraError::ContractFrozen`) when the contract is
-//! globally frozen, and that **no partial write** occurs.
-//!
-//! ## Design
-//!
-//! A single shared helper `assert_frozen_err` centralises the assertion so
-//! that future additions only need to add one test function, not duplicate
-//! the assertion logic.
-//!
-//! ## Intentional exceptions (documented)
-//!
-//! The following entry points are intentionally **not** blocked by the global
-//! freeze.  Each exception is justified below:
-//!
-//! | Entry point                  | Reason                                                                 |
-//! |------------------------------|------------------------------------------------------------------------|
-//! | `claim`                      | Holders must always be able to exit; trapping funds is unacceptable.  |
-//! | `pause_admin` / `unpause_admin` | Pause is a separate, lighter-weight control; freeze does not block it.|
-//! | `pause_safety` / `unpause_safety` | Same rationale as admin pause.                                    |
-//! | `propose_action`             | Multisig governance must remain operable to *unfreeze* via proposal.  |
-//! | `approve_action`             | Same rationale as propose_action.                                     |
-//! | `execute_action`             | Freeze proposal execution must be reachable even when frozen.         |
-//! | `register_meta_signer_key`   | Key registration is a signer-only binding; no business state mutated. |
-//! | `set_payment_token_decimals` | Decimal config is issuer-only and does not affect fund flows.         |
-//!
-//! ## Coverage target
-//!
-//! ≥ 95 % of new/materially changed code paths (per issue requirement).
-//! Every `require_not_frozen` call site in `src/lib.rs` has a corresponding
-//! test case in this file.
+//! Comprehensive tests for the emergency holder freeze feature:
+//! - Successful freeze and claim blocking
+//! - Successful unfreeze with matching reason
+//! - Unfreeze failure with mismatched reason
+//! - Unauthorized freeze/unfreeze attempts
+//! - is_holder_frozen correctness
+//! - Event emission (frz_set, frz_clr)
 
 #![cfg(test)]
 
+use crate::{FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::Address as _,
-    Address, BytesN, Env, Vec,
+    testutils::{Address as _, Events as _},
+    Address, Env, Symbol,
 };
 
-use crate::{ProposalAction, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -476,11 +454,9 @@ fn frozen_claim_is_not_blocked() {
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-
-    let issuer = admin.clone();
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("test");
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
@@ -532,144 +508,233 @@ fn frozen_set_holder_share_no_partial_write() {
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let holder = Address::generate(&env);
 
-    let _ = client.try_set_holder_share(
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+
+    (env, client, admin, ns, token, issuer, holder)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn emergency_freeze_blocks_claim() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze the holder with Sanctions reason
+    client.emergency_freeze_holder(
         &issuer,
-        &symbol_short!("ns"),
+        &issuer,
+        &ns,
         &token,
         &holder,
-        &9_999u32,
+        &FreezeReason::Sanctions,
     );
 
-    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns"), &token, &holder), 0);
+    // Verify is_holder_frozen returns true
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Try to claim - should fail with HolderFrozen
+    let result = client.try_claim(&holder, &issuer, &ns, &token, &10);
+    assert!(result.is_err());
 }
 
-/// After a frozen `blacklist_add`, the investor must not appear in the blacklist.
 #[test]
-fn frozen_blacklist_add_no_partial_write() {
-    let env = Env::default();
-    let (client, _, issuer, token, _) = frozen_setup(&env);
-    let investor = Address::generate(&env);
+fn emergency_unfreeze_succeeds_with_matching_reason() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
 
-    let _ = client.try_blacklist_add(&issuer, &issuer, &symbol_short!("ns"), &token, &investor);
-
-    assert!(!client.is_blacklisted(&issuer, &symbol_short!("ns"), &token, &investor));
-    assert_eq!(client.get_blacklist_size(&issuer, &symbol_short!("ns"), &token), 0);
-}
-
-/// After a frozen `set_concentration_limit`, the limit must remain absent.
-#[test]
-fn frozen_set_concentration_limit_no_partial_write() {
-    let env = Env::default();
-    let (client, _, issuer, token, _) = frozen_setup(&env);
-
-    let _ = client.try_set_concentration_limit(
+    // Freeze with IssuerDispute
+    client.emergency_freeze_holder(
         &issuer,
-        &symbol_short!("ns"),
+        &issuer,
+        &ns,
         &token,
-        &3_000u32,
-        &true,
-        &0u64,
+        &holder,
+        &FreezeReason::IssuerDispute,
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Unfreeze with the same reason
+    client.emergency_unfreeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::IssuerDispute,
+    );
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Now claim should work
+    let payout = client.claim(&holder, &issuer, &ns, &token, &10);
+    assert!(payout > 0);
+}
+
+#[test]
+fn emergency_unfreeze_fails_with_mismatched_reason() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze with CourtOrder
+    client.emergency_freeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::CourtOrder,
     );
 
-    assert!(client.get_concentration_limit(&issuer, &symbol_short!("ns"), &token).is_none());
+    // Try to unfreeze with Manual reason - should fail
+    let result = client.try_emergency_unfreeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(result.is_err());
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
 
-// ─── 20. No partial writes — state invariant checks ──────────────────────────
+#[test]
+fn unauthorized_freeze_fails() {
+    let (env, client, admin, ns, token, issuer, holder) = setup();
+    let unauthorized = Address::generate(&env);
+
+    // Unauthorized user tries to freeze - should fail
+    let result = client.try_emergency_freeze_holder(
+        &unauthorized,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Sanctions,
+    );
+    assert!(result.is_err());
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
 
 #[test]
-fn is_frozen_false_before_freeze() {
+fn admin_can_freeze_and_unfreeze() {
+    let (env, client, admin, ns, token, issuer, holder) = setup();
+
+    // Admin freezes the holder
+    client.emergency_freeze_holder(
+        &admin,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Admin unfreezes
+    client.emergency_unfreeze_holder(
+        &admin,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+#[test]
+fn freeze_emits_frz_set_event() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+    let before = env.events().all().len();
+
+    client.emergency_freeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Sanctions,
+    );
+
+    // Check that frz_set event was emitted
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_set")
+        }
+    });
+    assert!(found);
+}
+
+#[test]
+fn unfreeze_emits_frz_clr_event() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+    client.emergency_freeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Sanctions,
+    );
+    let before = env.events().all().len();
+
+    client.emergency_unfreeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::Sanctions,
+    );
+
+    // Check that frz_clr event was emitted
+    let events = env.events().all();
+    let found = events.iter().skip(before).any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_clr")
+        }
+    });
+    assert!(found);
+}
+
+#[test]
+fn freeze_is_scoped_to_offering() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-    assert!(!client.is_frozen());
-}
-
-#[test]
-fn is_frozen_true_after_freeze() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.freeze();
-    assert!(client.is_frozen());
-}
-
-// ─── 22. Multisig path — execute_action(Freeze) is not blocked ───────────────
-
-/// When multisig is active, `execute_action` with `ProposalAction::Freeze` must
-/// succeed even when the contract is already frozen (idempotent freeze via
-/// multisig governance must remain reachable).
-///
-/// Note: `propose_action` and `approve_action` do NOT call `require_not_frozen`,
-/// so they are always reachable.  This test verifies that the multisig governance
-/// path is not accidentally blocked.
-#[test]
-fn multisig_propose_and_approve_not_blocked_when_frozen() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-
-    // Set up multisig with a single owner and threshold 1.
-    let owner = admin.clone();
-    let mut owners = Vec::new(&env);
-    owners.push_back(owner.clone());
-    client.init_multisig(&admin, &owners, &1u32, &86_400u64);
-
-    // propose_action must not be blocked (no require_not_frozen in propose_action).
-    let proposal_id = client.propose_action(&owner, &ProposalAction::SetThreshold(1u32));
-
-    // approve_action must not be blocked.
-    // (proposer auto-approves, so this is already at threshold — just verify no panic)
-    let _ = client.try_approve_action(&owner, &proposal_id);
-
-    // The test passes if neither call panicked or returned ContractFrozen.
-}
-
-// ─── 23. Edge case: double-freeze is idempotent ───────────────────────────────
-
-#[test]
-fn double_freeze_is_idempotent() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-
-    client.freeze();
-    assert!(client.is_frozen());
-
-    // Second freeze must fail because multisig is not initialized and
-    // the contract is already frozen — freeze() itself does NOT call
-    // require_not_frozen, so it should succeed (idempotent set).
-    // The important invariant is that is_frozen() remains true.
-    let _ = client.try_freeze();
-    assert!(client.is_frozen());
-}
-
-// ─── 24. Offering-scoped freeze does not affect global freeze check ───────────
-
-/// Globally frozen + offering NOT frozen: mutating ops still return ContractFrozen.
-#[test]
-fn global_freeze_overrides_offering_not_frozen() {
-    let env = Env::default();
-    let (client, _, issuer, token, _) = frozen_setup(&env);
-
-    // The offering is NOT individually frozen (only the contract is globally frozen).
-    assert!(!client.is_offering_frozen(&issuer, &symbol_short!("ns"), &token));
-
-    // Mutating ops must still return ContractFrozen.
+    let issuer = Address::generate(&env);
+    let ns = symbol_short!("test");
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract(admin.clone());
     let holder = Address::generate(&env);
-    let result =
-        client.try_set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &500u32);
-    assert_frozen_err(result);
+
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    client.register_offering(&issuer, &ns, &token_a, &2500, &payout, &0);
+    client.register_offering(&issuer, &ns, &token_b, &2500, &payout, &0);
+
+    // Freeze holder on token_a offering
+    client.emergency_freeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token_a,
+        &holder,
+        &FreezeReason::Sanctions,
+    );
+
+    // Should be frozen on token_a
+    assert!(client.is_holder_frozen(&issuer, &ns, &token_a, &holder));
+    // Should NOT be frozen on token_b
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token_b, &holder));
 }

@@ -77,6 +77,50 @@ fn test_initialize_rejects_double_init() {
     assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
 }
 
+#[test]
+fn test_deposit_rejects_unauthorized_offering() {
+    let (env, contract_id, token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let unauthorized = Address::generate(&env);
+    let period_id = client.create_period(&100u32, &200u32, &10_000i128);
+
+    crate::test_utils::mint_tokens(&env, &token_id, &unauthorized, 1_000_000);
+
+    let result = client.try_deposit(&unauthorized, &period_id, &5_000i128);
+    assert_eq!(result, Err(Ok(ContractError::UnauthorizedDepositor)));
+}
+
+#[test]
+fn test_deposit_accepts_authorized_offering() {
+    let (env, contract_id, token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let offering = Address::generate(&env);
+    let period_id = client.create_period(&100u32, &200u32, &10_000i128);
+
+    crate::test_utils::mint_tokens(&env, &token_id, &offering, 1_000_000);
+    client.add_authorized_offering(&offering);
+
+    let result = client.try_deposit(&offering, &period_id, &5_000i128);
+    assert_eq!(result, Ok(Ok(())));
+
+    let period = client.get_period(&period_id);
+    assert_eq!(period.revenue_amount, 15_000);
+    assert_eq!(crate::test_utils::get_balance(&env, &token_id, &contract_id), 15_000);
+}
+
+#[test]
+fn test_empty_authorized_offering_set_rejects_all_deposits() {
+    let (env, contract_id, token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let offering = Address::generate(&env);
+    let period_id = client.create_period(&100u32, &200u32, &10_000i128);
+
+    crate::test_utils::mint_tokens(&env, &token_id, &offering, 1_000_000);
+
+    let result = client.try_deposit(&offering, &period_id, &5_000i128);
+    assert_eq!(result, Err(Ok(ContractError::UnauthorizedDepositor)));
+}
+
 // ─── 2. Period creation ───────────────────────────────────────────────────────
 
 #[test]
@@ -992,6 +1036,8 @@ fn register_offering_rejects_bps_over_10000() {
 
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &10_001,
@@ -1017,6 +1063,8 @@ fn register_offering_accepts_bps_exactly_10000() {
 
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &10_000,
@@ -2390,6 +2438,8 @@ fn register_offering_does_not_lock_payment_token_before_first_deposit() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &5_000,
@@ -2423,6 +2473,8 @@ fn failed_invalid_first_deposit_does_not_lock_payment_token() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &5_000,
@@ -2534,6 +2586,8 @@ fn first_deposit_uses_registered_payment_token_lock() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &5_000,
@@ -2570,6 +2624,8 @@ fn failed_first_deposit_does_not_lock_payment_token_or_consume_period() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &5_000,
@@ -2704,6 +2760,8 @@ fn deposit_revenue_rejects_wrong_token_on_first_deposit() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &5_000,
@@ -5620,7 +5678,7 @@ fn freeze_sets_flag_and_emits_event() {
 }
 
 #[test]
-fn frozen_blocks_register_offering() {
+fn frozen_blocks_register_offering(, &None) {
     let (env, client, issuer, _token, _payment_token, _contract_id) = claim_setup();
     let admin = Address::generate(&env);
     let issuer = admin.clone();
@@ -5632,6 +5690,8 @@ fn frozen_blocks_register_offering() {
     client.freeze();
     let r = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &new_token,
         &1_000,
@@ -6178,6 +6238,8 @@ fn testnet_mode_allows_bps_over_10000() {
     // Should allow bps > 10000 in testnet mode
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &15_000,
@@ -6204,6 +6266,8 @@ fn testnet_mode_disabled_rejects_bps_over_10000() {
     // Testnet mode is disabled by default
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &15_000,
@@ -6371,6 +6435,8 @@ fn testnet_mode_toggle_after_offerings_exist() {
     // Register offering with high bps in testnet mode
     let result = client.try_register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token2,
         &20_000,
@@ -8493,6 +8559,8 @@ fn testnet_mode_pagination_unaffected() {
         let payout_asset = Address::generate(&env);
         client.register_offering(
             &issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &(1_000 + i * 100),
@@ -10592,6 +10660,8 @@ mod regression {
         client.initialize(&admin, &None::<Address>, &None::<bool>);
         client.register_offering(
             &admin,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("fee"),
             &token,
             &1_000,
@@ -11347,6 +11417,8 @@ mod regression {
 
         client.register_offering(
             &old_issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &300,
@@ -11378,6 +11450,8 @@ mod regression {
 
         client.register_offering(
             &old_issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &300,

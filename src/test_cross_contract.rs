@@ -619,6 +619,8 @@ fn cross_contract_stress_revora_with_registry_and_oracle() {
         registry.register_token(&admin, &token);
         revora.register_offering(
             &issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &((i + 1) * 1_000),

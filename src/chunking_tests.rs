@@ -196,6 +196,8 @@ fn pending_periods_page_and_claimable_chunk_consistent() {
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1000u32,
@@ -322,6 +324,8 @@ fn get_claimable_chunk_table_driven_invariants() {
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1000u32,
@@ -506,6 +510,8 @@ fn get_claimable_chunk_table_driven_invariants() {
         let (payment_token, _pt_admin) = create_payment_token(&env);
         client.register_offering(
             &issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &1000u32,
@@ -611,6 +617,8 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1000u32,
@@ -684,6 +692,8 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1000u32,
@@ -748,6 +758,8 @@ fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
     let (payment_token, _pt_admin) = create_payment_token(&env);
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1000u32,
