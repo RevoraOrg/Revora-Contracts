@@ -3,6 +3,18 @@ name = "revora-contracts"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Issue #465: Kani bounded verification harness (not enabled in default CI).
+kani = []
+
+# `kani` is a cfg set by the Kani verifier (not a Cargo feature), so declare it as a
+# known cfg to keep `unexpected_cfgs` quiet under `clippy --all-features -D warnings`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[package.metadata.kani]
+unwind = 4
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
