@@ -32,7 +32,7 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout, &0);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout, &0, &symbol_short!(""), &0);
     (env, contract_id, issuer, token, payout)
 }
 
@@ -167,10 +167,7 @@ fn override_existing_below_threshold_bypasses_check() {
     let s = client.get_audit_summary(&issuer, &symbol_short!("def"), &token).unwrap();
     assert_eq!(s.total_revenue, 300, "audit must reflect corrected amount");
     assert_eq!(s.report_count, 1, "report_count must not change on override");
-    assert_eq!(
-        client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1),
-        300
-    );
+    assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1), 300);
 }
 
 /// get_min_revenue_threshold returns the stored value and updates correctly.

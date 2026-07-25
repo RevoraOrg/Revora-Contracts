@@ -13,7 +13,9 @@ The Multi-Period Revenue Deposit feature allows a privileged **admin** to deposi
 token revenue into the smart contract segmented across non-overlapping **periods**.
 Each period is defined by a ledger-based time window. After a period closes,
 registered **beneficiaries** may each claim their pro-rata share of that period's
-deposited revenue.
+deposited revenue. Deposits are now gated by an admin-managed allowlist of
+authorized offering contract addresses so that only approved callers can fund a
+period.
 
 ```
 Admin ──deposit──► Contract ──claim──► Beneficiary₁

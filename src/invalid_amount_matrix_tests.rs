@@ -33,12 +33,15 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
         &payout_asset,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
 
     (env, contract_id, issuer, token, payout_asset)
 }
@@ -55,12 +58,15 @@ fn setup_funded_offering() -> (Env, Address, Address, Address, Address) {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
         &payment_token,
         &0,
-    );
+        &symbol_short!(""),
+        &0);
     mint(&env, &payment_token, &issuer, 1_000_000);
 
     (env, contract_id, issuer, token, payment_token)
@@ -87,12 +93,15 @@ fn register_offering_rejects_negative_supply_cap_values() {
     for invalid_cap in [-1_i128, i128::MIN] {
         let result = client.try_register_offering(
             &issuer,
+            &Vec::new(&env),
+            &1u32,
             &symbol_short!("def"),
             &token,
             &1_000,
             &payout_asset,
             &invalid_cap,
-        );
+            &symbol_short!(""),
+            &0);
         assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
         assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
         assert!(client.get_offering(&issuer, &symbol_short!("def"), &token).is_none());
