@@ -17,13 +17,13 @@
 /// ```ignore
 /// proptest! {
 ///     #[test]
-///     fn fuzz_register_offering(bps in arb_valid_bps()) {
+///     fn fuzz_register_offering(bps in arb_valid_bps(), &None) {
 ///         let env = Env::default();
 ///         env.mock_all_auths();
 ///         let client = make_client(&env);
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
-///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0);
+///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &symbol_short!(""), &0);
 ///     }
 /// }
 /// ```
@@ -45,6 +45,18 @@ pub fn arb_invalid_bps() -> impl Strategy<Value = u32> {
 /// Any strictly positive amount (1 .. 100 000 000).
 pub fn any_positive_amount() -> impl Strategy<Value = i128> {
     1i128..=100_000_000
+}
+
+/// Bounded fuzz amount for `compute_share` decomposition tests (Issue #411).
+///
+/// Range: `[i128::MIN/2, i128::MAX/2]`.
+///
+/// This range avoids saturation in the reference decomposition formula while
+/// still covering large positive and negative values, zero, and ±1. Values
+/// outside this range are covered by the explicit boundary-seed tests in
+/// `test_compute_share_decomposition_prop`.
+pub fn arb_fuzz_decomposition_amount() -> impl Strategy<Value = i128> {
+    (i128::MIN / 2)..=(i128::MAX / 2)
 }
 
 /// Any non-negative amount (0 .. 100 000 000).
@@ -119,7 +131,7 @@ pub fn arb_strictly_increasing_periods(len: usize) -> impl Strategy<Value = Vec<
 /// pre-generated address pool so strategies remain `Send + Sync`.
 #[derive(Debug, Clone)]
 pub enum TestOperation {
-    /// `register_offering(issuer, namespace, token, bps, payout_asset, supply_cap)`
+    /// `register_offering(issuer, &Vec::new(&env), &1u32, namespace, token, bps, payout_asset, supply_cap)`
     RegisterOffering { issuer: Address, namespace: Symbol, token: Address, bps: u32, payout_asset: Address, supply_cap: i128 },
     /// `report_revenue(issuer, namespace, token, payout_asset, amount, period_id, override_existing)`
     ReportRevenue { issuer: Address, namespace: Symbol, token: Address, payout_asset: Address, amount: i128, period_id: u64, override_existing: bool },
@@ -131,8 +143,8 @@ pub enum TestOperation {
     BlacklistAdd { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
     /// `blacklist_remove(caller, issuer, namespace, token, investor)`
     BlacklistRemove { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
-    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce)`
-    SetConcentrationLimit { max_bps: u32, enforce: bool },
+    /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce, max_staleness_secs)`
+    SetConcentrationLimit { max_bps: u32, enforce: bool, max_staleness_secs: u64 },
     /// `report_concentration(issuer, namespace, token, concentration_bps)`
     ReportConcentration { concentration_bps: u32 },
     /// `freeze()` — admin-only global freeze
@@ -146,7 +158,7 @@ pub enum TestOperation {
 // ── Operation strategies ─────────────────────────────────────────────────────
 
 /// Strategy for a single valid `RegisterOffering` operation.
-pub fn arb_register_offering() -> impl Strategy<Value = TestOperation> {
+pub fn arb_register_offering(, &None) -> impl Strategy<Value = TestOperation> {
     (arb_valid_bps(), 0i128..=1_000_000_000i128)
         .prop_map(|(bps, supply_cap)| TestOperation::RegisterOffering { bps, supply_cap })
 }
@@ -186,14 +198,15 @@ pub fn arb_blacklist_remove() -> impl Strategy<Value = TestOperation> {
 
 /// Strategy for a single `SetConcentrationLimit` operation.
 pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
-    (arb_valid_bps(), any::<bool>())
-        .prop_map(|(max_bps, enforce)| TestOperation::SetConcentrationLimit { max_bps, enforce })
+    (arb_valid_bps(), any::<bool>()).prop_map(|(max_bps, enforce)| {
+        TestOperation::SetConcentrationLimit { max_bps, enforce, max_staleness_secs: 0 }
+    })
 }
 
 /// Strategy for any single valid operation (uniform distribution across all variants).
 pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
     prop_oneof![
-        arb_register_offering(),
+        arb_register_offering(, &None),
         arb_report_revenue(),
         arb_deposit_revenue(),
         arb_set_holder_share(),

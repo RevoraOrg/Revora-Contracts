@@ -191,6 +191,13 @@ After transfer completion, the new issuer can:
 - ✅ `set_claim_delay` - Configure time delay for claims
 - ✅ `propose_issuer_transfer` - Transfer to another address in the future
 
+### Vesting Schedules Follow the Transfer
+
+When a transfer completes, any active vesting schedules belonging to the transferred offering are carried over to the new issuer.
+- ✅ The contract migrates schedules that are keyed to the offering's old issuer and payment token.
+- ✅ Each migrated schedule emits an `iss_vst` event with the beneficiary and old/new issuer pair.
+- ❌ Transfers are rejected with `VestingTransferBlocked` if any schedule is still pre-cliff at the time of acceptance.
+
 ### Old Issuer Loses All Control
 
 After transfer completion, the old issuer:

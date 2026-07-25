@@ -76,6 +76,7 @@ mod tests {
             ("SignatureReplay", RevoraError::SignatureReplay as u32),
             ("SignerKeyNotRegistered", RevoraError::SignerKeyNotRegistered as u32),
             ("ProposalExpired", RevoraError::ProposalExpired as u32),
+            ("JurisdictionDisallowed", RevoraError::JurisdictionDisallowed as u32),
             ("TransferFailed", RevoraError::TransferFailed as u32),
             ("AlreadyAtTargetVersion", RevoraError::AlreadyAtTargetVersion as u32),
             ("MigrationDowngradeNotAllowed", RevoraError::MigrationDowngradeNotAllowed as u32),
@@ -91,7 +92,7 @@ mod tests {
             ("MissingReportForOverride", RevoraError::MissingReportForOverride as u32),
         ];
 
-        // O(n²) uniqueness check — n=42, negligible cost.
+        // O(n²) uniqueness check — n is small, negligible cost.
         for i in 0..codes.len() {
             for j in (i + 1)..codes.len() {
                 assert_ne!(
@@ -148,7 +149,7 @@ mod tests {
         assert_eq!(RevoraError::SignerKeyNotRegistered as u32, 29);
         // 30: ProposalExpired — stable since v1
         assert_eq!(RevoraError::ProposalExpired as u32, 30);
-        // 31: gap (reserved for future use)
+        assert_eq!(RevoraError::JurisdictionDisallowed as u32, 31);
         assert_eq!(RevoraError::AlreadyAtTargetVersion as u32, 32);
         assert_eq!(RevoraError::MigrationDowngradeNotAllowed as u32, 33);
         // 34: gap (reserved for future use)
@@ -233,6 +234,7 @@ mod tests {
             RevoraError::SignatureReplay as u32,
             RevoraError::SignerKeyNotRegistered as u32,
             RevoraError::ProposalExpired as u32,
+            RevoraError::JurisdictionDisallowed as u32,
             RevoraError::TransferFailed as u32,
             RevoraError::AlreadyAtTargetVersion as u32,
             RevoraError::MigrationDowngradeNotAllowed as u32,
@@ -261,8 +263,8 @@ mod tests {
         // constant was not bumped alongside the enum change.
         const {
             assert!(
-                CONTRACT_VERSION >= 5,
-                "CONTRACT_VERSION must be >= 5 after the TransferFailed renumber"
+                CONTRACT_VERSION.0 >= 1,
+                "CONTRACT_VERSION major must be >= 1 after the TransferFailed renumber"
             );
         }
     }
