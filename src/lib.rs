@@ -157,6 +157,12 @@ pub enum RevoraError {
     ///
     /// Wire value: next available stable discriminant.
     MissingReportForOverride = 47,
+
+    /// Holder lockup period has not yet elapsed; share transfer and redemption are blocked.
+    /// Revenue claim (via `claim`) is NOT blocked — only share movement is gated.
+    ///
+    /// Wire value: 48.
+    HolderLockupActive = 48,
 }
 
 pub mod vesting;
@@ -165,6 +171,8 @@ pub mod vesting;
 mod test_duplicates;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod lockup_tests;
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -292,6 +300,10 @@ const EVENT_CONC_LIMIT_SET: Symbol = symbol_short!("conc_lim");
 const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
+/// Emitted when a holder lockup expiry timestamp is set or updated (#469).
+const EVENT_LOCKUP_SET: Symbol = symbol_short!("lkup_set");
+/// Emitted when a share transfer or redemption is blocked because the holder is still locked up (#469).
+const EVENT_LOCKUP_BLOCK: Symbol = symbol_short!("lkup_blk");
 const BPS_DENOMINATOR: i128 = 10_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
 const STELLAR_CANONICAL_DECIMALS: u32 = 7;
@@ -656,8 +668,7 @@ pub enum DataKey {
     SupplyCap(OfferingId),
     /// Per-offering investment constraints (#97).
     InvestmentConstraints(OfferingId),
-    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
-    BlacklistSizeLimit(OfferingId),
+    // NOTE: BlacklistSizeLimit moved to DataKey2 to keep DataKey ≤ 50 variants.
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -694,6 +705,13 @@ pub enum DataKey2 {
 
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
+
+    /// Per-offering blacklist size limit (#358). Moved from DataKey to keep DataKey ≤ 50 variants.
+    BlacklistSizeLimit(OfferingId),
+
+    /// Per-holder lockup expiry timestamp for (offering_id, holder) (#469).
+    /// Value is a Unix timestamp (seconds). `0` or absent means no lockup.
+    HolderLockup(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -3264,10 +3282,10 @@ impl RevoraRevenueShare {
     /// ### Returns
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
-        let key = DataKey::BlacklistSizeLimit(offering_id.clone());
+        let key = DataKey2::BlacklistSizeLimit(offering_id.clone());
         env.storage()
             .persistent()
-            .get::<DataKey, u32>(&key)
+            .get::<DataKey2, u32>(&key)
             .unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
@@ -3326,7 +3344,7 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        let key = DataKey::BlacklistSizeLimit(offering_id);
+        let key = DataKey2::BlacklistSizeLimit(offering_id);
         env.storage().persistent().set(&key, &max_size);
 
         Ok(())
@@ -4567,6 +4585,318 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&DataKey::ClaimDelaySecs(offering_id)).unwrap_or(0)
     }
 
+    // ── Holder lockup (#469) ─────────────────────────────────────────────────
+    //
+    // Design:
+    //   • Issuers set a per-holder Unix timestamp (`lockup_end_ts`) via
+    //     `set_holder_lockup`. When `now >= lockup_end_ts` the lockup has
+    //     elapsed and share movement is permitted.
+    //   • `transfer_with_attestation` and `request_redemption` both call
+    //     the shared helper `require_holder_not_locked` which:
+    //       1. Reads `HolderLockup(offering_id, holder)` from storage.
+    //       2. If the stored timestamp is 0 (no lockup), passes immediately.
+    //       3. If `now < lockup_end_ts`, emits a `lkup_blk` event and returns
+    //          `Err(HolderLockupActive)`.
+    //   • `claim` (revenue collection) is explicitly NOT gated — holders can
+    //     always collect accrued revenue regardless of lockup status.
+    //   • Setting `lockup_end_ts = 0` effectively removes the lockup.
+    //
+    // Security assumptions:
+    //   • Only the current offering issuer may set or clear a lockup.
+    //   • Lockup boundary is inclusive: `now == lockup_end_ts` is permitted.
+    //   • Timestamps come from `env.ledger().timestamp()`, which is set by
+    //     Stellar consensus and is not manipulable per-transaction.
+
+    /// Set (or clear) a lockup period for a specific holder of an offering.
+    ///
+    /// After calling this, `transfer_with_attestation` and `request_redemption`
+    /// will reject the holder with `HolderLockupActive` until the ledger
+    /// timestamp reaches `lockup_end_ts`.
+    ///
+    /// Setting `lockup_end_ts = 0` clears the lockup.
+    ///
+    /// ### Auth
+    /// Only the current issuer of the offering may call this.
+    ///
+    /// ### Events
+    /// Emits `lockup_set` with payload `(holder, lockup_end_ts)`.
+    pub fn set_holder_lockup(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        lockup_end_ts: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Offering must exist and caller must be the current issuer.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if issuer != current_issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        if lockup_end_ts == 0 {
+            // Clear the lockup entry entirely to save storage.
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::HolderLockup(offering_id, holder.clone()));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey2::HolderLockup(offering_id, holder.clone()), &lockup_end_ts);
+        }
+
+        env.events().publish(
+            (EVENT_LOCKUP_SET, issuer, namespace, token),
+            (holder, lockup_end_ts),
+        );
+
+        Ok(())
+    }
+
+    /// Return the lockup expiry timestamp for a holder, or `0` if no lockup is active.
+    ///
+    /// `0` means the holder is not locked up. Any value `> 0` is a Unix timestamp
+    /// (seconds since epoch); the holder is locked until the ledger time equals or
+    /// exceeds that timestamp.
+    pub fn get_holder_lockup(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> u64 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::HolderLockup(offering_id, holder))
+            .unwrap_or(0)
+    }
+
+    /// Transfer share allocation from one holder to another within an offering.
+    ///
+    /// This records a share-movement attestation on-chain. Both the `from` holder's
+    /// lockup and auth are checked; the `to` holder's lockup is NOT checked (a
+    /// locked holder may still receive shares).
+    ///
+    /// The issuer authorises the transfer on behalf of both parties (the issuer
+    /// controls the distribution ledger). Optionally, `from` can also be required
+    /// to co-sign by passing their address as the auth source — for now, the issuer
+    /// is the single auth gate, matching the pattern of `set_holder_share`.
+    ///
+    /// ### Lockup gate
+    /// If `from` has an active lockup (`now < lockup_end_ts`), the call is rejected
+    /// with `HolderLockupActive` and a `lkup_blk` event is emitted.
+    ///
+    /// ### Note on revenue accrual
+    /// Revenue claim via `claim()` is NOT gated by lockup. A locked holder can
+    /// still collect accrued revenue from past periods.
+    ///
+    /// ### Events
+    /// - `lkup_blk`: emitted if lockup blocks the transfer (before returning error).
+    /// - `sh_set`: emitted twice on success — once for `from` (reduced) and once
+    ///   for `to` (increased). Existing `set_holder_share` events are reused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_with_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from: Address,
+        to: Address,
+        transfer_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Offering must exist and caller must be the current issuer.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if issuer != current_issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        if transfer_bps > 10_000 {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        // Gate: check `from` holder lockup.
+        Self::require_holder_not_locked(
+            &env,
+            &offering_id,
+            &from,
+            &issuer,
+            &namespace,
+            &token,
+        )?;
+
+        // Read current shares.
+        let from_key = DataKey::HolderShare(offering_id.clone(), from.clone());
+        let to_key = DataKey::HolderShare(offering_id.clone(), to.clone());
+
+        let from_bps: u32 = env.storage().persistent().get(&from_key).unwrap_or(0);
+        let to_bps: u32 = env.storage().persistent().get(&to_key).unwrap_or(0);
+
+        if transfer_bps > from_bps {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        let new_from = from_bps - transfer_bps;
+        let new_to = to_bps.saturating_add(transfer_bps);
+        if new_to > 10_000 {
+            return Err(RevoraError::InvalidShareBps);
+        }
+
+        env.storage().persistent().set(&from_key, &new_from);
+        env.storage().persistent().set(&to_key, &new_to);
+
+        // Emit share-set events for both sides (reuses existing event symbol).
+        env.events().publish(
+            (EVENT_SHARE_SET_V2, issuer.clone(), namespace.clone(), token.clone()),
+            (from.clone(), new_from),
+        );
+        env.events().publish(
+            (EVENT_SHARE_SET_V2, issuer.clone(), namespace.clone(), token.clone()),
+            (to.clone(), new_to),
+        );
+
+        Ok(())
+    }
+
+    /// Request redemption of a holder's share allocation for an offering.
+    ///
+    /// Records the redemption request on-chain by zeroing out the holder's
+    /// `share_bps`. Actual fund settlement happens off-chain; the on-chain record
+    /// is the authoritative proof of intent.
+    ///
+    /// ### Lockup gate
+    /// If the holder has an active lockup (`now < lockup_end_ts`), the call is
+    /// rejected with `HolderLockupActive` and a `lkup_blk` event is emitted.
+    ///
+    /// ### Note on revenue accrual
+    /// Revenue claim via `claim()` is NOT gated by lockup. A locked holder can
+    /// still collect accrued revenue from past periods.
+    ///
+    /// ### Auth
+    /// The holder must authenticate (they are initiating their own redemption).
+    ///
+    /// ### Events
+    /// - `lkup_blk`: emitted if lockup blocks the redemption (before returning error).
+    /// - `sh_set` (v2): emitted with new share_bps = 0 on success.
+    pub fn request_redemption(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        holder.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Offering must exist.
+        Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Gate: check holder lockup.
+        Self::require_holder_not_locked(
+            &env,
+            &offering_id,
+            &holder,
+            &issuer,
+            &namespace,
+            &token,
+        )?;
+
+        // Zero out the holder's share to record the redemption.
+        let share_key = DataKey::HolderShare(offering_id.clone(), holder.clone());
+        env.storage().persistent().set(&share_key, &0_u32);
+
+        env.events().publish(
+            (EVENT_SHARE_SET_V2, issuer.clone(), namespace.clone(), token.clone()),
+            (holder, 0_u32),
+        );
+
+        Ok(())
+    }
+
+    /// Contract-facing wrapper for the internal `claim` implementation.
+    /// This thin shim is placed in the `#[contractimpl]` impl so the
+    /// generated client exposes `claim(...)` to tests and callers.
+    pub fn claim(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        max_periods: u32,
+    ) -> Result<i128, RevoraError> {
+        // Delegates to the internal implementation defined in the plain impl.
+        Self::claim_internal(env, holder, issuer, namespace, token, max_periods)
+    }
+
+    /// Internal helper: reject a share-movement operation if the holder has an
+    /// active lockup. Emits `lkup_blk` before returning the error so consumers
+    /// can index rejection events without inspecting error codes.
+    ///
+    /// Boundary semantics: `lockup_end_ts == now` is permitted (inclusive end).
+    fn require_holder_not_locked(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+    ) -> Result<(), RevoraError> {
+        let lockup_end: u64 = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::HolderLockup(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
+
+        if lockup_end == 0 {
+            return Ok(());
+        }
+
+        let now = env.ledger().timestamp();
+        if now >= lockup_end {
+            // Lockup has elapsed — permit the action.
+            return Ok(());
+        }
+
+        // Lockup still active — emit event then reject.
+        env.events().publish(
+            (EVENT_LOCKUP_BLOCK, issuer.clone(), namespace.clone(), token.clone()),
+            (holder.clone(), lockup_end, now),
+        );
+        Err(RevoraError::HolderLockupActive)
+    }
+
     /// Return the current contract version (#23).
     pub fn get_version(_env: Env) -> u32 {
         CONTRACT_VERSION
@@ -4873,7 +5203,7 @@ impl RevoraRevenueShare {
     ///
     /// # Events
     /// Emits `EVENT_CLAIM_V2`.
-    pub fn claim(
+    pub fn claim_internal(
         env: Env,
         holder: Address,
         issuer: Address,
