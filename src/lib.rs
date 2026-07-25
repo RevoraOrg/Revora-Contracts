@@ -165,6 +165,8 @@ pub mod vesting;
 mod test_duplicates;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod twap_tests;
 
 // ── Event symbols ────────────────────────────────────────────
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -656,8 +658,6 @@ pub enum DataKey {
     SupplyCap(OfferingId),
     /// Per-offering investment constraints (#97).
     InvestmentConstraints(OfferingId),
-    /// Per-offering blacklist size limit (#358). If not set, defaults to MAX_BLACKLIST_SIZE.
-    BlacklistSizeLimit(OfferingId),
 }
 
 /// Secondary storage keys for auxiliary/extended contract state.
@@ -694,7 +694,102 @@ pub enum DataKey2 {
 
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
+
+    /// Per-offering blacklist size limit (#358). Moved from DataKey to keep DataKey ≤ 50 variants.
+    BlacklistSizeLimit(OfferingId),
+
+    /// Per-offering TWAP accumulator state.
+    /// Stores: (last_ts, last_price, cumulative_price_secs) for time-weighted average price.
+    TwapAccumulator(OfferingId),
+
+    /// Per-offering TWAP window configuration (max window in seconds).
+    /// When set, get_twap rejects window_secs > this value.
+    TwapWindowConfig(OfferingId),
 }
+
+// ── TWAP (Time-Weighted Average Price) ──────────────────────────────────────
+//
+// Motivation: Spot-price NAV can be manipulated by observing a single price
+// sample at a favourable moment. A TWAP accumulator that sums `price * elapsed`
+// over time prevents single-block manipulation because an attacker would need to
+// hold the price at the inflated level for the entire accumulation window.
+//
+// Design:
+//   • Issuers call `sample_twap(issuer, namespace, token, price)` to push a
+//     new price observation. The contract records the elapsed seconds since the
+//     previous sample and accumulates `prior_price * elapsed` into a running
+//     sum (cumulative_price_secs).
+//   • `get_twap(issuer, namespace, token, window_secs)` divides the portion of
+//     cumulative_price_secs that falls within `window_secs` by the actual
+//     elapsed time, returning the time-weighted average.
+//   • Samples older than `window_secs` are ignored in the TWAP calculation.
+//   • The window is capped at `MAX_TWAP_WINDOW_SECS` to bound storage growth.
+//
+// Security assumptions:
+//   • Only the offering issuer can push price samples (auth-gated).
+//   • Identical timestamps (same ledger) do NOT double-count: if `now == last_ts`,
+//     the elapsed time is 0 and no weight is added to cumulative_price_secs.
+//   • Prices are caller-supplied and not verified on-chain. The TWAP is only as
+//     trustworthy as the data source feeding it (same trust model as
+//     `report_concentration`). Off-chain verification is the consumer's duty.
+//   • `get_twap` is read-only and never mutates state.
+//   • Overflow in cumulative_price_secs is handled with saturating arithmetic.
+
+/// Maximum configurable TWAP window: 30 days in seconds.
+///
+/// This cap prevents issuers from configuring windows so large that the
+/// accumulator would need to be sampled for an impractically long period
+/// before returning a meaningful TWAP, and bounds potential i128 overflow
+/// in `cumulative_price_secs` (price * seconds).
+pub const MAX_TWAP_WINDOW_SECS: u64 = 30 * 24 * 60 * 60; // 2_592_000
+
+/// Default TWAP window used by `get_twap` when the offering has no explicit
+/// window config (7 days).
+pub const DEFAULT_TWAP_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 604_800
+
+/// On-chain TWAP accumulator for a single offering.
+///
+/// Updated by `sample_twap`; read by `get_twap`.
+///
+/// ### Fields
+/// - `last_ts`:              Ledger timestamp of the most recent sample (seconds since epoch).
+/// - `last_price`:           Price value at the most recent sample (arbitrary caller-defined units).
+/// - `cumulative_price_secs`: Running sum of `price * elapsed_seconds` over all samples.
+///   Represents the area under the price-vs-time curve since the first sample.
+///
+/// ### Overflow safety
+/// `cumulative_price_secs` uses `i128` and saturating addition. For a price of
+/// `i64::MAX` (~9.2 × 10^18) sampled every second for 30 days, the maximum
+/// per-window addition is ≈ 9.2 × 10^18 × 2.6 × 10^6 ≈ 2.4 × 10^25 which
+/// exceeds i128::MAX (~1.7 × 10^38 / ~3.4 × 10^38 for u128). In practice,
+/// prices on Stellar are expressed in 7-decimal asset amounts (stroops), so
+/// even very high-value assets will stay well within range.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwapAccumulator {
+    /// Ledger timestamp (seconds since Unix epoch) of the most recent sample.
+    pub last_ts: u64,
+    /// Most recently reported price (caller-defined units, e.g. stroops per token).
+    pub last_price: i128,
+    /// Accumulated sum of (price × elapsed_seconds) for all prior intervals.
+    /// Does not yet include the interval from `last_ts` to "now".
+    pub cumulative_price_secs: i128,
+}
+
+/// TWAP window configuration for an offering.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwapWindowConfig {
+    /// Maximum allowed `window_secs` argument to `get_twap` for this offering.
+    /// Also the upper bound for how far back the accumulator is considered relevant.
+    /// Must be ≤ `MAX_TWAP_WINDOW_SECS`.
+    pub max_window_secs: u64,
+}
+
+/// Emitted when a new TWAP price sample is recorded.
+const EVENT_TWAP_SAMPLED: Symbol = symbol_short!("twap_smp");
+/// Emitted when the TWAP window configuration is changed.
+const EVENT_TWAP_WINDOW_SET: Symbol = symbol_short!("twap_win");
 
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
@@ -3264,11 +3359,8 @@ impl RevoraRevenueShare {
     /// ### Returns
     /// The maximum allowed blacklist size for the offering.
     fn get_effective_blacklist_limit(env: &Env, offering_id: &OfferingId) -> u32 {
-        let key = DataKey::BlacklistSizeLimit(offering_id.clone());
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&key)
-            .unwrap_or(MAX_BLACKLIST_SIZE)
+        let key = DataKey2::BlacklistSizeLimit(offering_id.clone());
+        env.storage().persistent().get::<DataKey2, u32>(&key).unwrap_or(MAX_BLACKLIST_SIZE)
     }
 
     /// Set the per-offering blacklist size limit.
@@ -3326,7 +3418,7 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        let key = DataKey::BlacklistSizeLimit(offering_id);
+        let key = DataKey2::BlacklistSizeLimit(offering_id);
         env.storage().persistent().set(&key, &max_size);
 
         Ok(())
@@ -4565,6 +4657,259 @@ impl RevoraRevenueShare {
     pub fn get_claim_delay(env: Env, issuer: Address, namespace: Symbol, token: Address) -> u64 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::ClaimDelaySecs(offering_id)).unwrap_or(0)
+    }
+
+    // ── TWAP (Time-Weighted Average Price) public API ────────────────────────
+
+    /// Record a new price sample for the offering's TWAP accumulator.
+    ///
+    /// ### How TWAP accumulation works
+    /// Each call records the area under the price-vs-time curve since the
+    /// previous sample: `cumulative_price_secs += last_price * elapsed_secs`.
+    /// The current price becomes `last_price`; the current ledger timestamp
+    /// becomes `last_ts`.  A downstream `get_twap(window_secs)` call then
+    /// divides the accumulated area over the chosen window by `window_secs`
+    /// to obtain the time-weighted average.
+    ///
+    /// ### Parameters
+    /// - `issuer` / `namespace` / `token`: Offering identity. The offering
+    ///   must already exist.
+    /// - `price`: Current spot price in caller-defined units (e.g. stroops per
+    ///   token, or any fixed-point representation).  Must be ≥ 0; negative
+    ///   prices are rejected with `InvalidAmount`.
+    ///
+    /// ### Auth
+    /// Only the current issuer can call this.
+    ///
+    /// ### Identical-timestamp guard
+    /// If `env.ledger().timestamp() == last_ts` (two samples in the same
+    /// ledger), the elapsed time is 0 and **no weight is added** to
+    /// `cumulative_price_secs`. This prevents double-counting when the
+    /// issuer submits two transactions in the same ledger close.
+    ///
+    /// ### Events
+    /// Emits `twap_smp` with payload `(price, now, elapsed_secs)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_twap(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        price: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        // Reject negative prices — a negative NAV has no meaningful interpretation.
+        if price < 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Offering must exist before we can attach a TWAP to it.
+        Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        let now: u64 = env.ledger().timestamp();
+        let acc_key = DataKey2::TwapAccumulator(offering_id.clone());
+
+        let (new_cumulative, elapsed_secs) =
+            match env.storage().persistent().get::<DataKey2, TwapAccumulator>(&acc_key) {
+                None => {
+                    // First sample: no area to accumulate yet.
+                    (0_i128, 0_u64)
+                }
+                Some(acc) => {
+                    // Guard: identical timestamp → elapsed = 0, no double-count.
+                    let elapsed = now.saturating_sub(acc.last_ts);
+                    let area = if elapsed == 0 {
+                        0_i128
+                    } else {
+                        // area = last_price * elapsed_secs (saturating to avoid overflow)
+                        acc.last_price.saturating_mul(elapsed as i128)
+                    };
+                    let new_cum = acc.cumulative_price_secs.saturating_add(area);
+                    (new_cum, elapsed)
+                }
+            };
+
+        let updated = TwapAccumulator {
+            last_ts: now,
+            last_price: price,
+            cumulative_price_secs: new_cumulative,
+        };
+        env.storage().persistent().set(&acc_key, &updated);
+
+        env.events()
+            .publish((EVENT_TWAP_SAMPLED, issuer, namespace, token), (price, now, elapsed_secs));
+
+        Ok(())
+    }
+
+    /// Compute the time-weighted average price over `window_secs` seconds.
+    ///
+    /// ### Algorithm
+    /// ```text
+    /// Let acc = stored TwapAccumulator
+    /// Let now = current ledger timestamp
+    /// Let total_elapsed = now - acc.last_ts  (since last sample)
+    /// Let window_elapsed = min(now - acc.last_ts, window_secs)
+    ///
+    /// Area over the window =
+    ///   cumulative_price_secs  (historical area)
+    ///   + last_price * min(total_elapsed, window_secs)  (current open interval)
+    ///
+    /// TWAP = area / window_secs
+    /// ```
+    /// If no sample has been recorded yet, returns `None`.
+    ///
+    /// ### Parameters
+    /// - `issuer` / `namespace` / `token`: Offering identity.
+    /// - `window_secs`: Desired lookback window in seconds.  Must be in
+    ///   `[1, MAX_TWAP_WINDOW_SECS]` and ≤ the offering's configured
+    ///   `max_window_secs` (if set).
+    ///
+    /// ### Returns
+    /// - `Some(twap)` — the time-weighted average price over the window.
+    /// - `None` — no sample has ever been recorded.
+    ///
+    /// ### Security notes
+    /// - Read-only: never mutates storage.
+    /// - Stale accumulator: if the last sample was recorded more than
+    ///   `window_secs` ago, `get_twap` still returns a value, but it
+    ///   reflects only the last known price held constant over the window.
+    ///   Consumers SHOULD check `acc.last_ts` vs the current ledger time
+    ///   and treat accumulators that have not been updated within the window
+    ///   as potentially stale.
+    pub fn get_twap(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        window_secs: u64,
+    ) -> Result<Option<i128>, RevoraError> {
+        // Validate window_secs range.
+        if window_secs == 0 || window_secs > MAX_TWAP_WINDOW_SECS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Respect per-offering window cap if configured.
+        let cfg_key = DataKey2::TwapWindowConfig(offering_id.clone());
+        if let Some(cfg) = env.storage().persistent().get::<DataKey2, TwapWindowConfig>(&cfg_key) {
+            if window_secs > cfg.max_window_secs {
+                return Err(RevoraError::LimitReached);
+            }
+        }
+
+        let acc_key = DataKey2::TwapAccumulator(offering_id);
+        let acc = match env.storage().persistent().get::<DataKey2, TwapAccumulator>(&acc_key) {
+            None => return Ok(None),
+            Some(a) => a,
+        };
+
+        let now: u64 = env.ledger().timestamp();
+        // How long has the current (open) interval been running?
+        let open_elapsed: u64 = now.saturating_sub(acc.last_ts);
+        // Clamp the open interval to the requested window.
+        let clamped_open: u64 = core::cmp::min(open_elapsed, window_secs);
+
+        // Area contributed by the open interval (price held constant since last sample).
+        let open_area: i128 = acc.last_price.saturating_mul(clamped_open as i128);
+
+        // Total area over the window:
+        // We use saturating_add; in the extremely unlikely event of overflow the result
+        // is i128::MAX, which is a safe sentinel (consumers can detect this).
+        let total_area: i128 = acc.cumulative_price_secs.saturating_add(open_area);
+
+        // TWAP = total_area / window_secs
+        // window_secs is guaranteed > 0 by the check above.
+        let twap: i128 = total_area / (window_secs as i128);
+
+        Ok(Some(twap))
+    }
+
+    /// Configure the maximum allowed TWAP window for an offering.
+    ///
+    /// When set, `get_twap` will reject any `window_secs` argument that
+    /// exceeds `max_window_secs`.  This lets the issuer enforce a sensible
+    /// upper bound on the lookback period consumers are allowed to request.
+    ///
+    /// ### Parameters
+    /// - `max_window_secs`: Must be in `[1, MAX_TWAP_WINDOW_SECS]`.
+    ///
+    /// ### Auth
+    /// Only the current issuer can call this.
+    pub fn set_twap_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        max_window_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+
+        if max_window_secs == 0 || max_window_secs > MAX_TWAP_WINDOW_SECS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        let cfg = TwapWindowConfig { max_window_secs };
+        env.storage().persistent().set(&DataKey2::TwapWindowConfig(offering_id), &cfg);
+
+        env.events().publish((EVENT_TWAP_WINDOW_SET, issuer, namespace, token), max_window_secs);
+
+        Ok(())
+    }
+
+    /// Return the per-offering TWAP window configuration, or `None` if unset.
+    pub fn get_twap_config(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<TwapWindowConfig> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, TwapWindowConfig>(&DataKey2::TwapWindowConfig(offering_id))
+    }
+
+    /// Return the raw TWAP accumulator state for an offering, or `None` if no
+    /// sample has ever been recorded.
+    ///
+    /// Useful for off-chain indexers that want to reconstruct TWAP history or
+    /// verify that the accumulator has been updated recently.
+    pub fn get_twap_accumulator(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<TwapAccumulator> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, TwapAccumulator>(&DataKey2::TwapAccumulator(offering_id))
     }
 
     /// Return the current contract version (#23).
