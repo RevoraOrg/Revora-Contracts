@@ -207,6 +207,12 @@ pub enum RevoraError {
     DualSigSameSigner = 56,
     /// Dual-signature close is not configured for this offering.
     DualSigNotConfigured = 57,
+    /// Dispute window has closed for this period.
+    DisputeWindowClosed = 58,
+    /// No dispute found for the given ID.
+    DisputeNotFound = 59,
+    /// Dispute has already been resolved.
+    DisputeAlreadyResolved = 60,
 }
 
 pub mod vesting;
@@ -233,6 +239,8 @@ mod test_close_period;
 mod test_disclosure;
 #[cfg(test)]
 mod test_quorum_check;
+#[cfg(test)]
+mod test_dispute_resolve;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -262,6 +270,8 @@ const EVENT_REVENUE_REPORT_MISSING_OVERRIDE: Symbol = symbol_short!("rev_omiss")
 const EVENT_REVENUE_REPORT_REJECTED_ASSET: Symbol = symbol_short!("rev_reja");
 pub const EVENT_SCHEMA_VERSION_V2: u32 = 2;
 const DEFAULT_FAUCET_COOLDOWN_SECONDS: u64 = 3_600;
+/// Default dispute window: 30 days in seconds.
+const DEFAULT_DISPUTE_WINDOW_SECS: u64 = 2_592_000;
 
 // Versioned event symbols (v2). All core events emit with leading `version` field.
 const EVENT_OFFER_REG_V2: Symbol = symbol_short!("ofr_reg2");
@@ -373,6 +383,10 @@ const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
 const EVENT_DUAL_SIG_CLOSE: Symbol = symbol_short!("dual_cls");
 /// Emitted when an offering's off-chain disclosure metadata is set or updated (#485).
 const EVENT_DISCLOSURE_UPDATED: Symbol = symbol_short!("disc_upd");
+/// Emitted when a dispute is resolved by admin (#593).
+const EVENT_DISPUTE_RESOLVE: Symbol = symbol_short!("disp_res");
+/// Emitted when a dispute window is set for an offering.
+const EVENT_DISPUTE_WINDOW_SET: Symbol = symbol_short!("disp_win");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
@@ -500,6 +514,46 @@ pub enum FreezeReason {
     CourtOrder,
     IssuerDispute,
     Manual,
+}
+
+/// Outcome of a dispute resolution (#593).
+///
+/// - `Upheld`: the dispute was valid; freeze remains.
+/// - `Rejected`: the dispute was invalid; holder is unfrozen.
+/// - `PartiallyUpheld`: the dispute was partially valid; freeze modified.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub enum DisputeOutcome {
+    Upheld,
+    Rejected,
+    PartiallyUpheld,
+}
+
+/// On-chain dispute tracking entry (#593).
+/// Created when a holder is frozen with `IssuerDispute` reason.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisputeEntry {
+    /// Unique dispute ID (auto-incremented).
+    pub dispute_id: u64,
+    /// The offering this dispute belongs to.
+    pub offering_id: OfferingId,
+    /// The frozen holder.
+    pub holder: Address,
+    /// The freeze reason (always IssuerDispute for disputes).
+    pub freeze_reason: FreezeReason,
+    /// Ledger timestamp when the dispute was created.
+    pub created_at: u64,
+    /// Whether the dispute has been resolved.
+    pub resolved: bool,
+    /// Resolution outcome, populated when resolved.
+    pub outcome: Option<DisputeOutcome>,
+    /// Evidence hash (32-byte SHA-256 or equivalent), populated when resolved.
+    pub evidence_hash: Option<BytesN<32>>,
+    /// Admin address that resolved the dispute.
+    pub resolved_by: Option<Address>,
+    /// Ledger timestamp when the dispute was resolved.
+    pub resolved_at: Option<u64>,
 }
 
 #[contracttype]
@@ -1137,6 +1191,16 @@ pub enum DataKey2 {
     VoterWeight(Address),
     /// Global quorum threshold in basis points.
     MultisigQuorumBps,
+
+    /// ── Dispute resolution storage (#593) ──────────────────────────────────
+    /// Auto-incrementing counter for dispute IDs.
+    DisputeCounter,
+    /// A specific dispute entry by ID.
+    DisputeEntry(u64),
+    /// Per-offering dispute window in seconds.
+    DisputeWindowSecs(OfferingId),
+    /// Timestamp of the most recently closed period for an offering.
+    LastClosedPeriodTimestamp(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1508,6 +1572,33 @@ impl RevoraRevenueShare {
     fn require_not_frozen(env: &Env, offering_id: &OfferingId, holder: &Address) -> Result<(), RevoraError> {
         if Self::is_frozen(env, offering_id, holder) {
             return Err(RevoraError::HolderFrozen);
+        }
+        Ok(())
+    }
+
+    /// Enforce the dispute window for `IssuerDispute` freezes.
+    /// Checks that the current time is within the dispute window of the most
+    /// recently closed period. If no period has been closed, the check passes.
+    fn enforce_dispute_window(env: &Env, offering_id: &OfferingId) -> Result<(), RevoraError> {
+        // If no period has been closed yet, there is no deadline to enforce.
+        let last_closed = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::LastClosedPeriodTimestamp(offering_id.clone()));
+
+        if let Some(last_closed_at) = last_closed {
+            let window_secs = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, u64>(&DataKey2::DisputeWindowSecs(offering_id.clone()))
+                .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS);
+
+            let deadline = last_closed_at.saturating_add(window_secs);
+            let now = env.ledger().timestamp();
+
+            if now > deadline {
+                return Err(RevoraError::DisputeWindowClosed);
+            }
         }
         Ok(())
     }
@@ -7705,6 +7796,11 @@ impl RevoraRevenueShare {
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
 
+        // Track the most recently closed period timestamp for dispute window enforcement.
+        env.storage()
+            .persistent()
+            .set(&DataKey2::LastClosedPeriodTimestamp(offering_id), &closed_at);
+
         env.events()
             .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
@@ -7841,6 +7937,11 @@ impl RevoraRevenueShare {
 
         let closed_at = env.ledger().timestamp();
         env.storage().persistent().set(&closed_key, &closed_at);
+
+        // Track the most recently closed period timestamp for dispute window enforcement.
+        env.storage()
+            .persistent()
+            .set(&DataKey2::LastClosedPeriodTimestamp(offering_id), &closed_at);
 
         env.events().publish(
             (EVENT_DUAL_SIG_CLOSE, issuer, namespace, token),
@@ -9111,11 +9212,109 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::EmergencyFreeze(offering_id, holder.clone());
-        env.storage().persistent().set(&key, &reason);
+        // For IssuerDispute freezes, enforce dispute window.
+        if reason == FreezeReason::IssuerDispute {
+            Self::enforce_dispute_window(&env, &offering_id)?;
+        }
+
+        let freeze_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
+        env.storage().persistent().set(&freeze_key, &reason);
+
+        // Create a dispute entry for IssuerDispute freezes.
+        if reason == FreezeReason::IssuerDispute {
+            let now = env.ledger().timestamp();
+            let counter: u64 = env.storage()
+                .persistent()
+                .get(&DataKey2::DisputeCounter)
+                .unwrap_or(0);
+            let new_id = counter.saturating_add(1);
+
+            let dispute_entry = DisputeEntry {
+                dispute_id: new_id,
+                offering_id: offering_id.clone(),
+                holder: holder.clone(),
+                freeze_reason: reason,
+                created_at: now,
+                resolved: false,
+                outcome: None,
+                evidence_hash: None,
+                resolved_by: None,
+                resolved_at: None,
+            };
+
+            env.storage()
+                .persistent()
+                .set(&DataKey2::DisputeEntry(new_id), &dispute_entry);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::DisputeCounter, &new_id);
+        }
+
         env.events().publish(
             (EVENT_FRZ_SET, issuer, namespace, token),
             (caller, holder, reason),
+        );
+        Ok(())
+    }
+
+    // ── Dispute window management ────────────────────────────────────────────
+
+    /// Get the dispute window in seconds for an offering.
+    /// Returns `DEFAULT_DISPUTE_WINDOW_SECS` (30 days) when not configured.
+    pub fn get_dispute_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u64 {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::DisputeWindowSecs(offering_id))
+            .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS)
+    }
+
+    /// Set the dispute window in seconds for an offering.
+    /// Only the issuer or admin may call.
+    /// Emits `EVENT_DISPUTE_WINDOW_SET` on success.
+    pub fn set_dispute_window(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        window_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone());
+        let is_admin = admin.as_ref().map(|a| caller == *a).unwrap_or(false);
+        if caller != current_issuer && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::DisputeWindowSecs(offering_id), &window_secs);
+
+        env.events().publish(
+            (EVENT_DISPUTE_WINDOW_SET, issuer, namespace, token),
+            (caller, window_secs),
         );
         Ok(())
     }
@@ -9176,8 +9375,109 @@ impl RevoraRevenueShare {
         holder: Address,
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
-        env.storage().persistent().get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(offering_id, holder)).is_some()
+            }
+
+    // ── Dispute resolution (#593) ────────────────────────────────────────────
+
+    /// Resolve an open dispute with an outcome and evidence hash.
+    ///
+    /// Only the global admin may call this function. It atomically:
+    /// 1. Validates the dispute exists and is not already resolved.
+    /// 2. Records the outcome, evidence hash, resolver, and timestamp.
+    /// 3. If the outcome is `Rejected`, removes the holder freeze.
+    /// 4. Emits a `EVENT_DISPUTE_RESOLVE` event.
+    ///
+    /// # Arguments
+    /// * `caller` - The admin address (must match stored admin).
+    /// * `dispute_id` - The unique dispute ID to resolve.
+    /// * `outcome` - Resolution outcome (Upheld, Rejected, PartiallyUpheld).
+    /// * `evidence_hash` - 32-byte hash of off-chain evidence document.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Admin not set.
+    /// * `NotAuthorized` – Caller is not the admin.
+    /// * `DisputeNotFound` – No dispute with the given ID.
+    /// * `DisputeAlreadyResolved` – Dispute was already resolved.
+    /// * `ContractFrozen` – Contract is frozen.
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        dispute_id: u64,
+        outcome: DisputeOutcome,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        // Must be the global admin.
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // Load the dispute entry.
+        let dispute_key = DataKey2::DisputeEntry(dispute_id);
+        let mut dispute: DisputeEntry = env
+            .storage()
+            .persistent()
+            .get(&dispute_key)
+            .ok_or(RevoraError::DisputeNotFound)?;
+
+        // Reject if already resolved.
+        if dispute.resolved {
+            return Err(RevoraError::DisputeAlreadyResolved);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Update the dispute entry atomically.
+        dispute.resolved = true;
+        dispute.outcome = Some(outcome);
+        dispute.evidence_hash = Some(evidence_hash.clone());
+        dispute.resolved_by = Some(caller.clone());
+        dispute.resolved_at = Some(now);
+
+        env.storage().persistent().set(&dispute_key, &dispute);
+
+        // If the outcome is Rejected, remove the holder freeze.
+        if outcome == DisputeOutcome::Rejected {
+            let freeze_key = DataKey2::EmergencyFreeze(
+                dispute.offering_id.clone(),
+                dispute.holder.clone(),
+            );
+            if env.storage().persistent().has(&freeze_key) {
+                env.storage().persistent().remove(&freeze_key);
+            }
+        }
+
+        // Emit dispute_resolve event.
+        env.events().publish(
+            (EVENT_DISPUTE_RESOLVE,),
+            (
+                dispute_id,
+                outcome,
+                evidence_hash,
+                caller,
+                now,
+                dispute.offering_id.issuer,
+                dispute.offering_id.namespace,
+                dispute.offering_id.token,
+                dispute.holder,
+            ),
+        );
+
+        Ok(())
     }
+
+    /// Get a dispute entry by its ID.
+    /// Returns `None` if no dispute with the given ID exists.
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<DisputeEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::DisputeEntry(dispute_id))
+    }
+
 
     // â”€â”€ Multisig admin logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
