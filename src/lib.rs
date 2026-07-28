@@ -113,6 +113,8 @@ pub enum RevoraError {
     ///
     /// Wire value: 51. Stable since v1.
     DisplayDecimalsOutOfRange = 51,
+    /// Total supply shares would exceed the offering's max total supply shares.
+    MaxTotalSupplySharesExceeded = 58,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -177,15 +179,9 @@ pub enum RevoraError {
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
     /// The requester is still within the faucet cooldown window.
-    FaucetCooldownActive = 56,
-    /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 51,
+    FaucetCooldownActive = 59,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
-    /// This prevents falling through to initial-report handling when the period cursor has no
-    /// prior persisted entry.
-    ///
-    /// Wire value: next available stable discriminant.
     MissingReportForOverride = 47,
 
     /// The period has been sealed by `close_period`; no further overrides are accepted.
@@ -296,14 +292,6 @@ pub enum ProposalAction {
     AddOwner(Address),
     RemoveOwner(Address),
     SetProposalDuration(u64),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
 }
 
 #[contracttype]
@@ -491,6 +479,15 @@ pub struct TenantId {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub enum FreezeReason {
+    /// Broad compliance or regulatory action.
+    Compliance,
+    /// Court-ordered legal hold.
+    LegalHold,
+    /// Active dispute under investigation.
+    DisputeOpen,
+    /// Address matched on a sanctions list.
+    SanctionsMatch,
+    // Legacy variants kept for storage compatibility.
     Sanctions,
     CourtOrder,
     IssuerDispute,
@@ -811,15 +808,6 @@ pub struct PendingRedemption {
     pub timestamp: u64,
 }
 
-/// Pause state tier for contract pausing.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
-}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -842,17 +830,6 @@ pub enum MetaDataKey {
     RevenueApproved(OfferingId, u64),
 }
 
-/// Pause tier for the contract. Stored under `DataKey::Paused`.
-#[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    /// Contract is fully operational.
-    NotPaused = 0,
-    /// Reports and deposits blocked; `claim` allowed.
-    SoftPaused = 1,
-    /// All state-mutating operations blocked, including `claim`.
-    HardPaused = 2,
-}
 
 /// Defines how fractional shares are handled during distribution calculations.
 #[contracttype]
@@ -864,17 +841,6 @@ pub enum RoundingMode {
     RoundHalfUp = 1,
 }
 
-/// Tiered pause state for the contract.
-#[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    /// All operations are open.
-    NotPaused = 0,
-    /// Reports and deposits are blocked; `claim` is still allowed.
-    SoftPaused = 1,
-    /// All state-mutating operations including `claim` are blocked.
-    HardPaused = 2,
-}
 
 /// Immutable record of a committed snapshot for an offering.
 ///
@@ -905,18 +871,6 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
-/// Tiered pause state for the contract.
-///
-/// - `NotPaused`  – all operations open.
-/// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
-/// - `HardPaused` – all state-mutating operations blocked, including `claim`.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
-}
 
 /// Primary storage keys for core contract state.
 /// Split from the full key set to stay within the Soroban XDR union variant limit (â‰¤50).
@@ -924,14 +878,6 @@ pub enum PauseState {
 /// Scoped to the crate: storage keys are an internal implementation detail and are not part
 /// of the contract's external interface, so no contract spec entry is generated for them.
 /// This also keeps the enum clear of the 50-case spec union limit as new keys are added.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
-}
-
 #[contracttype]
 #[derive(Clone)]
 pub(crate) enum DataKey {
@@ -1049,14 +995,6 @@ pub enum DataKey2 {
     LastReportedPeriodId(OfferingId),
     /// Last deposited period_id for an offering.
     LastDepositedPeriodId(OfferingId),
-    /// Supply cap for an offering's cumulative deposited revenue.
-    SupplyCap(OfferingId),
-    /// Cumulative deposited revenue tracked against the supply cap.
-    DepositedRevenue(OfferingId),
-    /// Per-offering investment constraints.
-    InvestmentConstraints(OfferingId),
-    /// Per-offering minimum revenue threshold.
-    MinRevenueThreshold(OfferingId),
     /// Payment token decimals configured for an offering.
     PaymentTokenDecimals(OfferingId),
     /// Offering-scoped freeze flag.
@@ -1104,18 +1042,12 @@ pub enum DataKey2 {
     /// Off-chain disclosure metadata (URI + hash) for an offering (#485).
     DisclosureMeta(OfferingId),
 
-    /// Per-offering minimum revenue threshold below which reports are skipped.
-    MinRevenueThreshold(OfferingId),
-    /// Per-offering cumulative deposited revenue tracker.
-    DepositedRevenue(OfferingId),
     /// Timestamp of the last faucet request for a requester address.
     FaucetLastRequest(Address),
-    /// Per-offering investment constraints (min/max stake).
-    InvestmentConstraints(OfferingId),
-    /// Per-offering supply cap (0 = uncapped).
-    SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+    /// Global freeze reason recorded during set_freeze (#605).
+    GlobalFreezeReason,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -8903,23 +8835,62 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
-    /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
-    /// Emits event. Claim and read-only functions remain allowed.
-    /// If multisig is initialized, this function is disabled in favor of execute_action(Freeze).
-    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+    /// Freeze the contract with an explicit audit reason.
+    ///
+    /// Persists the freeze flag and records `reason` under [`DataKey2::GlobalFreezeReason`]
+    /// so auditors can distinguish the cause of each freeze.
+    ///
+    /// ### Auth
+    /// Current admin (`require_auth`).
+    ///
+    /// ### Errors
+    /// - `LimitReached` – multisig is initialized (use `execute_action(Freeze)` instead).
+    /// - `LimitReached` – contract is not initialized.
+    ///
+    /// ### Events
+    /// - `frz_set` topic, data `(admin, reason)` — carries the reason for audit trails.
+    /// - Versioned `frz2` event: `true`.
+    pub fn set_freeze(env: Env, reason: FreezeReason) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey2::MultisigThreshold) {
             return Err(RevoraError::LimitReached);
         }
-        let key = DataKey::Admin;
-        let admin: Address =
-            env.storage().persistent().get(&key).ok_or(RevoraError::LimitReached)?;
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::LimitReached)?;
         admin.require_auth();
-        let frozen_key = DataKey::Frozen;
-        env.storage().persistent().set(&frozen_key, &true);
-        // Versioned event v2: [version: u32, frozen: bool]
+        env.storage().persistent().set(&DataKey::Frozen, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::GlobalFreezeReason, &reason);
+        env.events()
+            .publish((symbol_short!("frz_set"),), (admin, reason));
         Self::emit_v2_event(&env, (EVENT_FREEZE_V2,), true);
         Ok(())
     }
+
+    /// Freeze the contract with the default `Compliance` reason.
+    ///
+    /// Convenience wrapper around [`set_freeze`] for callers that do not need to
+    /// specify a reason explicitly.  Existing integrations that call `freeze()`
+    /// continue to work without modification.
+    ///
+    /// ### Auth / Errors / Events
+    /// Identical to `set_freeze(env, FreezeReason::Compliance)`.
+    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+        Self::set_freeze(env, FreezeReason::Compliance)
+    }
+
+    /// Return the stored global freeze reason, if the contract is globally frozen.
+    ///
+    /// Returns `None` when the contract has never been frozen via `set_freeze`.
+    pub fn get_freeze_reason(env: Env) -> Option<FreezeReason> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::GlobalFreezeReason)
+    }
+
 
     /// Freeze a single offering while keeping other offerings operational.
     ///
