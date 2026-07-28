@@ -4,8 +4,6 @@ extern crate alloc;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
 use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
 
-#[test]
-fn test_migrate_storage_success() {
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
