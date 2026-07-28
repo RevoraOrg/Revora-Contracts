@@ -1030,6 +1030,26 @@ pub(crate) enum DataKey {
     LastSnapshotCommitRef(OfferingId),
 }
 
+/// Per-holder anchor for checkpoint-compressed accrual ranges.
+///
+/// When the per-holder share schedule exceeds `checkpoint_threshold`,
+/// the oldest entries are folded into this anchor. The anchor stores
+/// a lossless pre-computed sum of claimable amounts for the compressed
+/// period range so that `compute_holder_payout_for_range` can retrieve
+/// the compressed value in O(1) instead of iterating through every
+/// schedule entry for each period. The anchor is keyed by the offering
+/// and holder and is consumed incrementally as the holder's claim cursor
+/// advances past the compressed range boundary.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccrualAnchor {
+    /// Highest period index (inclusive) covered by this anchor.
+    pub end_idx: u32,
+    /// Pre-computed sum of claimable amounts for all compressed periods
+    /// whose share-bps transitions are folded into this anchor.
+    pub claimable_sum: i128,
+}
+
 /// Secondary storage keys for auxiliary/extended contract state.
 /// Overflow enum to keep DataKey within the Soroban XDR union variant limit.
 #[contracttype]
@@ -1089,6 +1109,12 @@ pub enum DataKey2 {
     HolderAccrualState(OfferingId, Address),
     /// Piecewise-constant share schedule keyed by deposited-period index.
     HolderShareSchedule(OfferingId, Address),
+    /// Per-holder checkpoint anchor for compressed accrual ranges.
+    AccrualAnchor(OfferingId, Address),
+    /// Per-offering checkpoint compression threshold. When the holder share
+    /// schedule length exceeds this value the oldest entries are folded into
+    /// an `AccrualAnchor` and pruned from the schedule.
+    CheckpointThreshold(OfferingId),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
 
@@ -1143,6 +1169,11 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// Maximum number of periods allowed in a single read-only chunked query.
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
+/// Default checkpoint threshold for per-holder schedule compression.
+/// When a holder's share schedule length exceeds this value the oldest
+/// entries are folded into an `AccrualAnchor` and pruned from the schedule.
+const CHECKPOINT_THRESHOLD_DEFAULT: u32 = 1_000;
+
 
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1820,6 +1851,72 @@ impl RevoraRevenueShare {
         schedule
     }
 
+    fn get_checkpoint_threshold(env: &Env, offering_id: &OfferingId) -> u32 {
+        let key = DataKey2::CheckpointThreshold(offering_id.clone());
+        env.storage().persistent().get(&key).unwrap_or(CHECKPOINT_THRESHOLD_DEFAULT)
+    }
+
+    /// Compute the pre-claimable sum for a range of period indices using the
+    /// holder's share schedule and the global `AccPerShareAtIndex` values.
+    ///
+    /// This is a lossless computation: the result equals what
+    /// `compute_holder_payout_for_range` would produce for the same
+    /// `[start_idx, end_idx)` interval, but without iterating through
+    /// every period index individually.
+    ///
+    /// The sum is:
+    /// `sum_i ( (AccPerShareAtIndex[i+1] - AccPerShareAtIndex[i]) * share_bps_i / 1e18 )`
+    fn compute_anchor_claimable_sum(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        start_idx: u32,
+        end_idx: u32,
+    ) -> i128 {
+        if start_idx >= end_idx {
+            return 0;
+        }
+        let schedule = Self::get_holder_share_schedule(env, offering_id, holder);
+        if schedule.is_empty() {
+            return 0;
+        }
+        let mut total = 0_i128;
+        let mut current_index = start_idx;
+        let mut current_share = 0_u32;
+        let mut schedule_idx = 0_u32;
+
+        while schedule_idx < schedule.len() {
+            let checkpoint = schedule.get(schedule_idx).unwrap();
+            if checkpoint.start_index > start_idx {
+                break;
+            }
+            current_share = checkpoint.share_bps;
+            schedule_idx = schedule_idx.saturating_add(1);
+        }
+
+        while current_index < end_idx {
+            while schedule_idx < schedule.len() {
+                let checkpoint = schedule.get(schedule_idx).unwrap();
+                if checkpoint.start_index > current_index {
+                    break;
+                }
+                current_share = checkpoint.share_bps;
+                schedule_idx = schedule_idx.saturating_add(1);
+            }
+
+            if current_share > 0 {
+                let acc_end = Self::get_acc_per_share_at_index(env, offering_id, current_index.saturating_add(1));
+                let acc_start = Self::get_acc_per_share_at_index(env, offering_id, current_index);
+                let delta = acc_end.saturating_sub(acc_start);
+                total = total.saturating_add(delta.saturating_mul(current_share as i128) / ACCRUAL_SCALE_E18);
+            }
+
+            current_index = current_index.saturating_add(1);
+        }
+
+        total
+    }
+
     fn record_holder_share_transition(
         env: &Env,
         offering_id: &OfferingId,
@@ -1844,10 +1941,56 @@ impl RevoraRevenueShare {
         }
 
         updated.push_back(HolderShareCheckpoint { start_index: period_count, share_bps: new_share });
-        env.storage().persistent().set(
-            &DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()),
-            &updated,
-        );
+
+        let threshold = Self::get_checkpoint_threshold(env, offering_id);
+        if threshold > 0 && updated.len() > threshold as usize {
+            let keep_count = threshold as usize;
+            let compress_count = updated.len() - keep_count;
+
+            let anchor_start_idx = updated.get(0).map(|c| c.start_index).unwrap_or(0);
+            let anchor_end_idx = if compress_count > 0 {
+                let last_compressed = compress_count - 1;
+                if last_compressed + 1 < updated.len() {
+                    updated.get(last_compressed + 1).map(|c| c.start_index).unwrap_or(period_count).saturating_sub(1)
+                } else {
+                    period_count.saturating_sub(1)
+                }
+            } else {
+                period_count.saturating_sub(1)
+            };
+
+            let last_claimed_idx: u32 = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::LastClaimedIdx(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            let unclaimed_start = core::cmp::max(anchor_start_idx, last_claimed_idx);
+            let claimable_sum = if unclaimed_start <= anchor_end_idx {
+                Self::compute_anchor_claimable_sum(env, offering_id, holder, unclaimed_start, anchor_end_idx.saturating_add(1))
+            } else {
+                0
+            };
+
+            let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+            let existing_anchor: Option<AccrualAnchor> = env.storage().persistent().get(&anchor_key);
+            let consumed_end = existing_anchor.as_ref().map(|a| a.end_idx).unwrap_or(0);
+            let new_claimable_sum = claimable_sum.saturating_add(existing_anchor.map(|a| a.claimable_sum).unwrap_or(0));
+            env.storage().persistent().set(
+                &anchor_key,
+                &AccrualAnchor { end_idx: anchor_end_idx.max(consumed_end), claimable_sum: new_claimable_sum },
+            );
+
+            let pruned: Vec<HolderShareCheckpoint> = updated.into_iter().skip(compress_count).collect();
+            env.storage().persistent().set(
+                &DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()),
+                &pruned,
+            );
+        } else {
+            env.storage().persistent().set(
+                &DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()),
+                &updated,
+            );
+        }
     }
 
     fn get_holder_accrual_state(
@@ -1985,13 +2128,36 @@ impl RevoraRevenueShare {
             return;
         }
 
-        let delta = Self::compute_holder_payout_for_range(
-            env,
-            offering_id,
-            holder,
-            state.last_settled_idx,
-            matured_end,
-        );
+        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        let anchor: Option<AccrualAnchor> = env.storage().persistent().get(&anchor_key);
+
+        let mut delta: i128 = 0;
+        let mut schedule_start = state.last_settled_idx;
+
+        if let Some(a) = anchor {
+            if state.last_settled_idx <= a.end_idx {
+                let anchor_start = state.last_settled_idx;
+                let anchor_end_incl = core::cmp::min(matured_end, a.end_idx.saturating_add(1));
+                if anchor_start < anchor_end_incl {
+                    delta = delta.saturating_add(a.claimable_sum);
+                }
+                schedule_start = core::cmp::max(schedule_start, a.end_idx.saturating_add(1));
+                if matured_end > a.end_idx {
+                    env.storage().persistent().remove(&anchor_key);
+                }
+            }
+        }
+
+        if schedule_start < matured_end {
+            delta = delta.saturating_add(Self::compute_holder_payout_for_range(
+                env,
+                offering_id,
+                holder,
+                schedule_start,
+                matured_end,
+            ));
+        }
+
         state.accrued_owed = state.accrued_owed.saturating_add(delta);
         state.last_settled_idx = matured_end;
         state.last_acc_per_share_e18 = Self::get_acc_per_share_at_index(env, offering_id, matured_end);
@@ -5834,6 +6000,74 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Set the per-offering checkpoint compression threshold.
+    ///
+    /// When a holder's share schedule length exceeds `threshold` the
+    /// oldest entries are folded into an `AccrualAnchor` and pruned
+    /// from the schedule. The anchor stores a lossless pre-computed
+    /// sum of claimable amounts for the compressed period range.
+    ///
+    /// Pass `0` to disable compression (the schedule will never be pruned).
+    ///
+    /// ### Auth
+    /// Requires `issuer.require_auth()`. The caller must be the current
+    /// issuer of the offering.
+    ///
+    /// ### Errors
+    /// - [`RevoraError::OfferingNotFound`] â the offering does not exist
+    ///   or the caller is not the current issuer.
+    /// - [`RevoraError::NotAuthorized`] â the caller is not the issuer.
+    pub fn set_checkpoint_threshold(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        threshold: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.issuers.primary != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let key = DataKey2::CheckpointThreshold(offering_id);
+        let previous: u32 = env.storage().persistent().get(&key).unwrap_or(CHECKPOINT_THRESHOLD_DEFAULT);
+        env.storage().persistent().set(&key, &threshold);
+
+        Self::emit_v2_event(
+            &env,
+            (symbol_short!("chk_pt"), issuer, namespace, token),
+            (previous, threshold),
+        );
+        Ok(())
+    }
+
+    /// Get the checkpoint compression threshold for an offering.
+    ///
+    /// Returns the configured threshold, or [`CHECKPOINT_THRESHOLD_DEFAULT`]
+    /// when no explicit threshold has been set for this offering.
+    pub fn get_checkpoint_threshold(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::CheckpointThreshold(offering_id);
+        env.storage().persistent().get(&key).unwrap_or(CHECKPOINT_THRESHOLD_DEFAULT)
+    }
+
     /// Compute share of `amount` at `revenue_share_bps` using the given rounding mode.
     /// Security assumptions:
     /// - Callers should pass `revenue_share_bps` in [0, 10_000]. Values above 10_000 are rejected by returning 0.
@@ -7235,9 +7469,16 @@ impl RevoraRevenueShare {
                 return Err(RevoraError::TransferFailed);
             }
         }
-
-        // Advance claim index only for periods actually claimed (respecting delay)
+// Advance claim index only for periods actually claimed (respecting delay)
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
+
+        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        if let Some(a) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key) {
+            if start_idx <= a.end_idx && a.end_idx < last_claimed_idx {
+                total_payout = total_payout.saturating_add(a.claimable_sum);
+                env.storage().persistent().remove(&anchor_key);
+            }
+        }
 
         // Versioned v2 event: [2, holder, total_payout, periods] ΓÇö always emitted (#RC26Q2-C31)
         Self::emit_v2_event(
@@ -7549,6 +7790,14 @@ impl RevoraRevenueShare {
 
         // Advance claim index only for periods actually claimed (respecting delay)
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
+
+        let anchor_key2 = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        if let Some(a2) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key2) {
+            if start_idx <= a2.end_idx && a2.end_idx < last_claimed_idx {
+                total_payout = total_payout.saturating_add(a2.claimable_sum);
+                env.storage().persistent().remove(&anchor_key2);
+            }
+        }
 
         // Versioned v2 event: [2, holder, total_payout, periods] ΓÇö always emitted (#RC26Q2-C31)
         Self::emit_v2_event(
@@ -8253,7 +8502,22 @@ impl RevoraRevenueShare {
         let mut processed: u32 = 0;
         let mut idx = actual_start;
 
-        while idx < period_count {
+        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        let anchor: Option<AccrualAnchor> = env.storage().persistent().get(&anchor_key);
+
+        if let Some(a) = anchor {
+            if holder_start_idx <= a.end_idx {
+                total = total.saturating_add(a.claimable_sum);
+                let anchor_periods = a.end_idx.saturating_sub(holder_start_idx).saturating_add(1);
+                processed = processed.saturating_add(anchor_periods);
+                idx = core::cmp::max(idx, a.end_idx.saturating_add(1));
+                env.storage().persistent().remove(&anchor_key);
+            }
+        }
+
+        let effective_end = count.map(|c| core::cmp::min(actual_start + c, period_count)).unwrap_or(period_count);
+
+        while idx < effective_end {
             if let Some(cap) = effective_cap {
                 if processed >= cap {
                     return (total, Some(idx));
