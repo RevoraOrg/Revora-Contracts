@@ -57,6 +57,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
 | `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
 | `get_version` | — | `u32` | — | Return the current contract version (#23). Used for upgrade compatibility. |
+| `open_dispute` | `holder: Address`, `issuer: Address`, `namespace: Symbol`, `token: Address`, `meta_hash: BytesN<32>` | `Result<BytesN<32>, RevoraError>` | holder | Open a formal on-chain dispute with off-chain evidence identified by `meta_hash`. Returns the deterministic dispute ID. |
+| `get_dispute` | `dispute_id: BytesN<32>` | `Option<Dispute>` | — | Retrieve a dispute record by its ID. |
 
 ### Types
 
@@ -64,6 +66,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 - **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool, max_staleness_secs: u64 }` — per-offering concentration guardrail. When `enforce` is true and `max_staleness_secs > 0`, `report_revenue` rejects with `StaleConcentrationData` if no concentration has been reported or the last report is older than `max_staleness_secs` seconds.
 - **AuditSummary:** `{ total_revenue: i128, report_count: u64 }` — per-offering audit log summary.
 - **RoundingMode:** `Truncation` (0) or `RoundHalfUp` (1) — used by `compute_share` and per-offering default.
+- **DisputeStatus:** `Open` | `Resolved` | `Rejected` — lifecycle status of an on-chain dispute.
+- **Dispute:** `{ id: BytesN<32>, holder: Address, offering_id: OfferingId, opened_at: u64, meta_hash: BytesN<32>, status: DisputeStatus }` — an on-chain dispute record. The `id` is `sha256(issuer \|\| namespace \|\| token \|\| holder \|\| meta_hash)`.
 
 ### Error codes (RevoraError)
 
@@ -82,6 +86,10 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 26 | `ClaimWindowClosed` | Current ledger timestamp is outside the configured claiming window; `claim` rejected. |
 | 31 | `JurisdictionDisallowed` | Holder jurisdiction is not currently allowed for a new `set_holder_share` write or snapshot inclusion batch. Existing persisted shares remain claimable. |
 | 51 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
+| 58 | `DisputeNotFound` | The dispute ID does not correspond to an existing dispute record. |
+| 59 | `DisputeAlreadyOpen` | A dispute with the same (offering_id, holder, meta_hash) already exists. |
+| 60 | `MaxDisputesReached` | The holder has reached the maximum number of open disputes (`MAX_OPEN_DISPUTES_PER_HOLDER` = 5). |
+| 61 | `DisputeZeroShare` | The caller holds zero shares in the offering and cannot open a dispute. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -110,6 +118,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `iss_canc` | `(token), (current_issuer, proposed_new_issuer)` | When `cancel_issuer_transfer` revokes a pending transfer. |
 | `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
 | `downgrade_reject` | `(compiled_version, stored_version)` | When a state-mutating entrypoint is invoked but the loaded WASM's `CONTRACT_VERSION` is lower than the persisted `DeployedVersion` (lossy downgrade detected). Blocked with `MigrationDowngradeNotAllowed`. |
+| `dispute_open` | `(dispute_id, offering_id, holder, meta_hash)` | When `open_dispute` successfully creates a new dispute record. |
 | `ev_idx2` (V2) | `(version, event_type, issuer, namespace, token, period_id), (event_data...)` | Indexed V2 event — emitted by all state-changing entries for off-chain indexers. |
 | `ev_idx3` (V3) | `(version, event_type, issuer, namespace, token, period_id, _reserved), (event_data...)` | Indexed V3 event — dual-emitted alongside V2. Additive fields land here in future minor versions. |
 
