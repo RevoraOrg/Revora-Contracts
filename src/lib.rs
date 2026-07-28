@@ -217,6 +217,8 @@ mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
+mod test_governance_proposals;
+#[cfg(test)]
 mod test_time_windows;
 mod test_event_indexed_v2;
 #[cfg(test)]
@@ -281,6 +283,7 @@ const EVENT_PROPOSAL_APPROVED_V2: Symbol = symbol_short!("prop_a2");
 const EVENT_PROPOSAL_EXECUTED_V2: Symbol = symbol_short!("prop_e2");
 const EVENT_PROPOSAL_APPROVED: Symbol = symbol_short!("prop_app");
 const EVENT_PROPOSAL_EXECUTED: Symbol = symbol_short!("prop_exe");
+const EVENT_PROPOSAL_CREATED_GOV: Symbol = symbol_short!("prop_create");
 const EVENT_DURATION_SET: Symbol = symbol_short!("dur_set");
 
 #[contracttype]
@@ -311,6 +314,15 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovernanceProposal {
+    pub id: u32,
+    pub meta_hash: BytesN<32>,
+    pub quorum_bps: u32,
+    pub ends_at: u64,
 }
 
 #[contracttype]
@@ -1097,6 +1109,13 @@ pub enum DataKey2 {
 
     /// Off-chain disclosure metadata (URI + hash) for an offering (#485).
     DisclosureMeta(OfferingId),
+
+    /// Governance proposal count scoped to an offering.
+    GovernanceProposalCount(OfferingId),
+    /// Governance proposal payload keyed by (offering_id, proposal_id).
+    GovernanceProposal(OfferingId, u32),
+    /// Duplicate meta-hash guard keyed by (offering_id, meta_hash).
+    GovernanceProposalMeta(OfferingId, BytesN<32>),
 
     /// Per-offering minimum revenue threshold below which reports are skipped.
     MinRevenueThreshold(OfferingId),
@@ -9115,6 +9134,76 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::MultisigProposalDuration, &proposal_duration);
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
+    }
+
+    /// Create a governance proposal bound to an offering and an issuer-authenticated metadata hash.
+    ///
+    /// The proposal id is deterministic per offering and increments from a per-offering counter.
+    /// The entrypoint is issuer-authenticated so the on-chain record is bound to the issuer's
+    /// signed transaction and can be audited off-chain.
+    pub fn create_proposal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        meta_hash: BytesN<32>,
+        quorum_bps: u32,
+        voting_window: u64,
+    ) -> Result<u32, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer = Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        if quorum_bps == 0 || quorum_bps > 10_000 {
+            return Err(RevoraError::InvalidAmount);
+        }
+        if voting_window == 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+        if env.storage().persistent().has(&DataKey2::GovernanceProposalMeta(offering_id.clone(), meta_hash.clone())) {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let count_key = DataKey2::GovernanceProposalCount(offering_id.clone());
+        let proposal_id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let ends_at = env.ledger().timestamp().checked_add(voting_window).ok_or(RevoraError::InvalidAmount)?;
+        let proposal = GovernanceProposal {
+            id: proposal_id,
+            meta_hash: meta_hash.clone(),
+            quorum_bps,
+            ends_at,
+        };
+
+        env.storage().persistent().set(&DataKey2::GovernanceProposal(offering_id.clone(), proposal_id), &proposal);
+        env.storage().persistent().set(&count_key, &(proposal_id + 1));
+        env.storage().persistent().set(&DataKey2::GovernanceProposalMeta(offering_id.clone(), meta_hash.clone()), &true);
+        env.events().publish(
+            (EVENT_PROPOSAL_CREATED_GOV, issuer.clone(), namespace.clone(), token.clone()),
+            (proposal_id, meta_hash, quorum_bps, ends_at),
+        );
+        Ok(proposal_id)
+    }
+
+    /// Return a previously created governance proposal for an offering.
+    pub fn get_proposal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        proposal_id: u32,
+    ) -> Option<GovernanceProposal> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::GovernanceProposal(offering_id, proposal_id))
     }
 
     /// Propose a sensitive administrative action.
