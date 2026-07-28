@@ -104,6 +104,9 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      - name: Check storage layout JSON drift
+        run: cargo test --test storage_layout_json storage_layout_json_matches_checked_in_docs -- --exact --test-threads=1
+
       # --test-threads=1 keeps Soroban test output deterministic.
       # Local command: cargo test -- --test-threads=1
       - name: Test
