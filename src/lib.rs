@@ -1086,6 +1086,8 @@ pub enum DataKey2 {
     HolderJurisdiction(OfferingId, Address),
     /// Oracle public key mapped by oracle address.
     OraclePubKey(Address),
+    /// Conversion ratio (in bps) from one class to another.
+    ClassConversionRatio(OfferingId, ShareClass, ShareClass),
     /// Per-offering jurisdiction allowlist. Empty means compliance gating is disabled.
     AllowedJurisdictions(OfferingId),
     /// Global cumulative normalized accrual per 1 bps share, scaled by 1e18.
@@ -6988,6 +6990,108 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey2::HolderShareClass(offering_id, holder, share_class))
             .unwrap_or(0)
+    }
+
+    /// Set the conversion ratio (in bps) for rolling from one class to another.
+    pub fn set_class_conversion_ratio(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from_class: ShareClass,
+        to_class: ShareClass,
+        ratio_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+        
+        if ratio_bps == 0 {
+            return Err(RevoraError::InvalidConversionRatio);
+        }
+        
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::ClassConversionRatio(offering_id, from_class, to_class);
+        env.storage().persistent().set(&key, &ratio_bps);
+        Ok(())
+    }
+
+    /// Convert a holder's share from one class to another using the issuer-approved ratio.
+    pub fn convert_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        from_class: ShareClass,
+        to_class: ShareClass,
+        amount_bps: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        holder.require_auth();
+
+        let offering_id = OfferingId { issuer, namespace, token };
+
+        if let Some(schedule) = env.storage().persistent().get::<_, crate::vesting::VestingSchedule>(&crate::vesting::VestingKey::Schedule(holder.clone())) {
+            let vested = crate::vesting::VestingContract::get_vested_amount(env.clone(), holder.clone()).unwrap_or(0);
+            if schedule.total_amount > vested {
+                return Err(RevoraError::UnvestedConversionBlocked);
+            }
+        }
+
+        let ratio_key = DataKey2::ClassConversionRatio(offering_id.clone(), from_class.clone(), to_class.clone());
+        let ratio_bps: u32 = env.storage().persistent().get(&ratio_key).ok_or(RevoraError::ConversionNotApproved)?;
+
+        if ratio_bps == 0 {
+            return Err(RevoraError::InvalidConversionRatio);
+        }
+
+        let from_key = DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), from_class.clone());
+        let to_key = DataKey2::HolderShareClass(offering_id.clone(), holder.clone(), to_class.clone());
+
+        let from_balance: u32 = env.storage().persistent().get(&from_key).unwrap_or(0);
+        if from_balance < amount_bps {
+            return Err(RevoraError::InsufficientClassBalance);
+        }
+
+        let converted_amount_bps = ((amount_bps as u64).saturating_mul(ratio_bps as u64) / 10000) as u32;
+
+        let to_balance: u32 = env.storage().persistent().get(&to_key).unwrap_or(0);
+
+        let new_from = from_balance.saturating_sub(amount_bps);
+        let new_to = to_balance.saturating_add(converted_amount_bps);
+
+        env.storage().persistent().set(&from_key, &new_from);
+        env.storage().persistent().set(&to_key, &new_to);
+
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        if let Some(mut cls_vec) = env.storage().persistent().get::<_, Vec<(ShareClass, ClassConfig)>>(&classes_key) {
+            let mut from_idx = None;
+            let mut to_idx = None;
+            for (i, (sc, _)) in cls_vec.iter().enumerate() {
+                if *sc == from_class { from_idx = Some(i as u32); }
+                if *sc == to_class { to_idx = Some(i as u32); }
+            }
+            if let (Some(f_idx), Some(t_idx)) = (from_idx, to_idx) {
+                let (_, mut f_cfg) = cls_vec.get(f_idx).unwrap();
+                let (_, mut t_cfg) = cls_vec.get(t_idx).unwrap();
+                
+                f_cfg.bps = f_cfg.bps.checked_sub(amount_bps).ok_or(RevoraError::InvalidShareBps)?;
+                t_cfg.bps = t_cfg.bps.checked_add(amount_bps).ok_or(RevoraError::InvalidShareBps)?;
+                
+                cls_vec.set(f_idx, (from_class.clone(), f_cfg));
+                cls_vec.set(t_idx, (to_class.clone(), t_cfg));
+                env.storage().persistent().set(&classes_key, &cls_vec);
+            }
+        }
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("class_conv"), offering_id, holder),
+            (from_class, from_balance, new_from, to_class, to_balance, new_to)
+        );
+
+        Ok(())
     }
 
     /// Set or update a holder's jurisdiction tag for an offering.
