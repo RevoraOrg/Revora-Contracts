@@ -5575,7 +5575,7 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    pub fn transfer_with_attestation(
+    pub fn estimate_transfer(
         env: Env,
         issuer: Address,
         namespace: Symbol,
@@ -5584,9 +5584,25 @@ impl RevoraRevenueShare {
         to: Address,
         amount_bps: u32,
         category: Symbol,
+    ) -> (bool, u32) {
+        match Self::check_transfer_eligibility(&env, &issuer, &namespace, &token, &from, &to, amount_bps, &category) {
+            Ok(_) => (true, 0),
+            Err(e) => (false, e as u32),
+        }
+    }
+
+    fn check_transfer_eligibility(
+        env: &Env,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+        from: &Address,
+        to: &Address,
+        amount_bps: u32,
+        category: &Symbol,
     ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        issuer.require_auth();
+        Self::require_not_frozen(env)?;
+        // We do not check issuer.require_auth() here because this is a pure query
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -5597,6 +5613,22 @@ impl RevoraRevenueShare {
         if from == to {
             return Ok(());
         }
+
+        // Blacklist check
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), from.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), to.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Jurisdiction block
+        Self::require_holder_jurisdiction_allowed(
+            env,
+            &offering_id,
+            to,
+            symbol_short!("xfer"),
+        )?;
 
         let from_share: u32 = env
             .storage()
@@ -5616,12 +5648,8 @@ impl RevoraRevenueShare {
         let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
         let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
         if let Some(existing) = existing_cat {
-            if existing != category {
+            if existing != *category {
                 if to_share > 0 {
-                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
-                    env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
-                    
                     let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
                     let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
                     if let Some(restrictions) = env
@@ -5630,10 +5658,62 @@ impl RevoraRevenueShare {
                         .get::<_, TransferRestrictions>(&DataKey2::TransferRestrictions(offering_id.clone(), category.clone()))
                     {
                         if new_count >= restrictions.max_holders {
-                            env.storage().persistent().set(&old_count_key, &old_count);
                             return Err(RevoraError::CategoryCapReached);
                         }
                     }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transfer_with_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from: Address,
+        to: Address,
+        amount_bps: u32,
+        category: Symbol,
+    ) -> Result<(), RevoraError> {
+        Self::check_transfer_eligibility(&env, &issuer, &namespace, &token, &from, &to, amount_bps, &category)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if from == to {
+            return Ok(());
+        }
+
+        let from_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
+            .unwrap_or(0);
+
+        let to_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
+            .unwrap_or(0);
+
+        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
+        if let Some(existing) = existing_cat {
+            if existing != category {
+                if to_share > 0 {
+                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
+                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
+                    env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
+                    
+                    let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                    let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
                     env.storage().persistent().set(&new_count_key, &(new_count + 1));
                 }
                 env.storage().persistent().set(&cat_key, &category);
