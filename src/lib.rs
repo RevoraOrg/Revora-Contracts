@@ -177,9 +177,9 @@ pub enum RevoraError {
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
     /// The requester is still within the faucet cooldown window.
-    FaucetCooldownActive = 56,
+    FaucetCooldownActive = 59,
     /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 51,
+    MaxTotalSupplySharesExceeded = 58,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     /// This prevents falling through to initial-report handling when the period cursor has no
@@ -298,13 +298,7 @@ pub enum ProposalAction {
     SetProposalDuration(u64),
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
-}
+// Duplicate PauseState removed - using canonical definition at line ~818
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -315,14 +309,6 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
 }
 
 
@@ -432,6 +418,12 @@ const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
 const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
 const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
 const EVENT_FREEZE: Symbol = symbol_short!("freeze");
+
+// ── Governance event constants (issue #557) ──
+const EVENT_GOV_PROP_CREATED: Symbol = symbol_short!("gov_new");
+const EVENT_GOV_VOTE_CAST: Symbol = symbol_short!("gov_vote");
+const EVENT_WEIGHT_PIN: Symbol = symbol_short!("wt_pin");
+
 /// Issuer transfer expiry: 7 days in seconds (default).
 const ISSUER_TRANSFER_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 /// Minimum configurable issuer transfer expiry: 1 hour.
@@ -842,18 +834,6 @@ pub enum MetaDataKey {
     RevenueApproved(OfferingId, u64),
 }
 
-/// Pause tier for the contract. Stored under `DataKey::Paused`.
-#[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    /// Contract is fully operational.
-    NotPaused = 0,
-    /// Reports and deposits blocked; `claim` allowed.
-    SoftPaused = 1,
-    /// All state-mutating operations blocked, including `claim`.
-    HardPaused = 2,
-}
-
 /// Defines how fractional shares are handled during distribution calculations.
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -862,18 +842,6 @@ pub enum RoundingMode {
     Truncation = 0,
     /// Standard rounding: share = round((amount * bps) / 10000), where >= 0.5 rounds up.
     RoundHalfUp = 1,
-}
-
-/// Tiered pause state for the contract.
-#[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    /// All operations are open.
-    NotPaused = 0,
-    /// Reports and deposits are blocked; `claim` is still allowed.
-    SoftPaused = 1,
-    /// All state-mutating operations including `claim` are blocked.
-    HardPaused = 2,
 }
 
 /// Immutable record of a committed snapshot for an offering.
@@ -905,17 +873,31 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
-/// Tiered pause state for the contract.
+/// An on-chain governance proposal whose voting weight is pinned to the snapshot
+/// taken at the moment of proposal creation (issue #557).
 ///
-/// - `NotPaused`  – all operations open.
-/// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
-/// - `HardPaused` – all state-mutating operations blocked, including `claim`.
+/// # Security
+/// The `snapshot_id` field is written once at creation time and is immutable.
+/// `cast_vote` reads the voter's weight exclusively from that snapshot, preventing
+/// any late-buy vote manipulation after proposal creation.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovProposalEntry {
+    /// Auto-incremented proposal identifier (0-indexed per offering).
+    pub id: u32,
+    /// Human-readable proposal description (max 256 bytes, caller-supplied).
+    pub description: Symbol,
+    /// The snapshot_ref pinned at proposal creation. All vote-weight lookups
+    /// use this snapshot exclusively.
+    pub snapshot_id: u64,
+    /// Ledger timestamp when the proposal was created.
+    pub created_at: u64,
+    /// Cumulative yes-weight in basis points.
+    pub yes_weight: u32,
+    /// Cumulative no-weight in basis points.
+    pub no_weight: u32,
+    /// Whether the proposal is still open for voting.
+    pub open: bool,
 }
 
 /// Primary storage keys for core contract state.
@@ -924,14 +906,6 @@ pub enum PauseState {
 /// Scoped to the crate: storage keys are an internal implementation detail and are not part
 /// of the contract's external interface, so no contract spec entry is generated for them.
 /// This also keeps the enum clear of the 50-case spec union limit as new keys are added.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
-}
-
 #[contracttype]
 #[derive(Clone)]
 pub(crate) enum DataKey {
@@ -999,6 +973,10 @@ pub(crate) enum DataKey {
     /// Total number of holders recorded in a snapshot.
     SnapshotHolderCount(OfferingId, u64),
 
+    /// Per-snapshot holder share by address for O(1) vote-weight lookup.
+    /// Key: (OfferingId, snapshot_ref, Address) -> u32 (share_bps).
+    SnapshotHolderShare(OfferingId, u64, Address),
+
     /// Pending issuer transfer for an offering.
     PendingIssuerTransfer(OfferingId),
     /// Current issuer lookup by offering token.
@@ -1049,14 +1027,6 @@ pub enum DataKey2 {
     LastReportedPeriodId(OfferingId),
     /// Last deposited period_id for an offering.
     LastDepositedPeriodId(OfferingId),
-    /// Supply cap for an offering's cumulative deposited revenue.
-    SupplyCap(OfferingId),
-    /// Cumulative deposited revenue tracked against the supply cap.
-    DepositedRevenue(OfferingId),
-    /// Per-offering investment constraints.
-    InvestmentConstraints(OfferingId),
-    /// Per-offering minimum revenue threshold.
-    MinRevenueThreshold(OfferingId),
     /// Payment token decimals configured for an offering.
     PaymentTokenDecimals(OfferingId),
     /// Offering-scoped freeze flag.
@@ -1104,18 +1074,55 @@ pub enum DataKey2 {
     /// Off-chain disclosure metadata (URI + hash) for an offering (#485).
     DisclosureMeta(OfferingId),
 
-    /// Per-offering minimum revenue threshold below which reports are skipped.
-    MinRevenueThreshold(OfferingId),
-    /// Per-offering cumulative deposited revenue tracker.
-    DepositedRevenue(OfferingId),
     /// Timestamp of the last faucet request for a requester address.
     FaucetLastRequest(Address),
-    /// Per-offering investment constraints (min/max stake).
-    InvestmentConstraints(OfferingId),
-    /// Per-offering supply cap (0 = uncapped).
-    SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+
+    // ── Missing variants added for compilation ──
+
+    /// Current accrual index counter for dividend-accrual ledger.
+    AccrualIndex(OfferingId),
+    /// Per-offering platform fee model.
+    OfferingPlatformFee(OfferingId),
+    /// Denomination metadata (symbol, decimals) for an offering.
+    DenominationMetadata(OfferingId),
+    /// FX oracle configuration for an offering.
+    FxOracleConfig(OfferingId),
+    /// Transfer restrictions per category for an offering.
+    TransferRestrictions(OfferingId, Symbol),
+    /// Holder category tag for transfer restriction purposes.
+    HolderCategory(OfferingId, Address),
+    /// Per-category holder count for transfer restriction accounting.
+    CategoryHolderCount(OfferingId, Symbol),
+    /// Emergency freeze record for (offering_id, holder).
+    EmergencyFreeze(OfferingId, Address),
+    /// Total shares issued for an offering (tracks against MaxTotalSupplyShares).
+    TotalSharesIssued(OfferingId),
+    /// Maximum total supply shares cap for an offering.
+    MaxTotalSupplyShares(OfferingId),
+    /// Per-entry faucet seed for testnet holder seeding.
+    FaucetSeedEntry(OfferingId, u32),
+
+    // ── Multisig keys ──
+    /// Multisig approval threshold.
+    MultisigThreshold,
+    /// Multisig owner list.
+    MultisigOwners,
+    /// Multisig proposal counter.
+    MultisigProposalCount,
+    /// Default proposal duration in seconds.
+    MultisigProposalDuration,
+    /// Multisig proposal by id.
+    MultisigProposal(u32),
+
+    // ── Governance keys (issue #557) ──
+    /// Per-offering governance proposal counter.
+    GovProposalCount(OfferingId),
+    /// Per-offering governance proposal by id.
+    GovProposal(OfferingId, u32),
+    /// Vote record for (offering_id, proposal_id, voter) -> bool (true=yes, false=no).
+    VoteRecord(OfferingId, u32, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6458,6 +6465,12 @@ impl RevoraRevenueShare {
                 &(holder.clone(), share_bps),
             );
 
+            // Write address-keyed entry for O(1) vote-weight lookup (issue #557).
+            env.storage().persistent().set(
+                &DataKey::SnapshotHolderShare(offering_id.clone(), snapshot_ref, holder.clone()),
+                &share_bps,
+            );
+
             if slot.saturating_add(1) > slot_count {
                 slot_count = slot.saturating_add(1);
             }
@@ -6559,218 +6572,6 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&DataKey::SnapshotHolder(offering_id, snapshot_ref, index))
     }
 
-    // â”€â”€ Delegating wrappers for functions in the plain impl block â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // These expose functions from the plain impl block through the contract ABI.
-
-    /// Transfer shares from one holder to another with an attestation hash for off-chain
-    /// compliance review.
-    ///
-    /// ## Security model
-    ///
-    /// This is a **peer-to-peer secondary-market handoff**: both the `from` and `to` addresses
-    /// must independently authorize the transaction. Neither party can force a transfer on
-    /// the other's behalf.
-    ///
-    /// Guards applied in order before any state is mutated:
-    /// 1. Contract-level freeze / pause checks.
-    /// 2. Both `from` and `to` must call `require_auth()` — dual-party authorization.
-    /// 3. `from != to` — self-transfer is rejected as `InvalidTransferParticipants`.
-    /// 4. Offering must exist and `issuer` must match its primary issuer.
-    /// 5. Offering must not be frozen at the offering level.
-    /// 6. Neither `from` nor `to` may be blacklisted for this offering.
-    /// 7. When a per-offering whitelist (allowlist) is active, both `from` and `to` must
-    ///    appear on it — transfers between non-listed parties are not compliant.
-    /// 8. `from` must hold at least `shares_bps` to transfer.
-    /// 9. `to`'s resulting share must not exceed 10 000 bps (100 %).
-    /// 10. `shares_bps` must be > 0 (zero-value transfers carry no economic meaning).
-    ///
-    /// ## Storage invariant
-    ///
-    /// `HolderShareTotal` is kept consistent: a peer-to-peer transfer is a pure redistribution
-    /// (total BPS across all holders is unchanged) so the running total is not modified.
-    /// The individual `HolderShare` entries for `from` and `to` are updated atomically.
-    ///
-    /// ## Parameters
-    /// - `issuer`       — primary issuer of the offering (used to locate it).
-    /// - `namespace`    — offering namespace.
-    /// - `token`        — offering token.
-    /// - `from`         — current shareholder transferring shares; must provide auth.
-    /// - `to`           — recipient of the shares; must provide auth.
-    /// - `shares_bps`   — number of basis points to transfer (must be > 0).
-    /// - `attest_hash`  — 32-byte attestation hash stored in the emitted event for
-    ///                    off-chain compliance review (e.g. KYC/AML document hash).
-    ///
-    /// ## Events
-    /// Emits `EVENT_XFER_ATT` with data `(from, to, shares_bps, attest_hash)`.
-    ///
-    /// ## Returns
-    /// - `Ok(())` on success.
-    /// - `Err(RevoraError::ContractFrozen)` if the contract is globally frozen.
-    /// - `Err(RevoraError::ContractPaused)` if the contract is paused.
-    /// - `Err(RevoraError::InvalidTransferParticipants)` if `from == to`.
-    /// - `Err(RevoraError::OfferingNotFound)` if the offering does not exist or the issuer
-    ///   does not match its primary issuer.
-    /// - `Err(RevoraError::OfferingFrozen)` if the offering is individually frozen.
-    /// - `Err(RevoraError::HolderBlacklisted)` if either party is blacklisted.
-    /// - `Err(RevoraError::NotAuthorized)` if whitelist is enabled and either party is not listed.
-    /// - `Err(RevoraError::InvalidShareBps)` if `shares_bps == 0`, `from` has insufficient
-    ///   shares, or `to`'s resulting share would exceed 10 000 bps.
-    #[allow(clippy::too_many_arguments)]
-    pub fn transfer_with_attestation(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        from: Address,
-        to: Address,
-        shares_bps: u32,
-        attest_hash: BytesN<32>,
-    ) -> Result<(), RevoraError> {
-        // ── Guard 1: global contract-level freeze / pause ──────────────────────
-        Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env)?;
-
-        // ── Guard 2: dual-party authorization ─────────────────────────────────
-        // Both the sender and the recipient must independently authorize; neither
-        // can unilaterally initiate or accept a transfer on behalf of the other.
-        from.require_auth();
-        to.require_auth();
-
-        // ── Guard 3: self-transfer rejection ──────────────────────────────────
-        if from == to {
-            return Err(RevoraError::InvalidTransferParticipants);
-        }
-
-        // ── Guard 10: zero-value transfer is meaningless ───────────────────────
-        if shares_bps == 0 {
-            return Err(RevoraError::InvalidShareBps);
-        }
-
-        // ── Guard 4: offering existence and issuer identity ───────────────────
-        let offering =
-            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-
-        if offering.issuers.primary != issuer {
-            return Err(RevoraError::OfferingNotFound);
-        }
-
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
-        };
-
-        // ── Guard 5: offering-level freeze ────────────────────────────────────
-        Self::require_not_offering_frozen(&env, &offering_id)?;
-
-        // ── Guard 6: blacklist checks for both participants ───────────────────
-        // Blacklist always wins over whitelist (see security policy in README).
-        if Self::is_blacklisted(
-            env.clone(),
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-            from.clone(),
-        ) || Self::is_blacklisted(
-            env.clone(),
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-            to.clone(),
-        ) {
-            return Err(RevoraError::HolderBlacklisted);
-        }
-
-        // ── Guard 7: whitelist (jurisdiction allowlist) enforcement ───────────
-        // When a per-offering whitelist is active (non-empty), both parties must
-        // be listed.  An unlisted `to` means the recipient is not jurisdiction-
-        // approved; an unlisted `from` means the current holder lost their approval
-        // and the transfer should be blocked pending re-listing.
-        if Self::is_whitelist_enabled(env.clone(), issuer.clone(), namespace.clone(), token.clone())
-        {
-            if !Self::is_whitelisted(
-                env.clone(),
-                issuer.clone(),
-                namespace.clone(),
-                token.clone(),
-                from.clone(),
-            ) || !Self::is_whitelisted(
-                env.clone(),
-                issuer.clone(),
-                namespace.clone(),
-                token.clone(),
-                to.clone(),
-            ) {
-                return Err(RevoraError::NotAuthorized);
-            }
-        }
-
-        // ── Guard 8: sender has sufficient shares ─────────────────────────────
-        let from_share: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
-            .unwrap_or(0);
-
-        if from_share < shares_bps {
-            return Err(RevoraError::InvalidShareBps);
-        }
-
-        // ── Guard 9: recipient share cap ──────────────────────────────────────
-        let to_share: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
-            .unwrap_or(0);
-
-        let new_to_share = to_share
-            .checked_add(shares_bps)
-            .ok_or(RevoraError::LimitReached)?;
-
-        if new_to_share > 10_000 {
-            return Err(RevoraError::InvalidShareBps);
-        }
-
-        let new_from_share = from_share - shares_bps; // safe: from_share >= shares_bps (Guard 8)
-
-        // ── State mutation ─────────────────────────────────────────────────────
-        // A peer-to-peer transfer is a pure redistribution: total BPS is invariant,
-        // so HolderShareTotal is not modified.  Only the two individual shares change.
-        env.storage()
-            .persistent()
-            .set(&DataKey::HolderShare(offering_id.clone(), from.clone()), &new_from_share);
-        env.storage()
-            .persistent()
-            .set(&DataKey::HolderShare(offering_id.clone(), to.clone()), &new_to_share);
-
-        // ── Event emission ─────────────────────────────────────────────────────
-        // The 32-byte attestation hash accompanies every transfer event so that
-        // off-chain compliance tooling can correlate on-chain moves with off-chain
-        // approval documents (KYC, AML, jurisdiction checks, etc.).
-        env.events().publish(
-            (EVENT_XFER_ATT, issuer, namespace, token),
-            (from, to, shares_bps, attest_hash),
-        );
-
-        Ok(())
-    }
-
-    /// Return true if the given holder is blacklisted for the offering
-    pub fn is_blacklisted(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        holder: Address,
-    ) -> bool {
-        let offering_id = OfferingId { issuer, namespace, token };
-        env.storage()
-            .persistent()
-            .get(&DataKey::Blacklist(offering_id))
-            .unwrap_or(Map::new(&env))
-            .contains_key(holder)
-    }
 
     /// Set a holder's revenue share in basis points for an offering.
     pub fn set_holder_share(
@@ -9797,6 +9598,280 @@ mod issue_370_373_tests {
 
 
 
+// ── Snapshot-Based Governance Voting (issue #557) ─────────────────────────
+//
+// Voting weight is pinned to the snapshot taken at the moment the proposal was
+// created.  This prevents late-buy vote manipulation: any shares acquired after
+// `create_gov_proposal` have zero voting weight for that proposal.
+//
+// Flow:
+//   1. Issuer calls `create_gov_proposal` which reads the latest committed
+//      snapshot_ref and stores it in `GovProposalEntry.snapshot_id`.
+//   2. Any holder calls `cast_vote`.  The function looks up the voter's weight
+//      via `SnapshotHolderShare(offering_id, snapshot_id, voter)` — an O(1)
+//      read written by `apply_snapshot_shares` — and accumulates yes/no weight.
+//   3. A `wt_pin` diagnostic event is emitted on every vote confirming the
+//      snapshot_id and the resolved weight.
+//   4. `get_gov_proposal` is a read-only query for off-chain indexers.
+
+#[contractimpl]
+impl RevoraRevenueShare {
+    /// Create a new governance proposal for an offering, pinning voting weight
+    /// to the latest committed snapshot.
+    ///
+    /// ### Auth
+    /// Requires `issuer.require_auth()`.
+    ///
+    /// ### Parameters
+    /// - `issuer`: The offering issuer.
+    /// - `namespace`: Offering namespace.
+    /// - `token`: Offering token.
+    /// - `description`: Human-readable proposal text (max 9 chars due to `Symbol` limit).
+    ///
+    /// ### Returns
+    /// The new proposal id (`u32`).
+    ///
+    /// ### Errors
+    /// - `OfferingNotFound` — offering does not exist.
+    /// - `ContractFrozen` — contract is frozen.
+    /// - `LimitReached` — no snapshot has been committed for this offering yet.
+    pub fn create_gov_proposal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        description: Symbol,
+    ) -> Result<u32, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        // Authenticate and resolve offering.
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.issuers.primary != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Pin the snapshot_id to the latest committed snapshot at creation time.
+        // Fail early if no snapshot has been committed — there is nothing to pin to.
+        let snapshot_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastSnapshotCommitRef(offering_id.clone()))
+            .ok_or(RevoraError::LimitReached)?;
+
+        // Allocate a monotonically increasing proposal id.
+        let count_key = DataKey2::GovProposalCount(offering_id.clone());
+        let proposal_id: u32 =
+            env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let created_at = env.ledger().timestamp();
+        let proposal = GovProposalEntry {
+            id: proposal_id,
+            description: description.clone(),
+            snapshot_id,
+            created_at,
+            yes_weight: 0,
+            no_weight: 0,
+            open: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::GovProposal(offering_id.clone(), proposal_id), &proposal);
+        env.storage().persistent().set(&count_key, &proposal_id.saturating_add(1));
+
+        // Emit creation event: topics = (gov_new, offering_id fields)
+        // data = (proposal_id, snapshot_id, created_at)
+        env.events().publish(
+            (EVENT_GOV_PROP_CREATED, issuer, namespace, token),
+            (proposal_id, snapshot_id, created_at),
+        );
+
+        Ok(proposal_id)
+    }
+
+    /// Cast a vote on a governance proposal.
+    ///
+    /// The voter's weight is read from the snapshot that was pinned at proposal
+    /// creation, so shares acquired after `create_gov_proposal` carry zero weight.
+    /// A `wt_pin` diagnostic event is emitted with the resolved weight.
+    ///
+    /// ### Auth
+    /// Requires `voter.require_auth()`.
+    ///
+    /// ### Parameters
+    /// - `issuer` / `namespace` / `token`: Identify the offering.
+    /// - `proposal_id`: Id returned by `create_gov_proposal`.
+    /// - `voter`: The voting address.
+    /// - `approve`: `true` = yes, `false` = no.
+    ///
+    /// ### Returns
+    /// The voter's weight in basis points (`u32`).
+    ///
+    /// ### Errors
+    /// - `OfferingNotFound` — offering does not exist.
+    /// - `LimitReached` — proposal does not exist or is already closed.
+    /// - `ContractFrozen` — contract is frozen.
+    /// - `AlreadyApproved` — voter has already voted on this proposal.
+    pub fn cast_vote(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        proposal_id: u32,
+        voter: Address,
+        approve: bool,
+    ) -> Result<u32, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        // Authenticate voter.
+        voter.require_auth();
+
+        // Offering must exist.
+        let _ = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Load proposal — fail if missing or closed.
+        let prop_key = DataKey2::GovProposal(offering_id.clone(), proposal_id);
+        let mut proposal: GovProposalEntry =
+            env.storage().persistent().get(&prop_key).ok_or(RevoraError::LimitReached)?;
+        if !proposal.open {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Idempotency / double-vote guard.
+        let vote_key = DataKey2::VoteRecord(offering_id.clone(), proposal_id, voter.clone());
+        if env.storage().persistent().has(&vote_key) {
+            return Err(RevoraError::AlreadyApproved);
+        }
+
+        // O(1) vote-weight lookup from the pinned snapshot.
+        let weight: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SnapshotHolderShare(
+                offering_id.clone(),
+                proposal.snapshot_id,
+                voter.clone(),
+            ))
+            .unwrap_or(0);
+
+        // Accumulate weight.
+        if approve {
+            proposal.yes_weight = proposal.yes_weight.saturating_add(weight);
+        } else {
+            proposal.no_weight = proposal.no_weight.saturating_add(weight);
+        }
+
+        // Persist updated proposal and vote record.
+        env.storage().persistent().set(&prop_key, &proposal);
+        env.storage().persistent().set(&vote_key, &approve);
+
+        // Emit weight_pin diagnostic event so indexers can verify the resolved weight
+        // came from the pinned snapshot and not a later one.
+        env.events().publish(
+            (EVENT_WEIGHT_PIN, voter.clone()),
+            (proposal_id, proposal.snapshot_id, weight),
+        );
+
+        // Emit vote cast event.
+        env.events().publish(
+            (EVENT_GOV_VOTE_CAST, issuer, namespace, token),
+            (proposal_id, voter, approve, weight),
+        );
+
+        Ok(weight)
+    }
+
+    /// Return a governance proposal by id, or `None` if it does not exist.
+    pub fn get_gov_proposal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        proposal_id: u32,
+    ) -> Option<GovProposalEntry> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get(&DataKey2::GovProposal(offering_id, proposal_id))
+    }
+
+    /// Return the total number of governance proposals created for an offering.
+    pub fn get_gov_proposal_count(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get(&DataKey2::GovProposalCount(offering_id))
+            .unwrap_or(0)
+    }
+
+    /// Close a governance proposal so no further votes can be cast.
+    ///
+    /// ### Auth
+    /// Requires `issuer.require_auth()`.
+    ///
+    /// ### Errors
+    /// - `OfferingNotFound` — offering does not exist or caller is not the issuer.
+    /// - `LimitReached` — proposal does not exist or is already closed.
+    /// - `ContractFrozen` — contract is frozen.
+    pub fn close_gov_proposal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        proposal_id: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.issuers.primary != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let prop_key = DataKey2::GovProposal(offering_id, proposal_id);
+        let mut proposal: GovProposalEntry =
+            env.storage().persistent().get(&prop_key).ok_or(RevoraError::LimitReached)?;
+        if !proposal.open {
+            return Err(RevoraError::LimitReached);
+        }
+        proposal.open = false;
+        env.storage().persistent().set(&prop_key, &proposal);
+        Ok(())
+    }
+}
+
 // --- MIGRATION UPGRADE PATH (BOUNTY #467) ---
 
 #[contracttype]
@@ -9866,3 +9941,5 @@ impl RevoraRevenueShare {
 mod test_storage_layout_version;
 #[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_snapshot_voting_weight;
