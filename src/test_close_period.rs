@@ -187,6 +187,18 @@ fn close_period_wrong_issuer_returns_not_found() {
 
 // ── Gas-bound tests: linear-in-holders cost ──────────────────────────────────
 
+/// Helper: create a payment token (Stellar asset contract).
+fn create_payment_token(env: &Env) -> (Address, Address) {
+    let admin = Address::generate(env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone());
+    (token.address(), admin)
+}
+
+fn make_client(env: &Env) -> RevoraRevenueShareClient {
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    RevoraRevenueShareClient::new(env, &contract_id)
+}
+
 /// Helper to compute CPU instruction delta of `close_period` call.
 fn measure_cpu_for_n_holders(n: u32) -> u64 {
     let env = Env::default();
@@ -281,4 +293,181 @@ fn close_period_zero_holders_has_constant_cost() {
     assert!(after - before > 0, "CPU cost must be positive");
     // Assert that cost is within a reasonable constant bound
     assert!(after - before < 5_000_000, "CPU cost {} exceeded constant bound", after - before);
+}
+
+// ── Dual-signature close-of-period tests (#565) ────────────────────────────
+
+/// Helper: set up an offering with dual-signature mode enabled.
+fn setup_dual_sig_offering(
+    env: &Env,
+    client: &RevoraRevenueShareClient,
+) -> (Address, Address, Address, Address, Address) {
+    env.mock_all_auths();
+    let issuer = Address::generate(env);
+    let co_issuer = Address::generate(env);
+    let offering_token = Address::generate(env);
+    let payment_token = Address::generate(env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(
+        &issuer,
+        &Vec::from_array(env, [co_issuer.clone()]),
+        &2u32,
+        &ns,
+        &offering_token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    // Enable dual-signature mode.
+    client.set_dual_sig_config(&issuer, &ns, &offering_token, &true);
+
+    (issuer, co_issuer, offering_token, payment_token, ns)
+}
+
+#[test]
+fn set_dual_sig_config_enables_mode() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    // Single-sig close_period should now fail with DualSigNotConfigured.
+    let result = client.try_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(result, Err(Ok(RevoraError::DualSigNotConfigured)));
+}
+
+#[test]
+fn close_period_dual_sig_happy_path() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &1, &issuer, &co_issuer,
+    );
+    assert!(result.is_ok(), "dual-sig close should succeed: {:?}", result);
+    assert!(client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn close_period_dual_sig_same_signer_rejected() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    // Both sig_a and sig_b are the issuer — must be rejected.
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &1, &issuer, &issuer,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::DualSigSameSigner)));
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn close_period_dual_sig_not_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let co_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payment_token = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    // Register offering WITHOUT enabling dual-sig.
+    client.register_offering(
+        &issuer,
+        &Vec::from_array(&env, [co_issuer.clone()]),
+        &2u32,
+        &ns,
+        &token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    // Dual-sig close must fail with DualSigNotConfigured.
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &1, &issuer, &co_issuer,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::DualSigNotConfigured)));
+}
+
+#[test]
+fn close_period_dual_sig_unauthorized_signer_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    let attacker = Address::generate(&env);
+
+    // Unauthorized signer must be rejected.
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &1, &issuer, &attacker,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+#[test]
+fn close_period_dual_sig_emits_event() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let before = env.events().all().len();
+
+    client.close_period_dual_sig(&issuer, &ns, &token, &42, &issuer, &co_issuer);
+
+    assert!(env.events().all().len() > before, "expected at least one new event");
+}
+
+#[test]
+fn close_period_dual_sig_double_close_rejected() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    // First close succeeds.
+    client.close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
+
+    // Second close must be rejected.
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &1, &issuer, &co_issuer,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
+}
+
+#[test]
+fn close_period_dual_sig_zero_period_id_rejected() {
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    let result = client.try_close_period_dual_sig(
+        &issuer, &ns, &token, &0, &issuer, &co_issuer,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+}
+
+#[test]
+fn close_period_dual_sig_unknown_offering_returns_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let co_issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_close_period_dual_sig(
+        &issuer, &symbol_short!("ns"), &token, &1, &issuer, &co_issuer,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }

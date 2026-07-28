@@ -1,9 +1,8 @@
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use uuid::Uuid;
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum IndexerError {
@@ -188,9 +187,10 @@ impl EventIndexer {
             .await?;
 
         let event_counts_by_type: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT event_type, COUNT(*) as count FROM contract_events GROUP BY event_type")
-            .fetch_all(&self.pool)
-            .await?;
+            "SELECT event_type, COUNT(*) as count FROM contract_events GROUP BY event_type",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         let event_counts_by_type = serde_json::to_value(event_counts_by_type)?;
 
         let event_counts_by_hour: Vec<(DateTime<Utc>, i64)> = sqlx::query_as(
@@ -198,7 +198,7 @@ impl EventIndexer {
          FROM contract_events 
          GROUP BY hour 
          ORDER BY hour DESC 
-         LIMIT 24"
+         LIMIT 24",
         )
         .fetch_all(&self.pool)
         .await?;

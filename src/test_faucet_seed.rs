@@ -24,7 +24,7 @@
 use super::*;
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger},
     Address, Env,
 };
 
@@ -74,9 +74,10 @@ fn faucet_rejected_when_testnet_mode_is_false() {
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
+    let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
 
-    let result = client.try_faucet_seed_holders(&issuer, &ns, &token, &5);
+    let result = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &5);
     assert_eq!(result, Err(Ok(RevoraError::TestnetOnly)));
 }
 
@@ -87,9 +88,10 @@ fn faucet_rejected_after_testnet_mode_disabled() {
     let client = make_client(&env);
     enable_testnet(&client, &env);
     client.set_testnet_mode(&false); // disable
+    let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
 
-    let result = client.try_faucet_seed_holders(&issuer, &ns, &token, &3);
+    let result = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &3);
     assert_eq!(result, Err(Ok(RevoraError::TestnetOnly)));
 }
 
@@ -104,24 +106,68 @@ fn faucet_returns_offering_not_found_for_unknown_offering() {
     let fake_token = Address::generate(&env);
     let ns = symbol_short!("ns");
 
-    let result = client.try_faucet_seed_holders(&fake_issuer, &ns, &fake_token, &5);
+    let requester = Address::generate(&env);
+    let result = client.try_faucet_seed_holders(&requester, &fake_issuer, &ns, &fake_token, &5);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+#[test]
+fn faucet_rejects_requests_within_the_cooldown_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    enable_testnet(&client, &env);
+    let requester = Address::generate(&env);
+    let (issuer, ns, token) = register_offering(&client, &env);
+
+    let first = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
+    assert!(matches!(first, Ok(Ok(_))));
+
+    let second = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
+    assert_eq!(
+        second,
+        Err(Ok(RevoraError::FaucetCooldownActive)),
+        "second request within cooldown should be rejected"
+    );
+}
+
+#[test]
+fn faucet_allows_request_after_cooldown_elapsed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    enable_testnet(&client, &env);
+    let requester = Address::generate(&env);
+    let (issuer, ns, token) = register_offering(&client, &env);
+
+    let first = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
+    assert!(matches!(first, Ok(Ok(_))));
+
+    env.ledger().set_timestamp(DEFAULT_FAUCET_COOLDOWN_SECONDS);
+
+    let second = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
+    assert!(
+        matches!(second, Ok(Ok(_))),
+        "request after cooldown elapsed should succeed"
+    );
 }
 
 // ── Edge-case: count == 0 ──────────────────────────────────────────────────────
 
 #[test]
 fn faucet_count_zero_returns_empty_vec() {
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &0);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &0);
     assert_eq!(seeds.len(), 0);
 }
 
 #[test]
 fn faucet_count_zero_emits_no_events() {
     let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
     let before = env.events().all().len();
-    client.faucet_seed_holders(&issuer, &ns, &token, &0);
+    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &0);
     assert_eq!(env.events().all().len(), before, "count==0 must emit no events");
 }
 
@@ -129,9 +175,10 @@ fn faucet_count_zero_emits_no_events() {
 
 #[test]
 fn faucet_returns_correct_seed_count_for_various_inputs() {
-    let (_, client, issuer, ns, token) = setup();
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
     for count in [1u32, 2, 3, 5, 10, 20, 50] {
-        let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &count);
+        let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
         assert_eq!(seeds.len(), count, "count={count}: wrong seed count");
     }
 }
@@ -140,9 +187,10 @@ fn faucet_returns_correct_seed_count_for_various_inputs() {
 
 #[test]
 fn faucet_is_deterministic_across_calls() {
-    let (_, client, issuer, ns, token) = setup();
-    let seeds_a = client.faucet_seed_holders(&issuer, &ns, &token, &4);
-    let seeds_b = client.faucet_seed_holders(&issuer, &ns, &token, &4);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds_a = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
+    let seeds_b = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
     assert_eq!(seeds_a.len(), seeds_b.len());
     for i in 0..seeds_a.len() {
         assert_eq!(
@@ -157,8 +205,9 @@ fn faucet_is_deterministic_across_calls() {
 
 #[test]
 fn faucet_slots_produce_distinct_seeds() {
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &5);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &5);
     for i in 0..seeds.len() {
         for j in (i + 1)..seeds.len() {
             assert_ne!(
@@ -181,8 +230,9 @@ fn faucet_seeds_differ_between_distinct_offerings() {
     let ns2 = symbol_short!("ns2");
     client.register_offering(&issuer2, &ns2, &token2, &5_000, &payout2, &0);
 
-    let seeds1 = client.faucet_seed_holders(&issuer1, &ns1, &token1, &3);
-    let seeds2 = client.faucet_seed_holders(&issuer2, &ns2, &token2, &3);
+    let requester = Address::generate(&env);
+    let seeds1 = client.faucet_seed_holders(&requester, &issuer1, &ns1, &token1, &3);
+    let seeds2 = client.faucet_seed_holders(&requester, &issuer2, &ns2, &token2, &3);
 
     assert_ne!(
         seeds1.get(0),
@@ -196,9 +246,10 @@ fn faucet_seeds_differ_between_distinct_offerings() {
 #[test]
 fn faucet_emits_one_event_per_slot() {
     let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
     let count = 7u32;
     let before = env.events().all().len();
-    client.faucet_seed_holders(&issuer, &ns, &token, &count);
+    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
     let delta = env.events().all().len() - before;
     assert!(delta >= count as usize, "expected ≥{count} new events, got {delta}");
 }
@@ -207,8 +258,9 @@ fn faucet_emits_one_event_per_slot() {
 
 #[test]
 fn faucet_each_seed_is_32_bytes() {
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &4);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
     for i in 0..seeds.len() {
         let seed = seeds.get(i).expect("seed at index {i}");
         assert_eq!(seed.len(), 32, "slot {i}: seed must be exactly 32 bytes");
@@ -220,24 +272,27 @@ fn faucet_each_seed_is_32_bytes() {
 #[test]
 fn faucet_single_slot_returns_one_seed() {
     // count=1 → one slot absorbing all 10 000 bps.
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &1);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &1);
     assert_eq!(seeds.len(), 1, "count=1 must return exactly one seed");
 }
 
 #[test]
 fn faucet_divisible_count_returns_correct_length() {
     // 10_000 / 20 = 500, remainder 0 → each slot gets 500 bps exactly.
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &20);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &20);
     assert_eq!(seeds.len(), 20);
 }
 
 #[test]
 fn faucet_indivisible_count_returns_correct_length() {
     // 10_000 / 3 = 3333 remainder 1 → last slot gets 3334 bps.
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &3);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &3);
     assert_eq!(seeds.len(), 3);
 }
 
@@ -245,7 +300,8 @@ fn faucet_indivisible_count_returns_correct_length() {
 
 #[test]
 fn faucet_large_count_succeeds() {
-    let (_, client, issuer, ns, token) = setup();
-    let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &100);
+    let (env, client, issuer, ns, token) = setup();
+    let requester = Address::generate(&env);
+    let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &100);
     assert_eq!(seeds.len(), 100);
 }
