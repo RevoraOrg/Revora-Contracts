@@ -9902,3 +9902,5 @@ impl RevoraRevenueShare {
 mod test_storage_layout_version;
 #[cfg(test)]
 mod test_close_period;
+p u b   s t r u c t   M u l t i I s s u e r Q u o r u m C o n f i g   {   p u b   t h r e s h o l d :   u 3 2 ,   p u b   s i g n e r s :   V e c < A d d r e s s > ,   }  
+ 
