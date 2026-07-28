@@ -402,6 +402,8 @@ const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
+/// Emitted when an OFAC attestation triggers automatic holder freeze.
+const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
 const BPS_DENOMINATOR: i128 = 10_000;
 const ACCRUAL_SCALE_E18: i128 = 1_000_000_000_000_000_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
@@ -1112,6 +1114,8 @@ pub enum DataKey2 {
     GovProposal(OfferingId, u32),
     /// Vote record for (offering_id, proposal_id, voter) -> bool (true=yes, false=no).
     VoteRecord(OfferingId, u32, Address),
+    /// Processed OFAC attestation hash for idempotency (prevents replay attacks).
+    ProcessedAttestationHash(BytesN<32>),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -9299,6 +9303,76 @@ impl RevoraRevenueShare {
     }
 
     // â”€â”€ Multisig admin logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Process an OFAC attestation and automatically freeze the targeted holder.
+    ///
+    /// When an OFAC attestation naming a currently-active holder is submitted,
+    /// this function freezes the holder's account immediately and emits a structured
+    /// event referencing the attestation hash. This operation is idempotent per
+    /// attestation hash to prevent replay attacks.
+    ///
+    /// ### Parameters
+    /// - `attestation_hash`: The 32-byte hash of the OFAC attestation. Used for idempotency.
+    /// - `issuer`: The issuer address of the offering.
+    /// - `namespace`: The namespace of the offering.
+    /// - `token`: The token representing the offering.
+    /// - `holder`: The holder address to be frozen if named in the attestation.
+    ///
+    /// ### Security Assumptions
+    /// - The caller is authorized to submit OFAC attestations (typically an admin or oracle).
+    /// - The attestation hash uniquely identifies a specific OFAC attestation.
+    /// - Idempotency is enforced by tracking processed attestation hashes.
+    ///
+    /// ### Returns
+    /// - `Ok(())` on success (or if the attestation was already processed).
+    /// - `Err(RevoraError::ContractFrozen)` if the contract is globally frozen.
+    ///
+    /// ### Events
+    /// - Emits `auto_frz` with `(issuer, namespace, token)` topics and `(holder, attestation_hash)` data.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_ofac_attestation(
+        env: Env,
+        attestation_hash: BytesN<32>,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        
+        // Check idempotency: if this attestation hash was already processed, return success
+        let hash_key = DataKey2::ProcessedAttestationHash(attestation_hash.clone());
+        if env.storage().persistent().has(&hash_key) {
+            return Ok(());
+        }
+
+        // Mark the attestation hash as processed
+        if !Self::is_event_only(&env) {
+            env.storage().persistent().set(&hash_key, &true);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Freeze the holder with SanctionsMatch reason
+        if !Self::is_event_only(&env) {
+            env.storage().persistent().set(
+                &DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone()),
+                &FreezeReason::SanctionsMatch,
+            );
+        }
+
+        // Emit structured event for audit trail
+        env.events().publish(
+            (EVENT_AUTO_FRZ, issuer, namespace, token),
+            (holder, attestation_hash),
+        );
+
+        Ok(())
+    }
 
     pub const MAX_MULTISIG_OWNERS: u32 = 20;
     /// Maximum proposal duration: 365 days in seconds.
