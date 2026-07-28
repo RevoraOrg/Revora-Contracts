@@ -164,6 +164,25 @@ All state-changing entries now call `emit_v2_and_v3()` which publishes:
 - After the deprecation window, V2 emission may be removed.
 - V3 subscribers should validate `version == 3` and reject mismatches.
 
+### V2-Compat Downgrade Flag
+
+A `set_emit_v2_compat` admin method controls whether V2-indexed events (`ev_idx2`) are
+emitted alongside V3 events:
+
+- **Default: `true`** — V2 events are emitted (backward-compatible behavior).
+- **`false`** — Only V3 events are emitted; indexers must have migrated.
+
+The flag is stored under `DataKey2::EmitV2Compat` as a `bool`. Admin can toggle it at
+any time. The flag is intended for a limited deprecation window; once all indexers have
+migrated to V3, the flag should be set to `false` and eventually the V2 emission path
+and this flag can be removed entirely.
+
+**Timeline:**
+1. **Current phase (V2+V3 dual-emission)**: Default `emit_v2_compat = true`. Both V2 and V3 events are emitted.
+2. **Migration phase**: Admin disables compat flag for test indexers; validates V3-only behavior.
+3. **Deprecation completion**: All indexers on V3 → admin sets `emit_v2_compat = false` permanently.
+4. **Cleanup**: Future contract version removes V2 event emission and the `emit_v2_compat` flag.
+
 ### Migration Table
 
 | Aspect | V2 | V3 |

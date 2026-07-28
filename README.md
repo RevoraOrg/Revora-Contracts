@@ -69,6 +69,15 @@ Soroban contract for revenue-share offerings and blacklist management.
 - **DisputeStatus:** `Open` | `Resolved` | `Rejected` — lifecycle status of an on-chain dispute.
 - **Dispute:** `{ id: BytesN<32>, holder: Address, offering_id: OfferingId, opened_at: u64, meta_hash: BytesN<32>, status: DisputeStatus }` — an on-chain dispute record. The `id` is `sha256(issuer \|\| namespace \|\| token \|\| holder \|\| meta_hash)`.
 
+### `estimate_transfer` Reason Codes
+
+The `estimate_transfer(from, to, amount, category)` preflight query returns `(eligible: bool, reason_code: u32)`. If `eligible` is false, `reason_code` corresponds to one of the following `RevoraError` wire values:
+- `7` (`HolderBlacklisted`): The sender or receiver is blacklisted.
+- `10` (`ContractFrozen`): The contract is globally frozen.
+- `17` (`InvalidAmount`): The sender does not have enough shares to transfer `amount_bps`.
+- `31` (`JurisdictionDisallowed`): The receiver's jurisdiction is not allowed for this offering.
+- `CategoryCapReached`: The transfer would exceed the max holders limit for the category.
+
 ### Error codes (RevoraError)
 
 | Code | Name | Meaning |

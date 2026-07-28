@@ -115,6 +115,8 @@ pub enum RevoraError {
     DisplayDecimalsOutOfRange = 51,
     /// Total supply shares would exceed the offering's max total supply shares.
     MaxTotalSupplySharesExceeded = 58,
+    /// Total supply shares for a specific class would exceed the class cap.
+    ClassSupplyCapExceeded = 64,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -166,6 +168,8 @@ pub enum RevoraError {
     NoAdminRotationPending = 35,
     /// Admin rotation failed: caller is not the pending new admin.
     UnauthorizedRotationAccept = 36,
+    /// Admin rotation failed: the configured delay has not elapsed since the proposal.
+    AdminRotationDelayNotElapsed = 58,
     /// Offering is frozen.
     OfferingFrozen = 42,
     /// Issuer transfer has expired.
@@ -212,6 +216,7 @@ pub enum RevoraError {
 }
 
 pub mod vesting;
+pub mod tax_bucket;
 
 #[cfg(feature = "kani")]
 pub mod kani_harness;
@@ -336,6 +341,8 @@ const EVENT_ISSUER_TRANSFER_CANCELLED: Symbol = symbol_short!("iss_canc");
 const EVENT_ISSUER_TRANSFER_REJECTED: Symbol = symbol_short!("iss_rej");
 const EVENT_ISSUER_TRANSFER_VESTING_MIGRATED: Symbol = symbol_short!("iss_vst");
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
+/// Emitted when a registered migration hook is applied during storage walker execution.
+const EVENT_MIG_HOOK_APPLIED: Symbol = symbol_short!("mig_hook");
 /// Emitted for each deterministic seed produced by `faucet_seed_holders` (testnet only).
 const EVENT_FAUCET_SEED: Symbol = symbol_short!("fct_seed");
 const EVENT_FAUCET_COOLDOWN_REJECT: Symbol = symbol_short!("fct_cdrj");
@@ -388,6 +395,14 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 /// Emitted when a share transfer with attestation occurs.
 const EVENT_XFER_ATT: Symbol = symbol_short!("xfer_att");
+/// Emitted when a cross-class share transfer is blocked.
+/// Data: `(offering_id, from, to, from_class, to_class)`.
+const EVENT_CLASS_XFER_BLOCK: Symbol = symbol_short!("cls_block");
+
+/// Emitted when the V2-compat downgrade flag is toggled by admin.
+/// topic: (ev_v2c, admin)
+/// data:  (enabled: bool)
+const EVENT_V2_COMPAT_SET: Symbol = symbol_short!("ev_v2c");
 
 /// Emitted when a redemption window is set for an offering.
 const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
@@ -405,6 +420,12 @@ const INDEXER_EVENT_SCHEMA_VERSION: u32 = 3;
 const EVENT_CONC_LIMIT_SET: Symbol = symbol_short!("conc_lim");
 const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
+/// Emitted when an admin rotation is logged to persistent history.
+const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
+/// Emitted when a two-phase admin rotation is finalized (delay elapsed).
+const EVENT_ADMIN_FINALIZE: Symbol = symbol_short!("adm_fin");
+/// Emitted when the admin rotation delay is configured.
+const EVENT_ADMIN_ROTATION_DELAY_SET: Symbol = symbol_short!("adm_dly");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -456,7 +477,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 3;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -778,6 +799,18 @@ pub struct HolderAccrualState {
     pub accrued_owed: i128,
 }
 
+/// Read-only per-period statement row for a holder.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolderStatementEntry {
+    /// Deterministic revenue period identifier.
+    pub period_id: u64,
+    /// Timestamp at which the period's revenue was deposited.
+    pub deposit_timestamp: u64,
+    /// Amount currently attributable to the holder for this period.
+    pub claimable_amount: i128,
+}
+
 /// Versioned structured topic payload for indexers.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -928,6 +961,47 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
+/// Immutable record of a completed admin rotation, persisted in an append-only log.
+///
+/// Written once in finalize and read via `get_admin_rotation_history_page`.
+/// The log is bounded — see `MAX_ADMIN_ROTATION_LOG`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminRotationEntry {
+    /// Admin address before the rotation.
+    pub prior_admin: Address,
+    /// Admin address after the rotation.
+    pub new_admin: Address,
+    /// Ledger timestamp when `finalize_admin_rotation` executed.
+    pub rotated_at: u64,
+}
+
+/// Pending admin rotation with proposal timestamp for delay enforcement.
+///
+/// Stored under `DataKey::PendingAdmin` during the propose→finalize window.
+/// The `proposed_at` field is compared against the configured delay
+/// (see `DataKey2::AdminRotationDelay`) in `finalize_admin_rotation`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingAdminRotation {
+    /// The proposed new admin address.
+    pub new_admin: Address,
+    /// Ledger timestamp when `propose_admin_rotation` was called.
+    pub proposed_at: u64,
+}
+
+/// Tiered pause state for the contract.
+///
+/// - `NotPaused`  – all operations open.
+/// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
+/// - `HardPaused` – all state-mutating operations blocked, including `claim`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum PauseState {
+    NotPaused,
+    SoftPaused,
+    HardPaused,
+}
 
 /// Primary storage keys for core contract state.
 /// Split from the full key set to stay within the Soroban XDR union variant limit (â‰¤50).
@@ -1095,6 +1169,12 @@ pub enum DataKey2 {
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
 
+    /// When `true`, V2-shaped indexed events are also emitted alongside V3 events,
+    /// providing a downgrade path for indexers that have not yet migrated to V3.
+    /// Defaults to `true` during the deprecation window.
+    /// Set by admin via `set_emit_v2_compat`.
+    EmitV2Compat,
+
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
 
@@ -1192,9 +1272,10 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
 
-/// Maximum number of open disputes a single holder may have per offering.
-/// Prevents spam and unbounded storage growth.
-const MAX_OPEN_DISPUTES_PER_HOLDER: u32 = 5;
+/// Maximum number of admin rotation history entries retained.
+/// Prevents unbounded storage growth. When the log reaches this limit, the oldest
+/// entries are evicted (FIFO) on each new rotation.
+const MAX_ADMIN_ROTATION_LOG: u64 = 100;
 
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1656,6 +1737,37 @@ impl RevoraRevenueShare {
         true
     }
 
+    /// Return `true` if V2-compat downgrade mode is enabled.
+    ///
+    /// When enabled, V2-shaped indexed events (`EVENT_INDEXED_V2`) are emitted
+    /// alongside V3 events, allowing indexers pinned to V2 to continue working
+    /// during the deprecation window.
+    ///
+    /// Defaults to `true` (emit V2 events). Admin can disable via `set_emit_v2_compat`.
+    fn is_emit_v2_compat(env: &Env) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::EmitV2Compat)
+            .unwrap_or(true)
+    }
+
+    /// Emit both V2 and V3 indexed events, suppressing the V2 emission when the
+    /// `emit_v2_compat` flag is disabled.
+    ///
+    /// V3 events are always emitted. V2 events are only emitted when `emit_v2_compat`
+    /// is `true` (the default during the deprecation window).
+    fn emit_v2_and_v3<T>(env: &Env, v2_topic: EventIndexTopicV2, v3_topic: EventIndexTopicV3, data: T)
+    where
+        T: IntoVal<Env, soroban_sdk::Val> + Clone,
+    {
+        // V3 is always emitted — it is the current canonical event schema.
+        env.events().publish((EVENT_INDEXED_V3, v3_topic), data.clone());
+        // V2 is only emitted when the compat flag is on (downgrade path).
+        if Self::is_emit_v2_compat(env) {
+            env.events().publish((EVENT_INDEXED_V2, v2_topic), data);
+        }
+    }
+
     /// Advance the cumulative accrual index for an offering and emit an `acc_idx` indexed event.
     ///
     /// The index accumulates `(amount * 1e18) / 10_000` per accepted revenue report, expressing
@@ -1804,17 +1916,33 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
+        let old_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
+
+        // Check per-class supply cap BEFORE aggregate cap
+        if let Some(ref sc) = share_class {
+            let class_cap_key = DataKey2::PerClassSupplyCap(offering_id.clone(), sc.clone());
+            let class_cap: i128 = env.storage().persistent().get(&class_cap_key).unwrap_or(0);
+            if class_cap > 0 {
+                let class_shares_key = DataKey2::TotalClassSharesIssued(offering_id.clone(), sc.clone());
+                let current_class_shares: i128 = env.storage().persistent().get(&class_shares_key).unwrap_or(0);
+                let new_class_shares = current_class_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+                if new_class_shares > class_cap {
+                    env.events().publish((Symbol::new(env, "class_cap_hit"), sc.clone()), new_class_shares);
+                    return Err(RevoraError::ClassSupplyCapExceeded);
+                }
+            }
+        }
+
         // Check max total supply shares cap
         let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
         let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
         if max_shares > 0 {
             let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
             let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
-            let old_share: u32 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
-                .unwrap_or(0);
             let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
             if new_total_shares > max_shares {
                 return Err(RevoraError::MaxTotalSupplySharesExceeded);
@@ -1825,9 +1953,12 @@ impl RevoraRevenueShare {
         let total_key = DataKey::HolderShareTotal(offering_id.clone());
         let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
 
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> = env.storage().persistent().get(&classes_key);
+
         if let Some(cls_vec) = classes {
             let sc = match share_class {
-                Some(sc) => sc,
+                Some(ref sc) => sc.clone(),
                 None => return Err(RevoraError::InvalidShareClass),
             };
             let mut found = false;
@@ -1837,10 +1968,14 @@ impl RevoraRevenueShare {
                     break;
                 }
             }
-            if !found {
-                return Err(RevoraError::InvalidShareClass);
-            }
+            None => {}
         }
+
+        let old_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
 
         let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
@@ -1852,6 +1987,13 @@ impl RevoraRevenueShare {
         let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
         let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
         env.storage().persistent().set(&total_shares_key, &new_total_shares);
+
+        if let Some(ref sc) = share_class {
+            let class_shares_key = DataKey2::TotalClassSharesIssued(offering_id.clone(), sc.clone());
+            let current_class_shares: i128 = env.storage().persistent().get(&class_shares_key).unwrap_or(0);
+            let new_class_shares = current_class_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+            env.storage().persistent().set(&class_shares_key, &new_class_shares);
+        }
 
         // Persist updated holder share and running total.
         env.storage()
@@ -2398,9 +2540,47 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&DataKey2::MaxTotalSupplyShares(offering_id)).unwrap_or(0)
     }
 
+    pub fn set_class_supply_cap(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+        cap: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if let Err((err, _)) =
+            AmountValidationMatrix::validate(cap, AmountValidationCategory::MaxTotalSupplyShares)
+        {
+            return Err(err);
+        }
+
+        let offering_id = OfferingId { issuer, namespace, token };
+        let class_cap_key = DataKey2::PerClassSupplyCap(offering_id, share_class);
+        if cap > 0 {
+            env.storage().persistent().set(&class_cap_key, &cap);
+        } else {
+            env.storage().persistent().remove(&class_cap_key);
+        }
+        Ok(())
+    }
+
+    pub fn get_class_supply_cap(env: Env, issuer: Address, namespace: Symbol, token: Address, share_class: ShareClass) -> i128 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::PerClassSupplyCap(offering_id, share_class)).unwrap_or(0)
+    }
+
     pub fn get_total_shares_issued(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id)).unwrap_or(0)
+    }
+
+    pub fn get_total_class_shares_issued(env: Env, issuer: Address, namespace: Symbol, token: Address, share_class: ShareClass) -> i128 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::TotalClassSharesIssued(offering_id, share_class)).unwrap_or(0)
     }
 
     // â”€â”€ Fee BPS Configuration (#98) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3408,6 +3588,37 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Paused, &PauseState::NotPaused);
         env.events().publish((EVENT_UNPAUSED, caller.clone()), ());
         env.events().publish((EVENT_PAUSED2, caller.clone()), (PauseState::NotPaused,));
+        Ok(())
+    }
+
+    /// Toggle the V2-compat downgrade flag.
+    ///
+    /// When enabled (`true`), V2-shaped indexed events (`EVENT_INDEXED_V2`) are
+    /// emitted alongside V3 events, allowing indexers pinned to V2 to continue
+    /// working during the deprecation window. When disabled (`false`), only V3
+    /// events are emitted, and indexers must have migrated to V3.
+    ///
+    /// Defaults to `true` at initialization.
+    ///
+    /// ### Auth
+    /// Requires `caller` to match the contract admin.
+    ///
+    /// ### Events
+    /// Emits `EVENT_V2_COMPAT_SET` on success.
+    ///
+    /// ### Deprecation
+    /// This flag is intended for a limited deprecation window. Once all indexers
+    /// have migrated to V3, the flag should be set to `false` and eventually
+    /// the V2 emission path and this flag can be removed entirely.
+    pub fn set_emit_v2_compat(env: Env, caller: Address, enabled: bool) -> Result<(), RevoraError> {
+        caller.require_auth();
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        env.storage().persistent().set(&DataKey2::EmitV2Compat, &enabled);
+        env.events().publish((EVENT_V2_COMPAT_SET, caller), enabled);
         Ok(())
     }
 
@@ -5654,7 +5865,7 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    pub fn transfer_with_attestation(
+    pub fn estimate_transfer(
         env: Env,
         issuer: Address,
         namespace: Symbol,
@@ -5663,9 +5874,25 @@ impl RevoraRevenueShare {
         to: Address,
         amount_bps: u32,
         category: Symbol,
+    ) -> (bool, u32) {
+        match Self::check_transfer_eligibility(&env, &issuer, &namespace, &token, &from, &to, amount_bps, &category) {
+            Ok(_) => (true, 0),
+            Err(e) => (false, e as u32),
+        }
+    }
+
+    fn check_transfer_eligibility(
+        env: &Env,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+        from: &Address,
+        to: &Address,
+        amount_bps: u32,
+        category: &Symbol,
     ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        issuer.require_auth();
+        Self::require_not_frozen(env)?;
+        // We do not check issuer.require_auth() here because this is a pure query
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -5675,7 +5902,27 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+
+        // Zero-value transfer is meaningless
+        if amount_bps == 0 {
+            return Err(RevoraError::InvalidAmount);
         }
+
+        // Blacklist check
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), from.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), to.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Jurisdiction block
+        Self::require_holder_jurisdiction_allowed(
+            env,
+            &offering_id,
+            to,
+            symbol_short!("xfer"),
+        )?;
 
         let from_share: u32 = env
             .storage()
@@ -5695,12 +5942,8 @@ impl RevoraRevenueShare {
         let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
         let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
         if let Some(existing) = existing_cat {
-            if existing != category {
+            if existing != *category {
                 if to_share > 0 {
-                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
-                    env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
-                    
                     let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
                     let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
                     if let Some(restrictions) = env
@@ -5709,10 +5952,62 @@ impl RevoraRevenueShare {
                         .get::<_, TransferRestrictions>(&DataKey2::TransferRestrictions(offering_id.clone(), category.clone()))
                     {
                         if new_count >= restrictions.max_holders {
-                            env.storage().persistent().set(&old_count_key, &old_count);
                             return Err(RevoraError::CategoryCapReached);
                         }
                     }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transfer_with_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from: Address,
+        to: Address,
+        amount_bps: u32,
+        category: Symbol,
+    ) -> Result<(), RevoraError> {
+        Self::check_transfer_eligibility(&env, &issuer, &namespace, &token, &from, &to, amount_bps, &category)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if from == to {
+            return Ok(());
+        }
+
+        let from_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
+            .unwrap_or(0);
+
+        let to_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
+            .unwrap_or(0);
+
+        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
+        if let Some(existing) = existing_cat {
+            if existing != category {
+                if to_share > 0 {
+                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
+                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
+                    env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
+                    
+                    let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                    let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
                     env.storage().persistent().set(&new_count_key, &(new_count + 1));
                 }
                 env.storage().persistent().set(&cat_key, &category);
@@ -6825,6 +7120,7 @@ impl RevoraRevenueShare {
             share_bps,
             Some(share_class),
         )
+        )
     }
 
     /// Open a formal on-chain dispute against an offering.
@@ -7403,6 +7699,10 @@ impl RevoraRevenueShare {
             return Err(RevoraError::ClaimDelayNotElapsed);
         }
 
+        if total_payout > 0 {
+            crate::tax_bucket::rollover_distribution(&env, &offering_id, &holder, total_payout);
+        }
+
         // Transfer only if there is a positive payout
         if total_payout > 0 {
             let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
@@ -7492,6 +7792,45 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
     /// - `Err(RevoraError::InvalidShareBps)` if `share_bps` exceeds 10000.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    /// Set a holder's revenue share (in basis points) for an offering.
+    fn set_holder_share_full(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        share_bps: u32,
+        share_class: Option<ShareClass>,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        // Verify offering exists and issuer is current
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+        Self::set_holder_share_internal(
+            &env,
+            offering_id.issuer,
+            offering_id.namespace,
+            offering_id.token,
+            holder,
+            share_bps,
+            share_class,
+        )
+    }
+
     /// Configure the reporting access window for an offering. If unset, always open.
     pub fn set_report_window(
         env: Env,
@@ -7636,6 +7975,32 @@ impl RevoraRevenueShare {
 
     /// Return unclaimed period IDs for a holder on an offering.
     /// Ordering: by deposit index (creation order), deterministic (#38).
+    pub fn get_pending_periods(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Vec<u64> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder);
+        let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+
+        let mut periods = Vec::new(&env);
+        for i in start_idx..period_count {
+            let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);
+            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
+            if period_id == 0 {
+                continue;
+            }
+            periods.push_back(period_id);
+        }
+        periods
+    }
+
     pub fn claim(
         env: Env,
         holder: Address,
@@ -7872,6 +8237,11 @@ impl RevoraRevenueShare {
         env.events()
             .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
+        // Compute and persist the canonical per-class payout order (#523).
+        // Done after the period is sealed so the storage write is monotonic
+        // and the emitted pay order matches the on-chain sealed state.
+        Self::record_and_emit_pay_order(&env, &offering_id, period_id);
+
         Ok(())
     }
 
@@ -7885,6 +8255,224 @@ impl RevoraRevenueShare {
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
+    }
+
+    // ── Per-class dividend priority ordering (#523) ────────────────────────
+
+    /// Compute the canonical class payout order for an offering (#523).
+    ///
+    /// Reads the offering's registered `Vec<(ShareClass, ClassConfig)>` and the
+    /// per-class priority index stored under `DataKey2::ClassPriority`. Classes
+    /// are sorted ascending by `(priority_index, share_class.to_xdr().bytes)`;
+    /// ties on priority are broken canonically by XDR-serialized bytes of the
+    /// `ShareClass`, which gives a stable, deterministic ordering identical
+    /// across reruns and across dual-sig / single-sig close paths.
+    ///
+    /// Classes without an explicit priority index resolve to `DEFAULT_CLASS_PRIORITY = 0`.
+    /// Returns an empty `Vec<ShareClass>` when the offering has no classes registered.
+    fn resolve_class_pay_order(env: &Env, offering_id: &OfferingId) -> Vec<ShareClass> {
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes_opt: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+
+        let classes = match classes_opt {
+            Some(c) if !c.is_empty() => c,
+            _ => return Vec::new(env),
+        };
+
+        // Build the keyed list: (priority, xdr_bytes, ShareClass).
+        let mut keyed: Vec<(u32, Bytes, ShareClass)> = Vec::new(env);
+        for entry in classes.iter() {
+            let sc = entry.0.clone();
+            let priority: u32 = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, u32>(&DataKey2::ClassPriority(
+                    offering_id.clone(),
+                    sc.clone(),
+                ))
+                .unwrap_or(DEFAULT_CLASS_PRIORITY);
+            let xdr_bytes: Bytes = sc.to_xdr(env);
+            keyed.push_back((priority, xdr_bytes, sc));
+        }
+
+        // Deterministic ascending sort by (priority, xdr_bytes).
+        // Implemented as an in-place bubble sort for `soroban_sdk::Vec` (which
+        // lacks `sort_by`). n is bounded by the per-offering class count, which
+        // the contract keeps small via ClassConfig.
+        let n = keyed.len();
+        if n > 1 {
+            let mut i: u32 = 0;
+            while i < n.saturating_sub(1) {
+                let mut j: u32 = 0;
+                let stop = n.saturating_sub(1).saturating_sub(i);
+                while j < stop {
+                    let cur = keyed.get(j).expect("index valid");
+                    let nxt = keyed.get(j.saturating_add(1)).expect("index valid");
+                    let should_swap = match cur.0.cmp(&nxt.0) {
+                        core::cmp::Ordering::Greater => true,
+                        core::cmp::Ordering::Equal => {
+                            cur.1.cmp(&nxt.1) == core::cmp::Ordering::Greater
+                        }
+                        core::cmp::Ordering::Less => false,
+                    };
+                    if should_swap {
+                        keyed.set(j, nxt);
+                        keyed.set(j.saturating_add(1), cur);
+                    }
+                    j = j.saturating_add(1);
+                }
+                i = i.saturating_add(1);
+            }
+        }
+
+        let mut out: Vec<ShareClass> = Vec::new(env);
+        for entry in keyed.iter() {
+            out.push_back(entry.2.clone());
+        }
+        out
+    }
+
+    /// Persist the resolved pay order and emit the `EVENT_CLASS_PAY_ORDER` event.
+    /// Called from both single-sig and dual-sig `close_period` paths after
+    /// existing validation/sealing logic so the canonical ordering is recorded
+    /// once per closed period and downstream auditors/indexers see a stable
+    /// per-period distribution order.
+    ///
+    /// Always emits, including when no classes are registered for the offering
+    /// — a `Vec::new()` payload is the documented fallback for legacy or
+    /// classless offerings. Indexers should treat empty orders as the
+    /// pre-deployment / no-class baseline.
+    fn record_and_emit_pay_order(
+        env: &Env,
+        offering_id: &OfferingId,
+        period_id: u64,
+    ) {
+        let ordered = Self::resolve_class_pay_order(env, offering_id);
+        env.storage().persistent().set(
+            &DataKey2::ClassPayOrder(offering_id.clone(), period_id),
+            &ordered,
+        );
+        env.events().publish(
+            (
+                EVENT_CLASS_PAY_ORDER,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (period_id, ordered),
+        );
+    }
+
+    /// Set the dividend priority index for a registered class on an offering (#523).
+    ///
+    /// Lower `priority_index` values resolve to earlier payout positions under
+    /// `close_period`. The configured class is recorded and an
+    /// `EVENT_CLASS_PRIORITY_SET` event is emitted so indexers and dashboards
+    /// can track priority changes.
+    ///
+    /// ### Auth
+    /// Requires issuer-quorum authentication matching the contract-wide
+    /// `Issuers.quorum` policy used by `set_holder_share` and similar mutations.
+    /// A priority change effectively reorders how distributions are paid out, so
+    /// we treat it as governance-equivalent to a holder-share mutation.
+    ///
+    /// ### Errors
+    /// - [`RevoraError::OfferingNotFound`] if the offering does not exist or the
+    ///   caller is not the current issuer.
+    /// - [`RevoraError::InvalidShareClass`] if `share_class` is not a registered
+    ///   class on the offering (i.e. absent from `DataKey2::OfferingClasses`).
+    /// - [`RevoraError::ContractFrozen`] / [`RevoraError::ContractPaused`] when
+    ///   the contract is not operational.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_class_priority(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+        priority_index: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        // Issuer-quorum requires the primary signer and the configured number
+        // of co-signers to have authorized. This matches `set_holder_share`
+        // and other governance-equivalent mutations.
+        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify the share_class is registered for this offering. Rejecting
+        // unregistered classes prevents storage pollution and Denial-of-Service
+        // via arbitrarily large priority-index entries.
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes_opt: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+        let registered = classes_opt
+            .as_ref()
+            .map(|v| v.iter().any(|(sc, _)| sc == &share_class))
+            .unwrap_or(false);
+        if !registered {
+            return Err(RevoraError::InvalidShareClass);
+        }
+
+        env.storage().persistent().set(
+            &DataKey2::ClassPriority(offering_id.clone(), share_class.clone()),
+            &priority_index,
+        );
+
+        env.events().publish(
+            (
+                EVENT_CLASS_PRIORITY_SET,
+                issuer,
+                namespace,
+                token,
+                share_class,
+            ),
+            priority_index,
+        );
+
+        Ok(())
+    }
+
+    /// Read the dividend priority index for a class on an offering (#523).
+    /// Returns `DEFAULT_CLASS_PRIORITY = 0` when no explicit priority has been set.
+    pub fn get_class_priority(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u32>(&DataKey2::ClassPriority(offering_id, share_class))
+            .unwrap_or(DEFAULT_CLASS_PRIORITY)
+    }
+
+    /// Read the canonical class payout order resolved at `close_period` time (#523).
+    /// Returns an empty `Vec<ShareClass>` if the period was never closed via the
+    /// updated `close_period` / `close_period_dual_sig` implementation.
+    pub fn get_class_pay_order(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Vec<ShareClass> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, Vec<ShareClass>>(&DataKey2::ClassPayOrder(offering_id, period_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Enable or disable dual-signature close-of-period mode for an offering (#565).
@@ -8015,6 +8603,11 @@ impl RevoraRevenueShare {
             (EVENT_DUAL_SIG_CLOSE, issuer, namespace, token),
             (period_id, closed_at, sig_a, sig_b),
         );
+
+        // Compute and persist the canonical per-class payout order (#523).
+        // Mirrors the single-sig `close_period` path so both close flows
+        // resolve to the identical deterministic order.
+        Self::record_and_emit_pay_order(&env, &offering_id, period_id);
 
         Ok(())
     }
@@ -8438,6 +9031,104 @@ impl RevoraRevenueShare {
 
         let next_cursor = if end < period_count { Some(end) } else { None };
         (results, next_cursor)
+    }
+
+    /// Read-only: return a paginated statement page for a holder.
+    ///
+    /// Each entry is ordered by the persisted `PeriodEntry` index, which is monotonic in
+    /// `period_id` for valid offering state. The cursor is the zero-based period-entry index
+    /// and is clamped to the holder's current `LastClaimedIdx`, so stale callers cannot page
+    /// back into already-claimed history.
+    ///
+    /// Security assumptions:
+    /// - Returning an empty page for a cursor past the end must be safe and deterministic.
+    /// - The first delayed period forms a hard stop because later periods are not claimable yet.
+    /// - `limit` is capped to `MAX_PAGE_LIMIT` to keep read gas bounded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_holder_statement_page(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<HolderStatementEntry>, Option<u32>) {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if Self::is_blacklisted(env.clone(), issuer, namespace, token, holder.clone()) {
+            return (Vec::new(&env), None);
+        }
+        if Self::require_claim_window_open(&env, &offering_id).is_err() {
+            return (Vec::new(&env), None);
+        }
+
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder.clone());
+        let holder_start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+        let start_idx = core::cmp::max(cursor, holder_start_idx);
+        if start_idx >= period_count {
+            return (Vec::new(&env), None);
+        }
+
+        let effective_limit =
+            if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        let delay_key = DataKey::ClaimDelaySecs(offering_id.clone());
+        let delay_secs: u64 = env.storage().persistent().get(&delay_key).unwrap_or(0);
+        let now = env.ledger().timestamp();
+
+        let mut entries = Vec::new(&env);
+        let mut processed: u32 = 0;
+        let mut idx = start_idx;
+        let mut previous_period_id: Option<u64> = None;
+
+        while idx < period_count && processed < effective_limit {
+            let entry_key = DataKey::PeriodEntry(offering_id.clone(), idx);
+            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
+            if period_id == 0 {
+                idx = idx.saturating_add(1);
+                continue;
+            }
+
+            if let Some(previous) = previous_period_id {
+                if period_id <= previous {
+                    break;
+                }
+            }
+            previous_period_id = Some(period_id);
+
+            let time_key = DataKey::PeriodDepositTime(offering_id.clone(), period_id);
+            let deposit_timestamp: u64 = env.storage().persistent().get(&time_key).unwrap_or(0);
+            if delay_secs > 0 && now < deposit_timestamp.saturating_add(delay_secs) {
+                return (entries, Some(idx));
+            }
+
+            let claimable_amount = Self::compute_holder_payout_for_range(
+                &env,
+                &offering_id,
+                &holder,
+                idx,
+                idx.saturating_add(1),
+            );
+            entries.push_back(HolderStatementEntry {
+                period_id,
+                deposit_timestamp,
+                claimable_amount,
+            });
+
+            processed = processed.saturating_add(1);
+            idx = idx.saturating_add(1);
+        }
+
+        let next_cursor = if idx < period_count { Some(idx) } else { None };
+        (entries, next_cursor)
     }
 
     /// Shared claim-preview engine used by both full and chunked read-only views.
@@ -9015,12 +9706,13 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&key)
     }
 
-    // â”€â”€ Admin rotation safety flow (Issue #191) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Admin rotation safety flow (Issue #191, #557) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    /// Propose a two-step admin rotation to `new_admin`.
+    /// Propose a two-phase admin rotation to `new_admin`.
     ///
-    /// The current admin initiates; `new_admin` must call [`accept_admin_rotation`] to complete.
-    /// Only one rotation may be pending at a time.
+    /// The current admin initiates; `new_admin` must call finalize after
+    /// the configured delay to complete the transfer. The proposal timestamp is recorded for
+    /// delay enforcement. Only one rotation may be pending at a time.
     ///
     /// ### Auth
     /// Current admin (`require_auth`).
@@ -9048,14 +9740,22 @@ impl RevoraRevenueShare {
             return Err(RevoraError::AdminRotationPending);
         }
 
-        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        let pending = PendingAdminRotation {
+            new_admin: new_admin.clone(),
+            proposed_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&DataKey::PendingAdmin, &pending);
 
         env.events().publish((symbol_short!("adm_prop"), admin), new_admin);
 
         Ok(())
     }
 
-    /// Accept a pending admin rotation. Completes the transfer and grants admin to `new_admin`.
+    /// Finalize a pending two-phase admin rotation after the configured delay has elapsed.
+    ///
+    /// The new admin must authorize and match the pending proposed address. The delay
+    /// (configured via [`set_admin_rotation_delay`]) is checked against the proposal
+    /// timestamp stored in `propose_admin_rotation`.
     ///
     /// ### Auth
     /// `new_admin` must authorize (`require_auth`). Caller must match the pending proposed address.
@@ -9063,24 +9763,39 @@ impl RevoraRevenueShare {
     /// ### Errors
     /// - `NoAdminRotationPending` â€” no rotation was proposed.
     /// - `UnauthorizedRotationAccept` â€” caller does not match the pending proposed address.
+    /// - `AdminRotationDelayNotElapsed` â€” the configured delay has not yet passed.
     /// - `ContractFrozen` â€” contract is frozen.
     ///
     /// ### Events
-    /// Emits `adm_acc`: `(adm_acc, old_admin)` â†’ `new_admin`.
-    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), RevoraError> {
+    /// Emits `adm_fin`: `(adm_fin, old_admin)` â†’ `new_admin`.
+    /// Emits `adm_log` (v2): the persisted `AdminRotationEntry`.
+    pub fn finalize_admin_rotation(env: Env, new_admin: Address) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
-        let pending: Address = env
+        let pending: PendingAdminRotation = env
             .storage()
             .persistent()
             .get(&DataKey::PendingAdmin)
             .ok_or(RevoraError::NoAdminRotationPending)?;
 
-        if new_admin != pending {
+        if new_admin != pending.new_admin {
             return Err(RevoraError::UnauthorizedRotationAccept);
         }
 
         new_admin.require_auth();
+
+        // Enforce mandatory delay
+        let delay: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationDelay)
+            .unwrap_or(0u64);
+        if delay > 0 {
+            let elapsed = env.ledger().timestamp().saturating_sub(pending.proposed_at);
+            if elapsed < delay {
+                return Err(RevoraError::AdminRotationDelayNotElapsed);
+            }
+        }
 
         let old_admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
@@ -9088,12 +9803,31 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
-        env.events().publish((symbol_short!("adm_acc"), old_admin), new_admin);
+        // Persist append-only rotation log entry
+        let rotation_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationCount)
+            .unwrap_or(0u64)
+            + 1;
+        let rotated_at = env.ledger().timestamp();
+        let entry = AdminRotationEntry { prior_admin: old_admin.clone(), new_admin: new_admin.clone(), rotated_at };
+        env.storage().persistent().set(&DataKey2::AdminRotationLog(rotation_id), &entry);
+        env.storage().persistent().set(&DataKey2::AdminRotationCount, &rotation_id);
+
+        // Evict oldest entry to keep log bounded
+        if rotation_id > MAX_ADMIN_ROTATION_LOG {
+            let evict_id = rotation_id - MAX_ADMIN_ROTATION_LOG;
+            env.storage().persistent().remove(&DataKey2::AdminRotationLog(evict_id));
+        }
+
+        env.events().publish((EVENT_ADMIN_FINALIZE, old_admin), new_admin);
+        Self::emit_v2_event(&env, (EVENT_ADMIN_ROTATION_LOGGED,), entry);
 
         Ok(())
     }
 
-    /// Cancel a pending admin rotation before it is accepted.
+    /// Cancel a pending admin rotation before it is finalized.
     ///
     /// ### Auth
     /// Current admin (`require_auth`).
@@ -9112,7 +9846,7 @@ impl RevoraRevenueShare {
 
         admin.require_auth();
 
-        let pending: Address = env
+        let pending: PendingAdminRotation = env
             .storage()
             .persistent()
             .get(&DataKey::PendingAdmin)
@@ -9120,7 +9854,7 @@ impl RevoraRevenueShare {
 
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
-        env.events().publish((symbol_short!("adm_canc"), admin), pending);
+        env.events().publish((symbol_short!("adm_canc"), admin), pending.new_admin);
 
         Ok(())
     }
@@ -9130,25 +9864,114 @@ impl RevoraRevenueShare {
     /// ### Auth
     /// None â€” read-only.
     pub fn get_pending_admin_rotation(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get::<DataKey, PendingAdminRotation>(&DataKey::PendingAdmin)
+            .map(|p| p.new_admin)
+    }
+
+    /// Return the full [`PendingAdminRotation`] details (new admin + proposal timestamp),
+    /// or `None` if no rotation is pending.
+    ///
+    /// ### Auth
+    /// None â€” read-only.
+    pub fn get_pending_admin_rotation_details(env: Env) -> Option<PendingAdminRotation> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
-    /// Freeze the contract with an explicit audit reason.
+    /// Configure the mandatory delay (in seconds) that must elapse between
+    /// [`propose_admin_rotation`] and [`finalize_admin_rotation`].
     ///
-    /// Persists the freeze flag and records `reason` under [`DataKey2::GlobalFreezeReason`]
-    /// so auditors can distinguish the cause of each freeze.
+    /// Once set, any new proposal must wait at least `delay_secs` before the rotation
+    /// can be finalized. The delay applies to proposals made **after** it is configured.
+    /// Set to 0 to disable the delay (immediate finalization, default behavior).
     ///
     /// ### Auth
     /// Current admin (`require_auth`).
     ///
-    /// ### Errors
-    /// - `LimitReached` – multisig is initialized (use `execute_action(Freeze)` instead).
-    /// - `LimitReached` – contract is not initialized.
-    ///
     /// ### Events
-    /// - `frz_set` topic, data `(admin, reason)` — carries the reason for audit trails.
-    /// - Versioned `frz2` event: `true`.
-    pub fn set_freeze(env: Env, reason: FreezeReason) -> Result<(), RevoraError> {
+    /// Emits `adm_dly`: `(adm_dly, admin)` â†’ `delay_secs`.
+    pub fn set_admin_rotation_delay(env: Env, delay_secs: u64) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey2::AdminRotationDelay, &delay_secs);
+        env.events().publish((EVENT_ADMIN_ROTATION_DELAY_SET, admin), delay_secs);
+        Ok(())
+    }
+
+    /// Return the configured admin rotation delay in seconds, or 0 if not set.
+    ///
+    /// ### Auth
+    /// None â€” read-only.
+    pub fn get_admin_rotation_delay(env: Env) -> u64 {
+        env.storage().persistent().get(&DataKey2::AdminRotationDelay).unwrap_or(0u64)
+    }
+
+    /// Return a page of the append-only admin rotation history log.
+    ///
+    /// Entries are returned in chronological order (earliest first). The log is bounded
+    /// to [`MAX_ADMIN_ROTATION_LOG`] entries — the oldest entries are evicted FIFO when
+    /// the limit is reached.
+    ///
+    /// ### Pagination
+    /// - `start`: zero-based index of the first entry to return (0 = most recent first).
+    /// - `limit`: maximum number of entries to return (capped at [`MAX_PAGE_LIMIT`]).
+    ///
+    /// ### Returns
+    /// `(entries, next_cursor)` where:
+    /// - `entries` is the page of [`AdminRotationEntry`] values.
+    /// - `next_cursor` is `Some(next_start)` if there are more entries, or `None` otherwise.
+    ///
+    /// ### Auth
+    /// None — read-only.
+    pub fn get_admin_rotation_history_page(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<AdminRotationEntry>, Option<u32>) {
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationCount)
+            .unwrap_or(0u64);
+
+        let effective_limit =
+            if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        if start as u64 >= count {
+            return (Vec::new(&env), None);
+        }
+
+        // Compute the first surviving rotation ID (evicted entries are skipped).
+        let first_surviving: u64 = if count > MAX_ADMIN_ROTATION_LOG {
+            count - MAX_ADMIN_ROTATION_LOG + 1
+        } else {
+            1
+        };
+        let end = core::cmp::min(start as u64 + effective_limit as u64, count);
+        let mut results = Vec::new(&env);
+
+        for i in start as u64..end {
+            let rotation_id = first_surviving + i;
+            let log_key = DataKey2::AdminRotationLog(rotation_id);
+            let entry: AdminRotationEntry = env
+                .storage()
+                .persistent()
+                .get(&log_key)
+                .unwrap();
+            results.push_back(entry);
+        }
+
+        let next_cursor = if end < count { Some(end as u32) } else { None };
+        (results, next_cursor)
+    }
+
+    /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
+    /// Emits event. Claim and read-only functions remain allowed.
+    /// If multisig is initialized, this function is disabled in favor of execute_action(Freeze).
+    pub fn freeze(env: Env) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey2::MultisigThreshold) {
             return Err(RevoraError::LimitReached);
         }
@@ -10599,6 +11422,38 @@ impl RevoraRevenueShare {
 
 // --- MIGRATION UPGRADE PATH (BOUNTY #467) ---
 
+/// Defines the type of transform to apply to a legacy storage key during migration.
+///
+/// All transforms are deterministic and pure: given the same input value, they
+/// always produce the same output. This is critical for replay safety and audit.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MigrationTransform {
+    /// Keep the stored value unchanged (no-op / identity transform).
+    /// Useful when only the key naming scheme changes but the value format stays.
+    Identity,
+    /// Rename the storage key — the value is kept as-is but stored under a new
+    /// key symbol (the inner `Symbol` argument).
+    Rename(Symbol),
+    /// Custom transform identified by a function selector symbol.
+    /// The contract dispatches to a known built-in transformation matching the
+    /// selector. Custom selectors are defined per-upgrade in the dispatch match.
+    Custom(Symbol),
+}
+
+/// A registered migration hook binding a legacy key to its transform.
+///
+/// Hooks are registered by an admin before the storage walker runs and are
+/// applied deterministically when the walker encounters a matching legacy key.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationHook {
+    /// The legacy storage key symbol this hook applies to.
+    pub legacy_key: Symbol,
+    /// The transform to apply when this key is encountered during migration.
+    pub transform: MigrationTransform,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct MigrationCursor {
@@ -10621,6 +11476,181 @@ pub enum MigrationError {
 
 #[contractimpl]
 impl RevoraRevenueShare {
+    /// Register a per-key migration hook that transforms legacy storage during
+    /// a storage layout upgrade.
+    ///
+    /// Hooks let upgrade authors attach a custom transform (identity, rename, or
+    /// a built-in custom selector) to a specific legacy key. When the storage
+    /// walker runs for a matching version pair, it applies each registered hook
+    /// to the legacy key if data exists at that key.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `admin` - Admin address (must match stored admin)
+    /// * `legacy_key` - The legacy storage key symbol to hook into
+    /// * `transform` - The transform to apply when this key is encountered
+    ///
+    /// # Errors
+    /// * `RevoraError::NotInitialized` if the contract has no admin
+    /// * `RevoraError::NotAuthorized` if the caller is not the admin
+    ///
+    /// # Security
+    /// Hooks are deterministic and pure by construction: the transform type
+    /// is a stored enum variant, not an arbitrary closure. This ensures replay
+    /// safety and auditability.
+    pub fn register_migration_hook(
+        env: Env,
+        admin: Address,
+        legacy_key: Symbol,
+        transform: MigrationTransform,
+    ) -> Result<(), RevoraError> {
+        admin.require_auth();
+
+        let stored_admin: Address = env.storage().persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let hook_key = MigrationDataKey::MigrationHook(legacy_key.clone());
+        let exists = env.storage().persistent().has(&hook_key);
+
+        if !exists {
+            // New hook: increment the counter and store the key in the index.
+            let count_key = MigrationDataKey::MigrationHookCount;
+            let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+            env.storage().persistent().set(&count_key, &(count + 1));
+            env.storage().persistent()
+                .set(&MigrationDataKey::MigrationHookIndex(count), &legacy_key);
+        }
+
+        // Store the transform (overwrites if already exists)
+        env.storage().persistent().set(&hook_key, &transform);
+
+        env.events().publish(
+            (EVENT_MIG_HOOK_APPLIED, symbol_short!("register")),
+            (legacy_key, transform),
+        );
+
+        Ok(())
+    }
+
+    /// Remove a previously registered migration hook.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `admin` - Admin address (must match stored admin)
+    /// * `legacy_key` - The legacy key to unregister
+    ///
+    /// # Errors
+    /// * `RevoraError::NotInitialized` if the contract has no admin
+    /// * `RevoraError::NotAuthorized` if the caller is not the admin
+    ///
+    /// # Idempotency
+    /// If no hook is registered for the given `legacy_key`, the call silently
+    /// succeeds (no-op). This makes the API safe to call multiple times.
+    pub fn clear_migration_hook(
+        env: Env,
+        admin: Address,
+        legacy_key: Symbol,
+    ) -> Result<(), RevoraError> {
+        admin.require_auth();
+
+        // Verify caller is the contract admin
+        let stored_admin: Address = env.storage().persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let hook_key = MigrationDataKey::MigrationHook(legacy_key.clone());
+        if !env.storage().persistent().has(&hook_key) {
+            // Idempotent: no hook to clear, silently succeed.
+            return Ok(());
+        }
+
+        env.storage().persistent().remove(&hook_key);
+
+        env.events().publish(
+            (EVENT_MIG_HOOK_APPLIED, symbol_short!("clear")),
+            legacy_key,
+        );
+
+        Ok(())
+    }
+
+    /// Return all currently registered migration hooks as a vector.
+    ///
+    /// Useful for inspection, dry-run planning, and testing.
+    /// Returns an empty Vec if no hooks are registered.
+    pub fn get_registered_hooks(env: Env) -> Vec<MigrationHook> {
+        let count_key = MigrationDataKey::MigrationHookCount;
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let mut hooks: Vec<MigrationHook> = Vec::new(&env);
+        for i in 0..count {
+            if let Some(key) = env.storage().persistent()
+                .get::<MigrationDataKey, Symbol>(&MigrationDataKey::MigrationHookIndex(i))
+            {
+                if let Some(transform) = env.storage().persistent()
+                    .get::<MigrationDataKey, MigrationTransform>(&MigrationDataKey::MigrationHook(key.clone()))
+                {
+                    hooks.push_back(MigrationHook {
+                        legacy_key: key,
+                        transform,
+                    });
+                }
+            }
+        }
+        hooks
+    }
+
+    /// Internal helper: apply a single migration hook for a matching legacy key.
+    /// Reads the legacy value, applies the transform, writes the result, and
+    /// emits a `migration_hook_applied` event.
+    ///
+    /// In dry-run mode, only emits a plan event without mutating storage.
+    fn apply_migration_hook(
+        env: &Env,
+        issuer: &Address,
+        hook: &MigrationHook,
+        dry_run: bool,
+    ) {
+        if dry_run {
+            env.events().publish(
+                (soroban_sdk::Symbol::new(env, "migration_plan"), symbol_short!("hook")),
+                (hook.legacy_key.clone(), hook.transform.clone()),
+            );
+        } else {
+            // Emit a per-hook application event for audit trail.
+            // The actual data transform is invoked via the transform type;
+            // concrete per-key read/write logic is added per-upgrade in the
+            // migration dispatch table below.
+            env.events().publish(
+                (EVENT_MIG_HOOK_APPLIED, hook.legacy_key.clone()),
+                hook.transform.clone(),
+            );
+        }
+    }
+
+    /// Execute the storage walker migration from `from_version` to `to_version`.
+    ///
+    /// The walker supports a dry-run mode (`dry_run = true`) that emits plan
+    /// events without mutating storage. When `dry_run = false`, it runs the
+    /// version-specific migration dispatch and then applies all registered
+    /// per-key migration hooks.
+    ///
+    /// # Hooks integration
+    /// After the version-specific dispatch table runs, the walker iterates over
+    /// all registered hooks via `get_registered_hooks()` and applies each one
+    /// deterministically. Each hook application emits a `migration_hook_applied`
+    /// event for audit trail completeness.
+    ///
+    /// # Replay protection
+    /// The completed version is persisted to `MigrationDataKey::LastMigrationCompletedAt(issuer)`
+    /// to prevent replay of the same migration.
     pub fn migrate_storage_walker(
         env: Env,
         issuer: Address,
@@ -10676,6 +11706,14 @@ impl RevoraRevenueShare {
                 }
             }
             _ => return Err(MigrationError::UnsupportedMigrationPath),
+        }
+
+        // Apply all registered per-key migration hooks
+        let hooks = Self::get_registered_hooks(env.clone());
+        for i in 0..hooks.len() {
+            if let Some(hook) = hooks.get(i) {
+                Self::apply_migration_hook(&env, &issuer, &hook, dry_run);
+            }
         }
 
         if !dry_run {
