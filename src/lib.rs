@@ -895,6 +895,41 @@ pub struct SimulateDistributionResult {
     pub payouts: Vec<(Address, i128)>,
 }
 
+/// Result of `preflight_close_period` (#563): the same view that a successful
+/// `close_period` / `close_period_dual_sig` would expose, returned WITHOUT
+/// mutating state or emitting events.
+///
+/// - `class_pay_order` matches the canonical ordering
+///   [`Self::record_and_emit_pay_order`] would persist for this period using
+///   the current `set_class_priority` registrations (empty when no classes
+///   registered).
+/// - `payouts` is the per-holder distribution preview — using the contract's
+///   prevailing `compute_share(revenue, share_bps, rounding_mode)` math, the
+///   same math the closest analogue
+///   [`Self::simulate_distribution`] applies. (Note: blacklisted holders are
+///   silently dropped; holders with zero `share_bps` are returned with a zero
+///   normalized payout so callers can detect them via `share_bps == 0`.)
+/// - `total_distributed` is the saturating sum of `payouts.normalized_payout`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreflightCloseResult {
+    pub period_id: u64,
+    /// Reported/deposited revenue currently stored at
+    /// `DataKey::PeriodRevenue(offering_id, period_id)`, or `0` if no report
+    /// has landed yet. This is the amount the write path would seal into
+    /// the period.
+    pub period_revenue: i128,
+    /// Canonical class pay order that `close_period` will write via
+    /// `record_and_emit_pay_order`. Empty when no classes are registered.
+    pub class_pay_order: Vec<ShareClass>,
+    /// Per-holder distribution preview.
+    pub payouts: Vec<DistributionEntry>,
+    /// Saturating sum of `payouts[i].normalized_payout`. Never exceeds
+    /// `period_revenue` because each entry is the result of
+    /// `compute_share(period_revenue, share_bps, mode)` with `share_bps <= 10000`.
+    pub total_distributed: i128,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct HolderShareCheckpoint {
@@ -8590,6 +8625,101 @@ impl RevoraRevenueShare {
         );
     }
 
+    // ── Close-of-period preflight (#563) ──────────────────────────────────────────
+    //
+    // Pure (no side effects) helper that computes the per-period preview
+    // returned by `preflight_close_period`. Reads from storage and never writes
+    // or emits events. The write-path `close_period` /
+    // `close_period_dual_sig` keep their inline pay-order resolver for tight
+    // coupling — callers verify parity by computing identical `class_pay_order`
+    // values (the very property the existing single-sig vs. dual-sig test
+    // suite asserts).
+    //
+    // Math: `compute_share(period_revenue, share_bps, rounding_mode)`, the
+    // same math the closest analogue `simulate_distribution` applies for the
+    // no-classes path. Blacklisted holders are silently skipped. Holders
+    // with zero `share_bps` are emitted with `normalized_payout = 0` so
+    // callers can detect them. Total is a saturating sum so it can never
+    // exceed `period_revenue`.
+    fn compute_period_close_preview(
+        env: &Env,
+        offering_id: &OfferingId,
+        period_id: u64,
+        holders: Vec<Address>,
+    ) -> PreflightCloseResult {
+        let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
+        let period_revenue: i128 = env
+            .storage()
+            .persistent()
+            .get::<DataKey, i128>(&rev_key)
+            .unwrap_or(0);
+
+        let class_pay_order = Self::resolve_class_pay_order(env, offering_id);
+
+        let mode: RoundingMode = Self::get_rounding_mode(
+            env.clone(),
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+        );
+
+        let n = holders.len();
+        let mut payouts: Vec<DistributionEntry> = Vec::new(env);
+        let mut total: i128 = 0;
+
+        for i in 0..n {
+            let holder = holders.get(i).unwrap();
+
+            // Blacklist precedence rule: a blacklisted address is ALWAYS
+            // excluded from payouts, regardless of any whitelist or
+            // investor registration. Dropped silently from the preview.
+            if Self::is_blacklisted(
+                env.clone(),
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+                holder.clone(),
+            ) {
+                continue;
+            }
+
+            let share_bps: u32 = env
+                .storage()
+                .persistent()
+                .get::<DataKey, u32>(&DataKey::HolderShare(
+                    offering_id.clone(),
+                    holder.clone(),
+                ))
+                .unwrap_or(0);
+
+            // Saturate share_bps to 10_000 — matches simulate_distribution's
+            // defence against malformed shares. With 0 share_bps the entry
+            // is still emitted (with payout 0) so callers can detect it.
+            let bounded_bps: u32 = if share_bps > 10_000 {
+                10_000
+            } else {
+                share_bps
+            };
+            let normalized_payout =
+                Self::compute_share(env.clone(), period_revenue, bounded_bps, mode);
+
+            total = total.saturating_add(normalized_payout);
+            payouts.push_back(DistributionEntry {
+                holder: holder.clone(),
+                share_bps,
+                normalized_payout,
+            });
+        }
+
+        PreflightCloseResult {
+            period_id,
+            period_revenue,
+            class_pay_order,
+            payouts,
+            total_distributed: total,
+        }
+    }
+
     /// Set the dividend priority index for a registered class on an offering (#523).
     ///
     /// Lower `priority_index` values resolve to earlier payout positions under
@@ -8839,6 +8969,79 @@ impl RevoraRevenueShare {
         Self::record_and_emit_pay_order(&env, &offering_id, period_id);
 
         Ok(())
+    }
+
+    /// Read-only: preview the canonical class pay order and per-holder
+    /// payouts that a successful `close_period` / `close_period_dual_sig`
+    /// call would expose for the given period — without touching storage or
+    /// emitting any event (#563).
+    ///
+    /// Mirrors the precondition chain of [`Self::close_period`] so that any
+    /// error the write path would surface (`ContractFrozen`, `ContractPaused`,
+    /// `InvalidPeriodId`, `OfferingNotFound`, `PeriodAlreadyClosed`) is also
+    /// surfaced here. A successful preflight guarantees the atomic close
+    /// would succeed for the same `(offering_id, period_id)` assuming the
+    /// caller passes `issuer.require_auth()` on the actual write call.
+    ///
+    /// `holders` is required because Soroban persistent maps cannot be
+    /// iterated by key — this matches the codebase idiom set by
+    /// [`Self::simulate_distribution`]. Pass the same holder set the
+    /// eventual `claim` flow will iterate. Blacklisted addresses are
+    /// silently dropped from the returned `payouts` (precedence rule:
+    /// blacklist wins over whitelist and over any non-zero share).
+    ///
+    /// # Compute parity
+    ///
+    /// The `class_pay_order` returned by this entrypoint is byte-identical
+    /// to what `close_period` would persist via `record_and_emit_pay_order`
+    /// for the same storage snapshot. The `payouts[i].normalized_payout`
+    /// values are produced by `compute_share(revenue, share_bps, mode)`,
+    /// matching the math `simulate_distribution` applies. There is no
+    /// `normalize_amount` step here because the surrounding
+    /// `simulate_distribution` flow does not apply one either; indexers
+    /// should treat this preview as the canonical non-normalized
+    /// distribution shape.
+    pub fn preflight_close_period(
+        env: Env,
+        offering_id: OfferingId,
+        period_id: u64,
+        holders: Vec<Address>,
+    ) -> Result<PreflightCloseResult, RevoraError> {
+        // Mirror `close_period`'s precondition chain exactly. NOTE: we
+        // intentionally do NOT execute `issuer.require_auth()` here — the
+        // preflight is a read-only view callable by anyone, aligning with
+        // `get_offering`, `simulate_distribution`, and `get_class_pay_order`.
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        // Offering existence. We use `DataKey2::OfferingRecord` (introduced
+        // for O(1) issuance lookups) rather than `get_offering` so we do
+        // not charge for a full offering struct deserialisation when we
+        // only need the existence check.
+        let offering_record_key = DataKey2::OfferingRecord(offering_id.clone());
+        if !env.storage().persistent().has(&offering_record_key) {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Period already sealed — close would reject too, so the preflight
+        // must reject too. Operators calling preflight then close on the
+        // same period therefore see a deterministic `PeriodAlreadyClosed`
+        // rather than a stale preview.
+        let closed_key = DataKey2::ClosedPeriod(offering_id.clone(), period_id);
+        if env.storage().persistent().has(&closed_key) {
+            return Err(RevoraError::PeriodAlreadyClosed);
+        }
+
+        Ok(Self::compute_period_close_preview(
+            &env,
+            &offering_id,
+            period_id,
+            holders,
+        ))
     }
 
     /// Attach or replace off-chain disclosure metadata for an offering (#485).
