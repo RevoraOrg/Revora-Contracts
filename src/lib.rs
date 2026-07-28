@@ -147,6 +147,8 @@ pub enum RevoraError {
     SignatureReplay = 28,
     /// Off-chain signer key has not been registered.
     SignerKeyNotRegistered = 29,
+    /// The provided attestation network identifier does not match the active ledger network.
+    NetworkIdMismatch = 62,
     /// Multisig proposal has expired.
     /// Wire value: 30. Stable since v1.
     ProposalExpired = 30,
@@ -5600,9 +5602,18 @@ impl RevoraRevenueShare {
         to: Address,
         amount_bps: u32,
         category: Symbol,
+        attest_hash: BytesN<32>,
+        network_id: BytesN<32>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         issuer.require_auth();
+
+        let active_network_id = env.ledger().network_id();
+        if network_id != active_network_id {
+            return Err(RevoraError::NetworkIdMismatch);
+        }
+
+        let _ = attest_hash;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
