@@ -1721,6 +1721,9 @@ impl RevoraRevenueShare {
                 if !found {
                     return Err(RevoraError::InvalidShareClass);
                 }
+            }
+            None => {}
+        }
 
         let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
@@ -7281,9 +7284,6 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
     /// - `Err(RevoraError::InvalidShareBps)` if `share_bps` exceeds 10000.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
-    /// Set a holder's revenue share (in basis points) for an offering.
-    fn set_holder_share_full(
-
     /// Configure the reporting access window for an offering. If unset, always open.
     pub fn set_report_window(
         env: Env,
@@ -7301,14 +7301,12 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
         issuer.require_auth();
-        Self::set_holder_share_internal(
-            &env,
-            offering_id.issuer,
-            offering_id.namespace,
-            offering_id.token,
-            holder,
-            share_bps,
-        )
+        let window = AccessWindow { start_timestamp, end_timestamp };
+        Self::validate_window(&window)?;
+        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        env.storage().persistent().set(&WindowDataKey::Report(offering_id), &window);
+        env.events().publish((EVENT_REPORT_WINDOW_SET, issuer, namespace, token), (start_timestamp, end_timestamp));
+        Ok(())
     }
 
     // â”€â”€ Meta-authorization, claims, windows, and query methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -7459,9 +7457,6 @@ impl RevoraRevenueShare {
     ///
     /// # Events
 
-    /// Return unclaimed period IDs for a holder on an offering.
-    /// Ordering: by deposit index (creation order), deterministic (#38).
-    pub fn get_pending_periods(
     pub fn claim(
         env: Env,
         holder: Address,
