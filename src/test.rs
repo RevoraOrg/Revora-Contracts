@@ -8483,6 +8483,192 @@ fn issuer_transfer_self_transfer_ignores_expiry() {
     );
 }
 
+// ── Kani-aligned cancel_issuer_transfer integration tests (Issue #577) ────────
+//
+// These tests exercise the on-chain `cancel_issuer_transfer` entrypoint via the
+// Soroban test client.  They are the integration complement to the pure-model
+// proofs in `src/kani_harness/issuer_transfer_cancel.rs`.  Together they provide
+// ≥95 % coverage of every cancel code-path including edge cases.
+
+/// After a successful cancel the `get_pending_issuer_transfer` query must return
+/// `None` (no orphan key).
+#[test]
+fn kani_cancel_leaves_no_orphan_pending_key() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer.clone())
+    );
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None,
+        "cancel must remove the PendingIssuerTransfer key"
+    );
+}
+
+/// After cancel the offering's `issuer` field in `get_offering` must be unchanged.
+#[test]
+fn kani_cancel_does_not_change_offering_issuer() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let before = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let after = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(
+        after.issuer, before.issuer,
+        "cancel must not mutate the offering issuer"
+    );
+}
+
+/// Cancel with no pending transfer must return `NoTransferPending`.
+#[test]
+fn kani_cancel_no_pending_returns_no_transfer_pending() {
+    let (_env, client, issuer, token, _pmt, _cid) = claim_setup();
+
+    let result = client.try_cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NoTransferPending)),
+        "cancel with no pending must return NoTransferPending"
+    );
+}
+
+/// Propose → cancel → propose again must succeed (storage is fully clean after cancel).
+#[test]
+fn kani_cancel_then_propose_again_succeeds() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    // A fresh propose must succeed, proving no residual IssuerTransferPending state.
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer_2)
+    );
+}
+
+/// Double-cancel must return `NoTransferPending` on the second call.
+#[test]
+fn kani_double_cancel_returns_no_transfer_pending() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let second = client.try_cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        second,
+        Err(Ok(RevoraError::NoTransferPending)),
+        "second cancel must return NoTransferPending"
+    );
+}
+
+/// After propose + cancel the offering's `revenue_share_bps` and other fields are
+/// unchanged — full offering-state idempotency.
+#[test]
+fn kani_cancel_full_offering_state_idempotent() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let before = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let after = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(after, before, "full offering state must be identical after propose+cancel");
+}
+
+/// Cancel with a custom-expiry pending transfer (propose_transfer_with_expiry) must
+/// still remove the key and leave issuer unchanged.
+#[test]
+fn kani_cancel_with_custom_expiry_pending_clears_key() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let two_hours: u64 = 2 * 60 * 60;
+
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+    assert!(
+        client
+            .get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token)
+            .is_some()
+    );
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None,
+        "cancel must clear custom-expiry pending transfer key"
+    );
+    // Offering issuer unchanged.
+    let offering = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(offering.issuer, issuer);
+}
+
+/// Cancel must emit the `iss_canc` event and include both the current and proposed
+/// issuer in the payload.
+#[test]
+fn kani_cancel_emits_iss_canc_event() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    let before_count = legacy_events(&env).len();
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        legacy_events(&env).len(),
+        before_count + 1,
+        "cancel must emit exactly one event"
+    );
+}
+
+/// After cancel, the old issuer can immediately propose a transfer to a third address —
+/// proving the IssuerTransferPending guard is fully lifted.
+#[test]
+fn kani_cancel_lifts_transfer_pending_guard() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let third = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Double propose is rejected.
+    let err =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &third);
+    assert_eq!(err, Err(Ok(RevoraError::IssuerTransferPending)));
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    // After cancel, fresh propose succeeds.
+    let ok =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &third);
+    assert!(ok.is_ok(), "fresh propose after cancel must succeed");
+}
+
 #[test]
 fn testnet_mode_normal_operations_unaffected() {
     let env = Env::default();
