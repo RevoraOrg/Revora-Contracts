@@ -203,6 +203,14 @@ pub enum RevoraError {
     DualSigSameSigner = 56,
     /// Dual-signature close is not configured for this offering.
     DualSigNotConfigured = 57,
+    /// The dispute ID does not correspond to an existing dispute record.
+    DisputeNotFound = 58,
+    /// A dispute with the same (offering_id, holder, meta_hash) already exists.
+    DisputeAlreadyOpen = 59,
+    /// The holder has reached the maximum number of open disputes per offering.
+    MaxDisputesReached = 60,
+    /// The caller holds zero shares in the offering and cannot open a dispute.
+    DisputeZeroShare = 61,
 }
 
 pub mod vesting;
@@ -316,6 +324,38 @@ pub enum PauseState {
     NotPaused = 0,
     SoftPaused = 1,
     HardPaused = 2,
+}
+
+/// Status of an on-chain dispute record.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeStatus {
+    /// Dispute is open and awaiting resolution.
+    Open,
+    /// Dispute has been resolved in favour of the holder.
+    Resolved,
+    /// Dispute has been rejected by the issuer or admin.
+    Rejected,
+}
+
+/// An on-chain dispute opened by a holder against an offering.
+///
+/// The `id` is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dispute {
+    /// Deterministic identifier for this dispute.
+    pub id: BytesN<32>,
+    /// The holder who opened the dispute.
+    pub holder: Address,
+    /// The offering the dispute concerns.
+    pub offering_id: OfferingId,
+    /// Ledger timestamp when the dispute was opened.
+    pub opened_at: u64,
+    /// Hash of the off-chain dispute metadata (evidence, description, etc.).
+    pub meta_hash: BytesN<32>,
+    /// Current status of the dispute.
+    pub status: DisputeStatus,
 }
 
 
@@ -1097,6 +1137,10 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
 
+/// Maximum number of open disputes a single holder may have per offering.
+/// Prevents spam and unbounded storage growth.
+const MAX_OPEN_DISPUTES_PER_HOLDER: u32 = 5;
+
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Categories of amount validation contexts in the contract.
@@ -1354,6 +1398,7 @@ impl RevoraRevenueShare {
     /// - If the on-chain layout version is absent or older, stamp the storage with the
     ///   compiled `STORAGE_LAYOUT_VERSION` and emit `EVENT_LAYOUT_VERSION` to signal migration.
     fn assert_storage_layout_compatible(env: &Env) -> Result<(), RevoraError> {
+        Self::assert_contract_version_compatible(env)?;
         let key = DataKey::StorageLayoutVersion;
         if let Some(stored_v) = env.storage().persistent().get::<DataKey, u32>(&key) {
             if stored_v > STORAGE_LAYOUT_VERSION {
@@ -1367,6 +1412,32 @@ impl RevoraRevenueShare {
             // No layout stamp found: stamp it now (first-time initialize/migration path).
             env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
             env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+        }
+        Ok(())
+    }
+
+    /// Ensure the loaded WASM version is not older than the persisted minimum supported version.
+    ///
+    /// On `initialize` the current `CONTRACT_VERSION` is persisted as the floor for all future
+    /// contract WASM binaries. `migrate_storage` ratchets this floor upward. If a WASM binary
+    /// with a lower `CONTRACT_VERSION` is deployed later, every state-mutating entrypoint is
+    /// blocked and a `downgrade_reject` event is emitted.
+    ///
+    /// # Errors
+    /// - [`RevoraError::MigrationDowngradeNotAllowed`] if `CONTRACT_VERSION < persisted version`.
+    fn assert_contract_version_compatible(env: &Env) -> Result<(), RevoraError> {
+        if let Some(min_supported) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u32, u32, u32)>(&DataKey::DeployedVersion)
+        {
+            if CONTRACT_VERSION < min_supported {
+                env.events().publish(
+                    (Symbol::new(env, "downgrade_reject"),),
+                    (CONTRACT_VERSION, min_supported),
+                );
+                return Err(RevoraError::MigrationDowngradeNotAllowed);
+            }
         }
         Ok(())
     }
@@ -3144,6 +3215,10 @@ impl RevoraRevenueShare {
         // Stamp storage layout version for future compatibility checks.
         env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+
+        // Persist the initial contract version as the minimum supported version.
+        // Future WASM binaries with a lower CONTRACT_VERSION will be rejected at entry.
+        env.storage().persistent().set(&DataKey::DeployedVersion, &CONTRACT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
@@ -6793,6 +6868,97 @@ impl RevoraRevenueShare {
         )
     }
 
+    /// Open a formal on-chain dispute against an offering.
+    ///
+    /// The dispute ID is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
+    /// A holder may have at most [`MAX_OPEN_DISPUTES_PER_HOLDER`] open disputes per offering.
+    ///
+    /// ### Arguments
+    /// * `holder` — The address opening the dispute. Must authenticate.
+    /// * `issuer` — The offering's issuer address.
+    /// * `namespace` — The offering's namespace symbol.
+    /// * `token` — The offering's token address.
+    /// * `meta_hash` — A 32-byte hash pointing to off-chain dispute evidence (e.g. IPFS CID).
+    ///
+    /// ### Errors
+    /// - [`RevoraError::DisputeZeroShare`] if the holder holds zero shares.
+    /// - [`RevoraError::DisputeAlreadyOpen`] if an identical dispute already exists.
+    /// - [`RevoraError::MaxDisputesReached`] if the per-holder cap is exceeded.
+    pub fn open_dispute(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        meta_hash: BytesN<32>,
+    ) -> Result<BytesN<32>, RevoraError> {
+        holder.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let offering_id = OfferingId { issuer, namespace, token };
+
+        // Reject holders with zero shares (not a participant)
+        let share = Self::get_holder_share(
+            env.clone(),
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+            holder.clone(),
+        );
+        if share == 0 {
+            return Err(RevoraError::DisputeZeroShare);
+        }
+
+        // Deterministic dispute ID: sha256(issuer || namespace || token || holder || meta_hash)
+        let mut input = Bytes::new(&env);
+        input.append(&offering_id.issuer.to_xdr(&env));
+        input.append(&offering_id.namespace.to_xdr(&env));
+        input.append(&offering_id.token.to_xdr(&env));
+        input.append(&holder.to_xdr(&env));
+        input.append(&meta_hash.to_xdr(&env));
+        let dispute_id: BytesN<32> = env.crypto().sha256(&input);
+
+        // Reject duplicate
+        if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
+            return Err(RevoraError::DisputeAlreadyOpen);
+        }
+
+        // Enforce spam cap per (offering_id, holder)
+        let count_key = DataKey2::DisputeCount(offering_id.clone(), holder.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if count >= MAX_OPEN_DISPUTES_PER_HOLDER {
+            return Err(RevoraError::MaxDisputesReached);
+        }
+
+        let opened_at = env.ledger().timestamp();
+
+        let dispute = Dispute {
+            id: dispute_id.clone(),
+            holder: holder.clone(),
+            offering_id: offering_id.clone(),
+            opened_at,
+            meta_hash: meta_hash.clone(),
+            status: DisputeStatus::Open,
+        };
+
+        env.storage().persistent().set(&DataKey2::Dispute(dispute_id.clone()), &dispute);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_open"),),
+            (dispute_id.clone(), offering_id, holder.clone(), meta_hash),
+        );
+
+        Ok(dispute_id)
+    }
+
+    /// Read an on-chain dispute record by its deterministic ID.
+    ///
+    /// Returns `None` if no dispute with the given ID exists.
+    pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<Dispute> {
+        env.storage().persistent().get(&DataKey2::Dispute(dispute_id))
+    }
+
     /// Get a holder's revenue share in basis points for an offering.
     pub fn get_holder_share(
         env: Env,
@@ -9979,3 +10145,7 @@ impl RevoraRevenueShare {
 
 #[cfg(test)]
 mod test_storage_layout_version;
+#[cfg(test)]
+mod test_close_period;
+#[cfg(test)]
+mod test_dispute;
