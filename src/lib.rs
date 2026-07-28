@@ -1084,6 +1084,8 @@ pub enum DataKey2 {
     StressDataCount(Address),
     /// Holder's configured jurisdiction tag for (offering_id, holder).
     HolderJurisdiction(OfferingId, Address),
+    /// Oracle public key mapped by oracle address.
+    OraclePubKey(Address),
     /// Per-offering jurisdiction allowlist. Empty means compliance gating is disabled.
     AllowedJurisdictions(OfferingId),
     /// Global cumulative normalized accrual per 1 bps share, scaled by 1e18.
@@ -3735,6 +3737,18 @@ impl RevoraRevenueShare {
             .get::<DataKey2, FxOracleConfig>(&DataKey2::FxOracleConfig(offering_id))
     }
 
+    /// Register the off-chain ED25519 public key for an oracle.
+    /// Only the contract admin can register oracle keys.
+    pub fn register_oracle_pubkey(
+        env: Env,
+        oracle_id: Address,
+        pubkey: BytesN<32>,
+    ) -> Result<(), RevoraError> {
+        Self::require_admin(&env)?;
+        env.storage().persistent().set(&DataKey2::OraclePubKey(oracle_id), &pubkey);
+        Ok(())
+    }
+
     fn convert_report_amount_if_needed(
         env: &Env,
         offering_id: &OfferingId,
@@ -3742,6 +3756,8 @@ impl RevoraRevenueShare {
         reported_asset: &Address,
         amount: i128,
         now: u64,
+        quote_bytes: Option<Bytes>,
+        signature: Option<BytesN<64>>,
     ) -> Result<(i128, Address), RevoraError> {
         if offering.payout_asset == *reported_asset {
             return Ok((amount, reported_asset.clone()));
@@ -3752,8 +3768,21 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey2::FxOracleConfig(offering_id.clone()))
             .ok_or(RevoraError::PayoutAssetMismatch)?;
-        let (rate, quoted_at) = FxOracleClient::new(env, &config.oracle)
-            .quote(&config.revenue_symbol, &config.payout_symbol);
+        let (rate, quoted_at) = if let (Some(q), Some(sig)) = (quote_bytes, signature) {
+            crate::security_assertions::oracle_validation::verify_oracle_signature(
+                env,
+                &q,
+                &sig,
+                &config.oracle,
+            )?;
+            let decoded: (i128, u64) = env
+                .from_xdr(&q)
+                .map_err(|_| RevoraError::MetadataInvalidFormat)?;
+            decoded
+        } else {
+            FxOracleClient::new(env, &config.oracle)
+                .quote(&config.revenue_symbol, &config.payout_symbol)
+        };
         if config.max_oracle_age_secs > 0
             && now.saturating_sub(quoted_at) > config.max_oracle_age_secs
         {
@@ -3800,6 +3829,60 @@ impl RevoraRevenueShare {
         period_id: u64,
         override_existing: bool,
     ) -> Result<(), RevoraError> {
+        Self::report_revenue_internal(
+            env,
+            issuer,
+            namespace,
+            token,
+            payout_asset,
+            amount,
+            period_id,
+            override_existing,
+            None,
+            None,
+        )
+    }
+
+    /// Report revenue for a specific period of an offering using an off-chain signed FX quote.
+    pub fn report_revenue_with_attestation(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        payout_asset: Address,
+        amount: i128,
+        period_id: u64,
+        override_existing: bool,
+        quote_bytes: Bytes,
+        signature: BytesN<64>,
+    ) -> Result<(), RevoraError> {
+        Self::report_revenue_internal(
+            env,
+            issuer,
+            namespace,
+            token,
+            payout_asset,
+            amount,
+            period_id,
+            override_existing,
+            Some(quote_bytes),
+            Some(signature),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn report_revenue_internal(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        payout_asset: Address,
+        amount: i128,
+        period_id: u64,
+        override_existing: bool,
+        quote_bytes: Option<Bytes>,
+        signature: Option<BytesN<64>>,
+    ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
         issuer.require_auth();
@@ -3845,6 +3928,8 @@ impl RevoraRevenueShare {
                 &payout_asset,
                 amount,
                 current_timestamp,
+                quote_bytes,
+                signature,
             )?;
             amount = converted.0;
             payout_asset = converted.1;
