@@ -7536,6 +7536,27 @@ fn multisig_set_admin_action_updates_admin() {
 }
 
 #[test]
+fn multisig_stale_threshold_proposal_is_rejected_after_rotation() {
+    let (env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::SetThreshold(3));
+    client.approve_action(&owner2, &proposal_id);
+
+    let remove_id = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    client.approve_action(&owner2, &remove_id);
+    client.execute_action(&remove_id);
+
+    let before = legacy_events(&env).len();
+    let r = client.try_execute_action(&proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::StaleProposal))));
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(!proposal.executed);
+    assert_eq!(client.get_multisig_threshold(), Some(2));
+    assert!(legacy_events(&env).len() >= before + 1);
+}
+
+#[test]
 fn multisig_set_threshold_action_updates_threshold() {
     let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
 

@@ -176,6 +176,8 @@ pub enum RevoraError {
     BlacklistSizeLimitExceeded = 45,
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
+    /// Multisig proposal was created before the latest successful rotation and is stale.
+    StaleProposal = 56,
     /// Total supply shares would exceed the offering's max total supply shares.
     MaxTotalSupplySharesExceeded = 51,
 
@@ -308,6 +310,7 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
+    pub epoch: u64,
 }
 
 #[contracttype]
@@ -374,6 +377,7 @@ const EVENT_META_SIGNER_SET: Symbol = symbol_short!("meta_key");
 const EVENT_META_DELEGATE_SET: Symbol = symbol_short!("meta_del");
 const EVENT_META_SHARE_SET: Symbol = symbol_short!("meta_shr");
 const EVENT_MULTISIG_INIT: Symbol = symbol_short!("ms_init");
+const EVENT_STALE_PROPOSAL_REJECT: Symbol = symbol_short!("stale_pr");
 const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 /// Emitted when `repair_audit_summary` writes a corrected `AuditSummary` to storage.
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
@@ -441,7 +445,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 3;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -1081,6 +1085,15 @@ pub enum DataKey2 {
     HolderShareSchedule(OfferingId, Address),
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
+
+    /// Multisig proposal count.
+    MultisigProposalCount,
+    /// Multisig proposal duration in seconds.
+    MultisigProposalDuration,
+    /// Monotonic epoch incremented after successful multisig owner/threshold rotations.
+    MultisigEpoch,
+    /// Multisig proposal entry keyed by id.
+    MultisigProposal(u32),
 
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
@@ -9109,6 +9122,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey2::MultisigProposalCount, &0_u32);
         env.storage().persistent().set(&DataKey2::MultisigProposalDuration, &proposal_duration);
+        env.storage().persistent().set(&DataKey2::MultisigEpoch, &0_u64);
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
     }
@@ -9131,6 +9145,11 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey2::MultisigProposalDuration)
             .ok_or(RevoraError::NotInitialized)?;
+        let current_epoch: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultisigEpoch)
+            .unwrap_or(0);
         let now = env.ledger().timestamp();
         let expiry = now.checked_add(duration).ok_or(RevoraError::InvalidAmount)?;
 
@@ -9145,6 +9164,7 @@ impl RevoraRevenueShare {
             approvals: initial_approvals,
             executed: false,
             expiry,
+            epoch: current_epoch,
         };
 
         env.storage().persistent().set(&DataKey2::MultisigProposal(id), &proposal);
@@ -9217,6 +9237,19 @@ impl RevoraRevenueShare {
             return Err(RevoraError::ProposalExpired);
         }
 
+        let current_epoch: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultisigEpoch)
+            .unwrap_or(0);
+        if proposal.epoch != current_epoch {
+            env.events().publish(
+                (EVENT_STALE_PROPOSAL_REJECT, executor.clone()),
+                (proposal_id, proposal.epoch, current_epoch),
+            );
+            return Err(RevoraError::StaleProposal);
+        }
+
         let threshold: u32 = env
             .storage()
             .persistent()
@@ -9244,6 +9277,8 @@ impl RevoraRevenueShare {
                     return Err(RevoraError::InvalidShareBps);
                 }
                 env.storage().persistent().set(&DataKey2::MultisigThreshold, &new_threshold);
+                let next_epoch = current_epoch + 1;
+                env.storage().persistent().set(&DataKey2::MultisigEpoch, &next_epoch);
             }
             ProposalAction::AddOwner(new_owner) => {
                 let mut owners: Vec<Address> =
@@ -9256,6 +9291,8 @@ impl RevoraRevenueShare {
                 }
                 owners.push_back(new_owner);
                 env.storage().persistent().set(&DataKey2::MultisigOwners, &owners);
+                let next_epoch = current_epoch + 1;
+                env.storage().persistent().set(&DataKey2::MultisigEpoch, &next_epoch);
             }
             ProposalAction::RemoveOwner(old_owner) => {
                 let owners: Vec<Address> =
@@ -9276,6 +9313,8 @@ impl RevoraRevenueShare {
                     }
                 }
                 env.storage().persistent().set(&DataKey2::MultisigOwners, &new_owners);
+                let next_epoch = current_epoch + 1;
+                env.storage().persistent().set(&DataKey2::MultisigEpoch, &next_epoch);
             }
             ProposalAction::SetProposalDuration(new_duration) => {
                 if new_duration == 0 {
