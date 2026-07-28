@@ -156,8 +156,6 @@ pub enum RevoraError {
     ///
     /// Wire value: 51. Stable since v1.
     DisplayDecimalsOutOfRange = 51,
-    /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 34,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -2045,7 +2043,6 @@ impl RevoraRevenueShare {
                     break;
                 }
             }
-            None => {}
         }
 
         let new_total =
@@ -6061,6 +6058,7 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+        }
 
         // Zero-value transfer is meaningless
         if amount_bps == 0 {
@@ -7305,7 +7303,6 @@ impl RevoraRevenueShare {
             holder,
             share_bps,
             Some(share_class),
-        )
         )
     }
 
@@ -12202,6 +12199,7 @@ impl RevoraRevenueShare {
         }
         Ok(())
     }
+}
 
 // ── Contract self-test entrypoint (#618) ─────────────────────────────────────
 #[contractimpl]
@@ -12225,7 +12223,6 @@ impl RevoraRevenueShare {
         let _ = env; // Unused but required for Soroban contractimpl ABI
         crate::self_test::self_test_status()
     }
-}
 }
 
 #[cfg(test)]
