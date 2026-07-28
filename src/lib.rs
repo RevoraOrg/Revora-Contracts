@@ -222,11 +222,11 @@ mod test_claim_transfer_fail;
 mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
-#[cfg(test)]
-mod test_time_windows;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_time_windows;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -326,7 +326,6 @@ pub enum PauseState {
     SoftPaused = 1,
     HardPaused = 2,
 }
-
 
 const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
 
@@ -648,7 +647,6 @@ pub struct TransferRestrictions {
     pub category: Symbol,
     pub max_holders: u32,
 }
-
 
 /// Read-only comparison between stored audit state and recomputed report state.
 #[contracttype]
@@ -1484,11 +1482,21 @@ impl RevoraRevenueShare {
 
     /// Check if a holder is emergency frozen for an offering.
     fn is_frozen(env: &Env, offering_id: &OfferingId, holder: &Address) -> bool {
-        env.storage().persistent().get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone())).is_some()
+        env.storage()
+            .persistent()
+            .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(
+                offering_id.clone(),
+                holder.clone(),
+            ))
+            .is_some()
     }
 
     /// Require that a holder is not emergency frozen.
-    fn require_not_frozen(env: &Env, offering_id: &OfferingId, holder: &Address) -> Result<(), RevoraError> {
+    fn require_not_frozen(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+    ) -> Result<(), RevoraError> {
         if Self::is_frozen(env, offering_id, holder) {
             return Err(RevoraError::HolderFrozen);
         }
@@ -1496,8 +1504,13 @@ impl RevoraRevenueShare {
     }
 
     /// Require that caller is either admin or issuer of the offering.
-    fn require_admin_or_issuer(env: &Env, caller: &Address, offering_id: &OfferingId) -> Result<(), RevoraError> {
-        let admin: Address = env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+    fn require_admin_or_issuer(
+        env: &Env,
+        caller: &Address,
+        offering_id: &OfferingId,
+    ) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
         if caller == &admin || caller == &offering_id.issuer {
             return Ok(());
         }
@@ -1707,13 +1720,16 @@ impl RevoraRevenueShare {
         let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
         if max_shares > 0 {
             let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
-            let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
+            let current_total_shares: i128 =
+                env.storage().persistent().get(&total_shares_key).unwrap_or(0);
             let old_share: u32 = env
                 .storage()
                 .persistent()
                 .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
                 .unwrap_or(0);
-            let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+            let new_total_shares = current_total_shares
+                .saturating_sub(old_share as i128)
+                .saturating_add(share_bps as i128);
             if new_total_shares > max_shares {
                 return Err(RevoraError::MaxTotalSupplySharesExceeded);
             }
@@ -1740,15 +1756,19 @@ impl RevoraRevenueShare {
             }
         }
 
-        let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
+        let new_total =
+            current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
             return Err(RevoraError::InvalidShareBps);
         }
 
         // Update total shares issued
         let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
-        let current_total_shares: i128 = env.storage().persistent().get(&total_shares_key).unwrap_or(0);
-        let new_total_shares = current_total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+        let current_total_shares: i128 =
+            env.storage().persistent().get(&total_shares_key).unwrap_or(0);
+        let new_total_shares = current_total_shares
+            .saturating_sub(old_share as i128)
+            .saturating_add(share_bps as i128);
         env.storage().persistent().set(&total_shares_key, &new_total_shares);
 
         // Persist updated holder share and running total.
@@ -1801,14 +1821,9 @@ impl RevoraRevenueShare {
         offering_id: &OfferingId,
         holder: &Address,
     ) -> Vec<HolderShareCheckpoint> {
-        if let Some(schedule) = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<HolderShareCheckpoint>>(&DataKey2::HolderShareSchedule(
-                offering_id.clone(),
-                holder.clone(),
-            ))
-        {
+        if let Some(schedule) = env.storage().persistent().get::<_, Vec<HolderShareCheckpoint>>(
+            &DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()),
+        ) {
             return schedule;
         }
 
@@ -1847,11 +1862,11 @@ impl RevoraRevenueShare {
             updated.push_back(checkpoint);
         }
 
-        updated.push_back(HolderShareCheckpoint { start_index: period_count, share_bps: new_share });
-        env.storage().persistent().set(
-            &DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()),
-            &updated,
-        );
+        updated
+            .push_back(HolderShareCheckpoint { start_index: period_count, share_bps: new_share });
+        env.storage()
+            .persistent()
+            .set(&DataKey2::HolderShareSchedule(offering_id.clone(), holder.clone()), &updated);
     }
 
     fn get_holder_accrual_state(
@@ -1933,8 +1948,11 @@ impl RevoraRevenueShare {
             }
 
             if current_share > 0 {
-                let acc_end =
-                    Self::get_acc_per_share_at_index(env, offering_id, current_index.saturating_add(1));
+                let acc_end = Self::get_acc_per_share_at_index(
+                    env,
+                    offering_id,
+                    current_index.saturating_add(1),
+                );
                 let acc_start = Self::get_acc_per_share_at_index(env, offering_id, current_index);
                 let delta = acc_end.saturating_sub(acc_start);
                 total = total.saturating_add(
@@ -1984,7 +2002,8 @@ impl RevoraRevenueShare {
 
     fn cache_holder_accrual_through_matured(env: &Env, offering_id: &OfferingId, holder: &Address) {
         let mut state = Self::get_holder_accrual_state(env, offering_id, holder);
-        let matured_end = Self::find_matured_claim_end_idx(env, offering_id, state.last_settled_idx);
+        let matured_end =
+            Self::find_matured_claim_end_idx(env, offering_id, state.last_settled_idx);
         if matured_end <= state.last_settled_idx {
             return;
         }
@@ -1998,12 +2017,12 @@ impl RevoraRevenueShare {
         );
         state.accrued_owed = state.accrued_owed.saturating_add(delta);
         state.last_settled_idx = matured_end;
-        state.last_acc_per_share_e18 = Self::get_acc_per_share_at_index(env, offering_id, matured_end);
+        state.last_acc_per_share_e18 =
+            Self::get_acc_per_share_at_index(env, offering_id, matured_end);
 
-        env.storage().persistent().set(
-            &DataKey2::HolderAccrualState(offering_id.clone(), holder.clone()),
-            &state,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey2::HolderAccrualState(offering_id.clone(), holder.clone()), &state);
     }
 
     fn normalize_jurisdictions(env: &Env, jurisdictions: Vec<Symbol>) -> Vec<Symbol> {
@@ -2210,10 +2229,9 @@ impl RevoraRevenueShare {
         let current_acc: i128 = env.storage().persistent().get(&global_acc_key).unwrap_or(0);
         let next_acc = current_acc.saturating_add(acc_delta_e18);
         env.storage().persistent().set(&global_acc_key, &next_acc);
-        env.storage().persistent().set(
-            &DataKey2::AccPerShareAtIndex(offering_id.clone(), count + 1),
-            &next_acc,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey2::AccPerShareAtIndex(offering_id.clone(), count + 1), &next_acc);
 
         // Update cumulative deposited revenue and emit cap-reached event if applicable (#96)
         let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
@@ -2230,17 +2248,24 @@ impl RevoraRevenueShare {
         }
 
         // Update the e18 accrual index
-        let decimals = Self::get_payment_token_decimals(env.clone(), issuer.clone(), namespace.clone(), token.clone());
+        let decimals = Self::get_payment_token_decimals(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+        );
         let normalized_amount = Self::normalize_amount(amount, decimals);
         let total_share_bps_key = DataKey::HolderShareTotal(offering_id.clone());
-        let total_share_bps: u32 = env.storage().persistent().get(&total_share_bps_key).unwrap_or(0);
-        
+        let total_share_bps: u32 =
+            env.storage().persistent().get(&total_share_bps_key).unwrap_or(0);
+
         if total_share_bps > 0 {
             let accrual_delta = (normalized_amount.checked_mul(E18))
                 .and_then(|x| x.checked_div(total_share_bps as i128))
                 .unwrap_or(0);
             let current_accrual_key = DataKey::AccrualIndexE18(offering_id.clone());
-            let current_accrual: i128 = env.storage().persistent().get(&current_accrual_key).unwrap_or(0);
+            let current_accrual: i128 =
+                env.storage().persistent().get(&current_accrual_key).unwrap_or(0);
             let new_accrual = current_accrual.checked_add(accrual_delta).unwrap_or(current_accrual);
             env.storage().persistent().set(&current_accrual_key, &new_accrual);
         }
@@ -2275,9 +2300,10 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env)?;
         issuer.require_auth();
 
-        if let Err((err, _)) =
-            AmountValidationMatrix::validate(max_total_supply_shares, AmountValidationCategory::MaxTotalSupplyShares)
-        {
+        if let Err((err, _)) = AmountValidationMatrix::validate(
+            max_total_supply_shares,
+            AmountValidationCategory::MaxTotalSupplyShares,
+        ) {
             return Err(err);
         }
 
@@ -2291,12 +2317,22 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    pub fn get_max_total_supply_shares(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
+    pub fn get_max_total_supply_shares(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey2::MaxTotalSupplyShares(offering_id)).unwrap_or(0)
     }
 
-    pub fn get_total_shares_issued(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
+    pub fn get_total_shares_issued(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> i128 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id)).unwrap_or(0)
     }
@@ -3469,11 +3505,7 @@ impl RevoraRevenueShare {
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
         let offering = Offering {
-            issuers: Issuers {
-                primary: primary_issuer.clone(),
-                co: co_issuers.clone(),
-                quorum,
-            },
+            issuers: Issuers { primary: primary_issuer.clone(), co: co_issuers.clone(), quorum },
             namespace: namespace.clone(),
             token: token.clone(),
             revenue_share_bps,
@@ -3693,15 +3725,8 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
-        let config = FxOracleConfig {
-            oracle,
-            revenue_symbol,
-            payout_symbol,
-            max_oracle_age_secs,
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey2::FxOracleConfig(offering_id), &config);
+        let config = FxOracleConfig { oracle, revenue_symbol, payout_symbol, max_oracle_age_secs };
+        env.storage().persistent().set(&DataKey2::FxOracleConfig(offering_id), &config);
         Ok(())
     }
 
@@ -4110,7 +4135,8 @@ impl RevoraRevenueShare {
                         .persistent()
                         .get(&summary_key)
                         .unwrap_or(AuditSummary { total_revenue: 0, report_count: 0 });
-                    summary.total_revenue = summary.total_revenue.s_add(amount).unwrap_or(i128::MAX);
+                    summary.total_revenue =
+                        summary.total_revenue.s_add(amount).unwrap_or(i128::MAX);
                     summary.report_count = summary.report_count.s_add(1).unwrap_or(u64::MAX);
                     env.storage().persistent().set(&summary_key, &summary);
 
@@ -4496,7 +4522,7 @@ impl RevoraRevenueShare {
         // Validate attestation timestamp: attested_at must not be in the future
         if attestation.attested_at > env.ledger().timestamp() {
             return Err(RevoraError::InvalidAmount); // Wait, let's check error codes
-            // Wait, let's use a proper error? Wait let's check RevoraError
+                                                    // Wait, let's use a proper error? Wait let's check RevoraError
         }
 
         let offering_id = OfferingId {
@@ -4529,7 +4555,8 @@ impl RevoraRevenueShare {
             }
         }
 
-        env.events().publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor, attestation));
+        env.events()
+            .publish((EVENT_BL_ADD, issuer, namespace, token), (caller, investor, attestation));
         Ok(())
     }
 
@@ -5457,10 +5484,7 @@ impl RevoraRevenueShare {
         };
 
         let key = DataKey2::TransferRestrictions(offering_id, category.clone());
-        let restrictions = TransferRestrictions {
-            category,
-            max_holders,
-        };
+        let restrictions = TransferRestrictions { category, max_holders };
         env.storage().persistent().set(&key, &restrictions);
         Ok(())
     }
@@ -5508,16 +5532,20 @@ impl RevoraRevenueShare {
         if let Some(existing) = existing_cat {
             if existing != category {
                 if to_share > 0 {
-                    let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                    let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
+                    let old_count_key =
+                        DataKey2::CategoryHolderCount(offering_id.clone(), existing);
+                    let old_count: u32 =
+                        env.storage().persistent().get(&old_count_key).unwrap_or(0);
                     env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
-                    
-                    let new_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
-                    let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
-                    if let Some(restrictions) = env
-                        .storage()
-                        .persistent()
-                        .get::<_, TransferRestrictions>(&DataKey2::TransferRestrictions(offering_id.clone(), category.clone()))
+
+                    let new_count_key =
+                        DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                    let new_count: u32 =
+                        env.storage().persistent().get(&new_count_key).unwrap_or(0);
+                    if let Some(restrictions) =
+                        env.storage().persistent().get::<_, TransferRestrictions>(
+                            &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
+                        )
                     {
                         if new_count >= restrictions.max_holders {
                             env.storage().persistent().set(&old_count_key, &old_count);
@@ -5532,7 +5560,14 @@ impl RevoraRevenueShare {
             env.storage().persistent().set(&cat_key, &category);
         }
 
-        Self::set_holder_share_internal(&env, issuer.clone(), namespace.clone(), token.clone(), from.clone(), from_share - amount_bps)?;
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            from.clone(),
+            from_share - amount_bps,
+        )?;
         Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps)?;
 
         Ok(())
@@ -6427,7 +6462,10 @@ impl RevoraRevenueShare {
         let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
         let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
         let mut temp_total_shares: i128 = if max_shares > 0 {
-            env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id.clone())).unwrap_or(0)
+            env.storage()
+                .persistent()
+                .get(&DataKey2::TotalSharesIssued(offering_id.clone()))
+                .unwrap_or(0)
         } else {
             0
         };
@@ -6492,10 +6530,16 @@ impl RevoraRevenueShare {
 
         // Update total shares issued
         if max_shares > 0 {
-            env.storage().persistent().set(&DataKey2::TotalSharesIssued(offering_id.clone()), &temp_total_shares);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::TotalSharesIssued(offering_id.clone()), &temp_total_shares);
         } else {
             // If no cap, still track total shares
-            let mut total_shares: i128 = env.storage().persistent().get(&DataKey2::TotalSharesIssued(offering_id.clone())).unwrap_or(0);
+            let mut total_shares: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::TotalSharesIssued(offering_id.clone()))
+                .unwrap_or(0);
             for i in 0..batch_len {
                 let (holder, share_bps) = holders.get(i).unwrap();
                 let old_share: u32 = env
@@ -6503,9 +6547,13 @@ impl RevoraRevenueShare {
                     .persistent()
                     .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
                     .unwrap_or(0);
-                total_shares = total_shares.saturating_sub(old_share as i128).saturating_add(share_bps as i128);
+                total_shares = total_shares
+                    .saturating_sub(old_share as i128)
+                    .saturating_add(share_bps as i128);
             }
-            env.storage().persistent().set(&DataKey2::TotalSharesIssued(offering_id.clone()), &total_shares);
+            env.storage()
+                .persistent()
+                .set(&DataKey2::TotalSharesIssued(offering_id.clone()), &total_shares);
         }
 
         // Update snapshot metadata.
@@ -6728,9 +6776,7 @@ impl RevoraRevenueShare {
             .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
             .unwrap_or(0);
 
-        let new_to_share = to_share
-            .checked_add(shares_bps)
-            .ok_or(RevoraError::LimitReached)?;
+        let new_to_share = to_share.checked_add(shares_bps).ok_or(RevoraError::LimitReached)?;
 
         if new_to_share > 10_000 {
             return Err(RevoraError::InvalidShareBps);
@@ -6913,17 +6959,11 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage().persistent().set(
-            &DataKey2::HolderJurisdiction(offering_id.clone(), holder.clone()),
-            &jurisdiction,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey2::HolderJurisdiction(offering_id.clone(), holder.clone()), &jurisdiction);
         env.events().publish(
-            (
-                Self::jurisdiction_set_event(&env),
-                issuer,
-                namespace,
-                token,
-            ),
+            (Self::jurisdiction_set_event(&env), issuer, namespace, token),
             (EVENT_JUR_SCOPE_HOLDER, holder, jurisdiction),
         );
         Ok(())
@@ -6968,16 +7008,9 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
         let normalized = Self::normalize_jurisdictions(&env, jurisdictions);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::AllowedJurisdictions(offering_id), &normalized);
+        env.storage().persistent().set(&DataKey2::AllowedJurisdictions(offering_id), &normalized);
         env.events().publish(
-            (
-                Self::jurisdiction_set_event(&env),
-                issuer,
-                namespace,
-                token,
-            ),
+            (Self::jurisdiction_set_event(&env), issuer, namespace, token),
             (EVENT_JUR_SCOPE_ALLOW, normalized),
         );
         Ok(())
@@ -7075,41 +7108,87 @@ impl RevoraRevenueShare {
     }
 
     /// Configure the reporting access window for an offering. If unset, always open.
-    pub fn set_report_window(env: Env, issuer: Address, namespace: Symbol, token: Address, start_timestamp: u64, end_timestamp: u64) -> Result<(), RevoraError> {
+    pub fn set_report_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        let current_issuer = Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone()).ok_or(RevoraError::OfferingNotFound)?;
-        if current_issuer != issuer { return Err(RevoraError::OfferingNotFound); }
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
         issuer.require_auth();
         let window = AccessWindow { start_timestamp, end_timestamp };
         Self::validate_window(&window)?;
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
         env.storage().persistent().set(&WindowDataKey::Report(offering_id), &window);
-        env.events().publish((EVENT_REPORT_WINDOW_SET, issuer, namespace, token), (start_timestamp, end_timestamp));
+        env.events().publish(
+            (EVENT_REPORT_WINDOW_SET, issuer, namespace, token),
+            (start_timestamp, end_timestamp),
+        );
         Ok(())
     }
 
     /// Configure the claiming access window for an offering. If unset, always open.
-    pub fn set_claim_window(env: Env, issuer: Address, namespace: Symbol, token: Address, start_timestamp: u64, end_timestamp: u64) -> Result<(), RevoraError> {
+    pub fn set_claim_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
-        let current_issuer = Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone()).ok_or(RevoraError::OfferingNotFound)?;
-        if current_issuer != issuer { return Err(RevoraError::OfferingNotFound); }
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
         issuer.require_auth();
         let window = AccessWindow { start_timestamp, end_timestamp };
         Self::validate_window(&window)?;
-        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
         env.storage().persistent().set(&WindowDataKey::Claim(offering_id), &window);
-        env.events().publish((EVENT_CLAIM_WINDOW_SET, issuer, namespace, token), (start_timestamp, end_timestamp));
+        env.events().publish(
+            (EVENT_CLAIM_WINDOW_SET, issuer, namespace, token),
+            (start_timestamp, end_timestamp),
+        );
         Ok(())
     }
 
     /// Read configured reporting window (if any) for an offering.
-    pub fn get_report_window(env: Env, issuer: Address, namespace: Symbol, token: Address) -> Option<AccessWindow> {
+    pub fn get_report_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<AccessWindow> {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&WindowDataKey::Report(offering_id))
     }
 
     /// Read configured claiming window (if any) for an offering.
-    pub fn get_claim_window(env: Env, issuer: Address, namespace: Symbol, token: Address) -> Option<AccessWindow> {
+    pub fn get_claim_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<AccessWindow> {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&WindowDataKey::Claim(offering_id))
     }
@@ -7648,7 +7727,12 @@ impl RevoraRevenueShare {
 
         // If dual-signature mode is enabled for this offering, the single-sig
         // `close_period` path is not available — callers must use `close_period_dual_sig`.
-        if env.storage().persistent().get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone())).unwrap_or(false) {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone()))
+            .unwrap_or(false)
+        {
             return Err(RevoraError::DualSigNotConfigured);
         }
 
@@ -7717,10 +7801,7 @@ impl RevoraRevenueShare {
 
         env.storage().persistent().set(&DataKey2::DualSigEnabled(offering_id), &enabled);
 
-        env.events().publish(
-            (symbol_short!("dual_cfg"), issuer, namespace, token),
-            (enabled,),
-        );
+        env.events().publish((symbol_short!("dual_cfg"), issuer, namespace, token), (enabled,));
         Ok(())
     }
 
@@ -7770,8 +7851,9 @@ impl RevoraRevenueShare {
         };
 
         // Verify offering exists and retrieve the full Offering (including issuers).
-        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
-            .ok_or(RevoraError::OfferingNotFound)?;
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
 
         // Both signers must be valid issuers (primary or co-issuer).
         let is_valid = |addr: &Address| -> bool {
@@ -7785,7 +7867,12 @@ impl RevoraRevenueShare {
         }
 
         // Dual-signature mode must be enabled for this offering.
-        if !env.storage().persistent().get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone())).unwrap_or(false) {
+        if !env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone()))
+            .unwrap_or(false)
+        {
             return Err(RevoraError::DualSigNotConfigured);
         }
 
@@ -8570,13 +8657,7 @@ impl RevoraRevenueShare {
             return (0, None);
         }
 
-        Self::compute_claimable_preview(
-            &env,
-            &offering_id,
-            &holder,
-            start_idx,
-            Some(count),
-        )
+        Self::compute_claimable_preview(&env, &offering_id, &holder, start_idx, Some(count))
     }
 
     // â”€â”€ Time-delayed claim configuration (#27) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -8671,10 +8752,9 @@ impl RevoraRevenueShare {
         let current_acc: i128 = env.storage().persistent().get(&global_acc_key).unwrap_or(0);
         let next_acc = current_acc.saturating_add(acc_delta_e18);
         env.storage().persistent().set(&global_acc_key, &next_acc);
-        env.storage().persistent().set(
-            &DataKey2::AccPerShareAtIndex(offering_id.clone(), count + 1),
-            &next_acc,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey2::AccPerShareAtIndex(offering_id.clone(), count + 1), &next_acc);
 
         // Update cumulative deposited revenue
         let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
@@ -9068,10 +9148,7 @@ impl RevoraRevenueShare {
 
         let key = DataKey2::EmergencyFreeze(offering_id, holder.clone());
         env.storage().persistent().set(&key, &reason);
-        env.events().publish(
-            (EVENT_FRZ_SET, issuer, namespace, token),
-            (caller, holder, reason),
-        );
+        env.events().publish((EVENT_FRZ_SET, issuer, namespace, token), (caller, holder, reason));
         Ok(())
     }
 
@@ -9109,16 +9186,14 @@ impl RevoraRevenueShare {
         }
 
         let key = DataKey2::EmergencyFreeze(offering_id, holder.clone());
-        let stored_reason: FreezeReason = env.storage().persistent().get(&key).ok_or(RevoraError::HolderFrozen)?;
+        let stored_reason: FreezeReason =
+            env.storage().persistent().get(&key).ok_or(RevoraError::HolderFrozen)?;
         if stored_reason != reason {
             return Err(RevoraError::FreezeReasonMismatch);
         }
 
         env.storage().persistent().remove(&key);
-        env.events().publish(
-            (EVENT_FRZ_CLR, issuer, namespace, token),
-            (caller, holder, reason),
-        );
+        env.events().publish((EVENT_FRZ_CLR, issuer, namespace, token), (caller, holder, reason));
         Ok(())
     }
 
@@ -9131,7 +9206,10 @@ impl RevoraRevenueShare {
         holder: Address,
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
-        env.storage().persistent().get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(offering_id, holder)).is_some()
+        env.storage()
+            .persistent()
+            .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(offering_id, holder))
+            .is_some()
     }
 
     // â”€â”€ Multisig admin logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -9435,10 +9513,8 @@ impl RevoraRevenueShare {
         }
 
         let now = env.ledger().timestamp();
-        let last_request_ts: Option<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey2::FaucetLastRequest(requester.clone()));
+        let last_request_ts: Option<u64> =
+            env.storage().persistent().get(&DataKey2::FaucetLastRequest(requester.clone()));
         if let Some(last_ts) = last_request_ts {
             if now.saturating_sub(last_ts) < DEFAULT_FAUCET_COOLDOWN_SECONDS {
                 env.events().publish(
@@ -9455,9 +9531,7 @@ impl RevoraRevenueShare {
             }
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey2::FaucetLastRequest(requester), &now);
+        env.storage().persistent().set(&DataKey2::FaucetLastRequest(requester), &now);
 
         if count == 0 {
             return Ok(Vec::new(&env));
@@ -9480,11 +9554,8 @@ impl RevoraRevenueShare {
             slot_input.append(&idx.to_xdr(&env));
             let seed: BytesN<32> = env.crypto().sha256(&slot_input);
 
-            let share_bps: u32 = if idx == count - 1 {
-                bps_floor + bps_remainder
-            } else {
-                bps_floor
-            };
+            let share_bps: u32 =
+                if idx == count - 1 { bps_floor + bps_remainder } else { bps_floor };
 
             // Store seed for test-suite retrieval without forcing a full scan.
             env.storage()
@@ -9506,7 +9577,11 @@ impl RevoraRevenueShare {
 #[cfg(test)]
 mod issue_455_fx_oracle_tests {
     use super::*;
-    use soroban_sdk::{contract, contractimpl, testutils::{Address as _, Ledger}, Address, Env, Symbol};
+    use soroban_sdk::{
+        contract, contractimpl,
+        testutils::{Address as _, Ledger},
+        Address, Env, Symbol,
+    };
 
     pub mod fresh {
         use super::*;
@@ -9572,15 +9647,7 @@ mod issue_455_fx_oracle_tests {
             &60,
         );
 
-        client.report_revenue(
-            &issuer,
-            &namespace,
-            &token,
-            &reported_asset,
-            &1_000,
-            &1,
-            &false,
-        );
+        client.report_revenue(&issuer, &namespace, &token, &reported_asset, &1_000, &1, &false);
 
         assert_eq!(client.get_revenue_by_period(&issuer, &namespace, &token, &1), 1_200);
         assert_eq!(
@@ -9652,7 +9719,16 @@ mod issue_370_373_tests {
         let mut tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&issuer, &namespace, &token, &(1_000 + i), &token, &0, &symbol_short!(""), &0);
+            client.register_offering(
+                &issuer,
+                &namespace,
+                &token,
+                &(1_000 + i),
+                &token,
+                &0,
+                &symbol_short!(""),
+                &0,
+            );
             tokens.push_back(token);
         }
 
@@ -9723,13 +9799,40 @@ mod issue_370_373_tests {
 
         let new_token_0 = Address::generate(&env);
         let new_token_1 = Address::generate(&env);
-        client.register_offering(&new_issuer, &namespace, &new_token_0, &1_100, &new_token_0, &0, &symbol_short!(""), &0);
-        client.register_offering(&new_issuer, &namespace, &new_token_1, &1_200, &new_token_1, &0, &symbol_short!(""), &0);
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_0,
+            &1_100,
+            &new_token_0,
+            &0,
+            &symbol_short!(""),
+            &0,
+        );
+        client.register_offering(
+            &new_issuer,
+            &namespace,
+            &new_token_1,
+            &1_200,
+            &new_token_1,
+            &0,
+            &symbol_short!(""),
+            &0,
+        );
 
         let mut old_tokens = Vec::new(&env);
         for i in 0..25_u32 {
             let token = Address::generate(&env);
-            client.register_offering(&old_issuer, &namespace, &token, &(2_000 + i), &token, &0, &symbol_short!(""), &0);
+            client.register_offering(
+                &old_issuer,
+                &namespace,
+                &token,
+                &(2_000 + i),
+                &token,
+                &0,
+                &symbol_short!(""),
+                &0,
+            );
             old_tokens.push_back(token);
         }
 
@@ -9811,8 +9914,6 @@ mod issue_370_373_tests {
     }
 }
 
-
-
 // --- MIGRATION UPGRADE PATH (BOUNTY #467) ---
 
 #[contracttype]
@@ -9851,13 +9952,17 @@ impl RevoraRevenueShare {
         // Add per-version migrators in a dispatch table
         match (from_version, to_version) {
             (1, 2) => {
-                // Explicit storage walker simulation for v1 -> v2. 
+                // Explicit storage walker simulation for v1 -> v2.
                 // In a production environment with explicit indexing, you would iterate over known constraints.
                 // E.g. for i in 0..IssuerCount { ... rewrite keys ... }
-                
+
                 if dry_run {
                     env.events().publish(
-                        (soroban_sdk::Symbol::new(&env, "migration_plan"), from_version, to_version),
+                        (
+                            soroban_sdk::Symbol::new(&env, "migration_plan"),
+                            from_version,
+                            to_version,
+                        ),
                         issuer.clone(),
                     );
                 } else {
@@ -9879,6 +9984,6 @@ impl RevoraRevenueShare {
 }
 
 #[cfg(test)]
-mod test_storage_layout_version;
-#[cfg(test)]
 mod test_close_period;
+#[cfg(test)]
+mod test_storage_layout_version;

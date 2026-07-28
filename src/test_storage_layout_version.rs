@@ -1,11 +1,12 @@
 #![cfg(test)]
 extern crate alloc;
 
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
-
-#[test]
-fn test_migrate_storage_success() {
+use crate::{MigrationError, RevoraRevenueShare, RevoraRevenueShareClient};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events},
+    Address, Env,
+};
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -59,7 +60,8 @@ fn test_migrate_storage_dry_run() {
 
     // Verify migration_plan event was emitted
     let events = env.events().all();
-    let plan_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
+    let plan_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
     assert!(!plan_events.is_empty(), "Walker must emit migration_plan events for dry run");
 
     // Run explicit walker migration v1 -> v2 again (should succeed since no state mutated)
@@ -69,6 +71,10 @@ fn test_migrate_storage_dry_run() {
 #[test]
 #[should_panic(expected = "HostError")]
 fn test_migrate_storage_already_applied() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
