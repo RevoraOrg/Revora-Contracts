@@ -373,6 +373,11 @@ const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
 const EVENT_DUAL_SIG_CLOSE: Symbol = symbol_short!("dual_cls");
 /// Emitted when an offering's off-chain disclosure metadata is set or updated (#485).
 const EVENT_DISCLOSURE_UPDATED: Symbol = symbol_short!("disc_upd");
+/// Emitted when the canonical per-class payout order is resolved and frozen
+/// at `close_period` (or `close_period_dual_sig`) time (#523).
+const EVENT_CLASS_PAY_ORDER: Symbol = symbol_short!("clspayo");
+/// Emitted when an issuer updates a class's dividend priority index (#523).
+const EVENT_CLASS_PRIORITY_SET: Symbol = symbol_short!("clprio");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
 const EVENT_TYPE_REV_OVR: Symbol = symbol_short!("rv_ovr");
 const EVENT_TYPE_REV_REJ: Symbol = symbol_short!("rv_rej");
@@ -1122,6 +1127,17 @@ pub enum DataKey2 {
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
 
+    /// Per-class priority index for dividend payout ordering (#523).
+    /// Stored as `(offering_id, share_class) -> priority_index: u32`. Lower
+    /// `priority_index` values resolve to earlier payout. Default is 0
+    /// (unconfigured classes share the default slot with XDR-bytes tie-break).
+    ClassPriority(OfferingId, ShareClass),
+
+    /// Cached canonical class payout order resolved at `close_period` time (#523).
+    /// Stored as `(offering_id, period_id) -> Vec<ShareClass>` ordered by
+    /// ascending `(priority_index, share_class.to_xdr())`.
+    ClassPayOrder(OfferingId, u64),
+
     // ── Multisig / governance storage ──────────────────────────────────────
     /// Registered multisig owners.
     MultisigOwners,
@@ -1164,6 +1180,13 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// Maximum number of periods allowed in a single read-only chunked query.
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
+
+/// Default priority index for an unconfigured class (#523).
+///
+/// Classes without an explicit `set_class_priority` call resolve to this index.
+/// All unconfigured classes tie at the default and are disambiguated by their
+/// XDR-byte canonical order, yielding a deterministic, stable tie-break.
+pub const DEFAULT_CLASS_PRIORITY: u32 = 0;
 
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -7708,6 +7731,11 @@ impl RevoraRevenueShare {
         env.events()
             .publish((EVENT_PERIOD_CLOSED, issuer, namespace, token), (period_id, closed_at));
 
+        // Compute and persist the canonical per-class payout order (#523).
+        // Done after the period is sealed so the storage write is monotonic
+        // and the emitted pay order matches the on-chain sealed state.
+        Self::record_and_emit_pay_order(&env, &offering_id, period_id);
+
         Ok(())
     }
 
@@ -7721,6 +7749,224 @@ impl RevoraRevenueShare {
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
+    }
+
+    // ── Per-class dividend priority ordering (#523) ────────────────────────
+
+    /// Compute the canonical class payout order for an offering (#523).
+    ///
+    /// Reads the offering's registered `Vec<(ShareClass, ClassConfig)>` and the
+    /// per-class priority index stored under `DataKey2::ClassPriority`. Classes
+    /// are sorted ascending by `(priority_index, share_class.to_xdr().bytes)`;
+    /// ties on priority are broken canonically by XDR-serialized bytes of the
+    /// `ShareClass`, which gives a stable, deterministic ordering identical
+    /// across reruns and across dual-sig / single-sig close paths.
+    ///
+    /// Classes without an explicit priority index resolve to `DEFAULT_CLASS_PRIORITY = 0`.
+    /// Returns an empty `Vec<ShareClass>` when the offering has no classes registered.
+    fn resolve_class_pay_order(env: &Env, offering_id: &OfferingId) -> Vec<ShareClass> {
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes_opt: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+
+        let classes = match classes_opt {
+            Some(c) if !c.is_empty() => c,
+            _ => return Vec::new(env),
+        };
+
+        // Build the keyed list: (priority, xdr_bytes, ShareClass).
+        let mut keyed: Vec<(u32, Bytes, ShareClass)> = Vec::new(env);
+        for entry in classes.iter() {
+            let sc = entry.0.clone();
+            let priority: u32 = env
+                .storage()
+                .persistent()
+                .get::<DataKey2, u32>(&DataKey2::ClassPriority(
+                    offering_id.clone(),
+                    sc.clone(),
+                ))
+                .unwrap_or(DEFAULT_CLASS_PRIORITY);
+            let xdr_bytes: Bytes = sc.to_xdr(env);
+            keyed.push_back((priority, xdr_bytes, sc));
+        }
+
+        // Deterministic ascending sort by (priority, xdr_bytes).
+        // Implemented as an in-place bubble sort for `soroban_sdk::Vec` (which
+        // lacks `sort_by`). n is bounded by the per-offering class count, which
+        // the contract keeps small via ClassConfig.
+        let n = keyed.len();
+        if n > 1 {
+            let mut i: u32 = 0;
+            while i < n.saturating_sub(1) {
+                let mut j: u32 = 0;
+                let stop = n.saturating_sub(1).saturating_sub(i);
+                while j < stop {
+                    let cur = keyed.get(j).expect("index valid");
+                    let nxt = keyed.get(j.saturating_add(1)).expect("index valid");
+                    let should_swap = match cur.0.cmp(&nxt.0) {
+                        core::cmp::Ordering::Greater => true,
+                        core::cmp::Ordering::Equal => {
+                            cur.1.cmp(&nxt.1) == core::cmp::Ordering::Greater
+                        }
+                        core::cmp::Ordering::Less => false,
+                    };
+                    if should_swap {
+                        keyed.set(j, nxt);
+                        keyed.set(j.saturating_add(1), cur);
+                    }
+                    j = j.saturating_add(1);
+                }
+                i = i.saturating_add(1);
+            }
+        }
+
+        let mut out: Vec<ShareClass> = Vec::new(env);
+        for entry in keyed.iter() {
+            out.push_back(entry.2.clone());
+        }
+        out
+    }
+
+    /// Persist the resolved pay order and emit the `EVENT_CLASS_PAY_ORDER` event.
+    /// Called from both single-sig and dual-sig `close_period` paths after
+    /// existing validation/sealing logic so the canonical ordering is recorded
+    /// once per closed period and downstream auditors/indexers see a stable
+    /// per-period distribution order.
+    ///
+    /// Always emits, including when no classes are registered for the offering
+    /// — a `Vec::new()` payload is the documented fallback for legacy or
+    /// classless offerings. Indexers should treat empty orders as the
+    /// pre-deployment / no-class baseline.
+    fn record_and_emit_pay_order(
+        env: &Env,
+        offering_id: &OfferingId,
+        period_id: u64,
+    ) {
+        let ordered = Self::resolve_class_pay_order(env, offering_id);
+        env.storage().persistent().set(
+            &DataKey2::ClassPayOrder(offering_id.clone(), period_id),
+            &ordered,
+        );
+        env.events().publish(
+            (
+                EVENT_CLASS_PAY_ORDER,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (period_id, ordered),
+        );
+    }
+
+    /// Set the dividend priority index for a registered class on an offering (#523).
+    ///
+    /// Lower `priority_index` values resolve to earlier payout positions under
+    /// `close_period`. The configured class is recorded and an
+    /// `EVENT_CLASS_PRIORITY_SET` event is emitted so indexers and dashboards
+    /// can track priority changes.
+    ///
+    /// ### Auth
+    /// Requires issuer-quorum authentication matching the contract-wide
+    /// `Issuers.quorum` policy used by `set_holder_share` and similar mutations.
+    /// A priority change effectively reorders how distributions are paid out, so
+    /// we treat it as governance-equivalent to a holder-share mutation.
+    ///
+    /// ### Errors
+    /// - [`RevoraError::OfferingNotFound`] if the offering does not exist or the
+    ///   caller is not the current issuer.
+    /// - [`RevoraError::InvalidShareClass`] if `share_class` is not a registered
+    ///   class on the offering (i.e. absent from `DataKey2::OfferingClasses`).
+    /// - [`RevoraError::ContractFrozen`] / [`RevoraError::ContractPaused`] when
+    ///   the contract is not operational.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_class_priority(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+        priority_index: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        // Issuer-quorum requires the primary signer and the configured number
+        // of co-signers to have authorized. This matches `set_holder_share`
+        // and other governance-equivalent mutations.
+        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify the share_class is registered for this offering. Rejecting
+        // unregistered classes prevents storage pollution and Denial-of-Service
+        // via arbitrarily large priority-index entries.
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes_opt: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+        let registered = classes_opt
+            .as_ref()
+            .map(|v| v.iter().any(|(sc, _)| sc == &share_class))
+            .unwrap_or(false);
+        if !registered {
+            return Err(RevoraError::InvalidShareClass);
+        }
+
+        env.storage().persistent().set(
+            &DataKey2::ClassPriority(offering_id.clone(), share_class.clone()),
+            &priority_index,
+        );
+
+        env.events().publish(
+            (
+                EVENT_CLASS_PRIORITY_SET,
+                issuer,
+                namespace,
+                token,
+                share_class,
+            ),
+            priority_index,
+        );
+
+        Ok(())
+    }
+
+    /// Read the dividend priority index for a class on an offering (#523).
+    /// Returns `DEFAULT_CLASS_PRIORITY = 0` when no explicit priority has been set.
+    pub fn get_class_priority(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u32>(&DataKey2::ClassPriority(offering_id, share_class))
+            .unwrap_or(DEFAULT_CLASS_PRIORITY)
+    }
+
+    /// Read the canonical class payout order resolved at `close_period` time (#523).
+    /// Returns an empty `Vec<ShareClass>` if the period was never closed via the
+    /// updated `close_period` / `close_period_dual_sig` implementation.
+    pub fn get_class_pay_order(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Vec<ShareClass> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, Vec<ShareClass>>(&DataKey2::ClassPayOrder(offering_id, period_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Enable or disable dual-signature close-of-period mode for an offering (#565).
@@ -7846,6 +8092,11 @@ impl RevoraRevenueShare {
             (EVENT_DUAL_SIG_CLOSE, issuer, namespace, token),
             (period_id, closed_at, sig_a, sig_b),
         );
+
+        // Compute and persist the canonical per-class payout order (#523).
+        // Mirrors the single-sig `close_period` path so both close flows
+        // resolve to the identical deterministic order.
+        Self::record_and_emit_pay_order(&env, &offering_id, period_id);
 
         Ok(())
     }
