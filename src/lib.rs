@@ -207,6 +207,11 @@ pub enum RevoraError {
     DualSigSameSigner = 56,
     /// Dual-signature close is not configured for this offering.
     DualSigNotConfigured = 57,
+    /// Cross-class share transfer blocked: `from` and `to` holders belong to
+    /// different share classes and a class-conversion has not been authorized.
+    ///
+    /// Wire value: 58. Stable since v1.
+    ClassTransferBlocked = 58,
 }
 
 pub mod vesting;
@@ -233,6 +238,8 @@ mod test_close_period;
 mod test_disclosure;
 #[cfg(test)]
 mod test_quorum_check;
+#[cfg(test)]
+mod test_class_transfer_lock;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -394,6 +401,9 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 /// Emitted when a share transfer with attestation occurs.
 const EVENT_XFER_ATT: Symbol = symbol_short!("xfer_att");
+/// Emitted when a cross-class share transfer is blocked.
+/// Data: `(offering_id, from, to, from_class, to_class)`.
+const EVENT_CLASS_XFER_BLOCK: Symbol = symbol_short!("cls_block");
 
 /// Emitted when a redemption window is set for an offering.
 const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
@@ -1137,6 +1147,17 @@ pub enum DataKey2 {
     VoterWeight(Address),
     /// Global quorum threshold in basis points.
     MultisigQuorumBps,
+
+    /// Per-offering share classes registered as `Vec<(ShareClass, ClassConfig)>`.
+    OfferingClasses(OfferingId),
+    /// Per-class share balance for `(offering_id, holder, share_class)`.
+    HolderShareClass(OfferingId, Address, ShareClass),
+    /// Per-offering transfer restriction by category.
+    TransferRestrictions(OfferingId, Symbol),
+    /// Holder's assigned transfer category.
+    HolderCategory(OfferingId, Address),
+    /// Number of holders currently assigned to a transfer category.
+    CategoryHolderCount(OfferingId, Symbol),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -5503,6 +5524,25 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+
+        // Zero-value transfer is meaningless
+        if amount_bps == 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // ── Guard: class transfer lock ────────────────────────────────────────
+        // Reject when `from` and `to` belong to different share classes unless a
+        // class-conversion primitive (not yet implemented) is in progress.
+        {
+            let from_class = Self::get_primary_class(env.clone(), offering_id.clone(), from.clone());
+            let to_class = Self::get_primary_class(env.clone(), offering_id.clone(), to.clone());
+            if from_class.is_some() && to_class.is_some() && from_class != to_class {
+                env.events().publish(
+                    (EVENT_CLASS_XFER_BLOCK, issuer, namespace.clone(), token.clone()),
+                    (from.clone(), to.clone(), from_class, to_class),
+                );
+                return Err(RevoraError::ClassTransferBlocked);
+            }
         }
 
         let from_share: u32 = env
@@ -6685,6 +6725,27 @@ impl RevoraRevenueShare {
         // ── Guard 5: offering-level freeze ────────────────────────────────────
         Self::require_not_offering_frozen(&env, &offering_id)?;
 
+        // ── Guard 11: class transfer lock ──────────────────────────────────────
+        // Reject when `from` and `to` belong to different share classes unless a
+        // class-conversion primitive (not yet implemented) is in progress.
+        {
+            let offering_id_pre = OfferingId {
+                issuer: issuer.clone(),
+                namespace: namespace.clone(),
+                token: token.clone(),
+            };
+            let from_class = Self::get_primary_class(env.clone(), offering_id.clone(), from.clone());
+            let to_class = Self::get_primary_class(env.clone(), offering_id.clone(), to.clone());
+            if from_class.is_some() && to_class.is_some() && from_class != to_class {
+                env.events().publish(
+                    (EVENT_CLASS_XFER_BLOCK, issuer.clone(), namespace.clone(), token.clone()),
+                    (from.clone(), to.clone(), from_class, to_class),
+                );
+                return Err(RevoraError::ClassTransferBlocked);
+            }
+        }
+
+
         // ── Guard 6: blacklist checks for both participants ───────────────────
         // Blacklist always wins over whitelist (see security policy in README).
         if Self::is_blacklisted(
@@ -6903,6 +6964,37 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey2::HolderShareClass(offering_id, holder, share_class))
             .unwrap_or(0)
+    }
+
+    /// Return the first share class a holder has a non-zero balance in, or `None`
+    /// if the holder has no class assigned. Used by transfer guards to reject
+    /// cross-class transfers (Class A → Class B) unless a class-conversion
+    /// primitive is in progress.
+    pub fn get_primary_class(
+        env: Env,
+        offering_id: OfferingId,
+        holder: Address,
+    ) -> Option<ShareClass> {
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+        if let Some(cls_vec) = classes {
+            for (sc, _) in cls_vec.iter() {
+                let bal: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey2::HolderShareClass(
+                        offering_id.clone(),
+                        holder.clone(),
+                        sc.clone(),
+                    ))
+                    .unwrap_or(0);
+                if bal > 0 {
+                    return Some(sc);
+                }
+            }
+        }
+        None
     }
 
     /// Set or update a holder's jurisdiction tag for an offering.
