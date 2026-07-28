@@ -100,6 +100,46 @@ fn upgrade_path_allows_operation_and_stamps_layout() {
     assert_eq!(v, Some(STORAGE_LAYOUT_VERSION));
 }
 
+#[test]
+fn test_migration_resumes_from_cursor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+
+    // Instead of halting the real execution midway, we will explicitly simulate it.
+    // By setting the MigrationResumeCursor manually, we simulate a halted migration.
+    // The cursor is 5, meaning keys 1..=5 have been processed.
+    use crate::{MigrationDataKey, MigrationCursor};
+    env.as_contract(&contract_id, || {
+        let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
+        let cursor = MigrationCursor { last_key: 5 };
+        env.storage().persistent().set(&cursor_key, &cursor);
+    });
+
+    // Run explicit walker migration v1 -> v2
+    client.migrate_storage_walker(&issuer, &1u32, &2u32, &false);
+
+    // Verify mig_resume event was emitted
+    let events = env.events().all();
+    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
+    let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
+    assert_eq!(resume_val, 5, "Resume cursor should be 5");
+
+    // Verify mig_step was emitted for keys 6 through 10, meaning it resumed at 6.
+    let step_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+    assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
+    
+    // Assert the exact keys processed in the steps
+    let start_key: u32 = step_events[0].2.clone().into_val(&env);
+    assert_eq!(start_key, 6, "First processed key after resume must be 6");
+
+    let end_key: u32 = step_events[4].2.clone().into_val(&env);
+    assert_eq!(end_key, 10, "Last processed key must be 10");
+}
+
 // ─── assert_semver_forward unit tests ─────────────────────────────────────────
 
 #[test]

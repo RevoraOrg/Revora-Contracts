@@ -9771,8 +9771,15 @@ mod issue_370_373_tests {
 // --- MIGRATION UPGRADE PATH (BOUNTY #467) ---
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationCursor {
+    pub last_key: u32,
+}
+
+#[contracttype]
 pub enum MigrationDataKey {
     LastMigrationCompletedAt(Address),
+    MigrationResumeCursor(Address),
 }
 
 #[contracterror]
@@ -9803,12 +9810,18 @@ impl RevoraRevenueShare {
             return Err(MigrationError::MigrationAlreadyApplied);
         }
 
+        let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
+        let mut cursor: MigrationCursor = env.storage().persistent().get(&cursor_key).unwrap_or(MigrationCursor { last_key: 0 });
+
+        if cursor.last_key > 0 && !dry_run {
+            env.events().publish((symbol_short!("mig_resume"), from_version, to_version), cursor.last_key);
+        }
+
         // Add per-version migrators in a dispatch table
         match (from_version, to_version) {
             (1, 2) => {
-                // Explicit storage walker simulation for v1 -> v2. 
-                // In a production environment with explicit indexing, you would iterate over known constraints.
-                // E.g. for i in 0..IssuerCount { ... rewrite keys ... }
+                // Explicit storage walker simulation for v1 -> v2.
+                let total_keys = 10u32; // Simulated total keys to process
                 
                 if dry_run {
                     env.events().publish(
@@ -9816,18 +9829,30 @@ impl RevoraRevenueShare {
                         issuer.clone(),
                     );
                 } else {
-                    env.events().publish(
-                        (symbol_short!("mig_step"), from_version, to_version),
-                        issuer.clone(),
-                    );
+                    for i in 1..=total_keys {
+                        if i <= cursor.last_key {
+                            continue; // Skip already-processed keys on resume
+                        }
+
+                        // Simulate key migration work here
+                        env.events().publish(
+                            (symbol_short!("mig_step"), from_version, to_version),
+                            i,
+                        );
+
+                        // Persist cursor atomically with each processed key
+                        cursor.last_key = i;
+                        env.storage().persistent().set(&cursor_key, &cursor);
+                    }
                 }
             }
             _ => return Err(MigrationError::UnsupportedMigrationPath),
         }
 
         if !dry_run {
-            // Persist the completed state to block replays
+            // Persist the completed state to block replays and clear the cursor
             env.storage().persistent().set(&key, &to_version);
+            env.storage().persistent().remove(&cursor_key);
         }
         Ok(())
     }
