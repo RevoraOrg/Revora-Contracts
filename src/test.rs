@@ -11934,7 +11934,7 @@ mod admin_rotation_history {
         new_admin: &Address,
     ) {
         client.propose_admin_rotation(new_admin);
-        client.finalize_admin_rotation(new_admin);
+        client.accept_admin_rotation(new_admin);
     }
 
     #[test]
@@ -12078,12 +12078,12 @@ mod admin_rotation_history {
         let before = env.events().all().len();
         client.propose_admin_rotation(&new_admin);
         let after_propose = env.events().all().len();
-        client.finalize_admin_rotation(&new_admin);
+        client.accept_admin_rotation(&new_admin);
         let after_accept = env.events().all().len();
 
-        // The adm_fin event plus the adm_log event should be emitted
+        // The adm_acc event plus the adm_log event should be emitted
         assert!(after_accept > after_propose);
-        // Verify at least 2 more events (adm_fin + adm_log)
+        // Verify at least 2 more events (adm_acc + adm_log)
         assert!(after_accept >= after_propose + 2);
     }
 
@@ -12097,7 +12097,7 @@ mod admin_rotation_history {
         do_rotation(&env, &client, &admin2);
         // admin2 -> admin (revert)
         client.propose_admin_rotation(&admin);
-        client.finalize_admin_rotation(&admin);
+        client.accept_admin_rotation(&admin);
 
         let (entries, _) = client.get_admin_rotation_history_page(&0, &10);
         assert_eq!(entries.len(), 2);
@@ -12140,189 +12140,6 @@ mod admin_rotation_history {
             cursor = next;
         }
         assert_eq!(total, 7);
-    }
-}
-
-// ── Two-phase admin rotation with delay ──────────────────────────────────────
-
-#[cfg(test)]
-mod admin_rotation_two_phase {
-    use super::*;
-
-    fn delay_setup() -> (Env, RevoraRevenueShareClient<'static>, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().with_mut(|ledger| ledger.timestamp = 1_000_000);
-        let contract_id = env.register_contract(None, RevoraRevenueShare);
-        let client = RevoraRevenueShareClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &None::<Address>, &None::<bool>);
-        (env, client, admin)
-    }
-
-    fn advance_time(env: &Env, delta: u64) {
-        let new_ts = env.ledger().timestamp().saturating_add(delta);
-        env.ledger().with_mut(|ledger| ledger.timestamp = new_ts);
-    }
-
-    #[test]
-    fn delay_default_is_zero() {
-        let (env, client, _admin) = delay_setup();
-        assert_eq!(client.get_admin_rotation_delay(), 0);
-    }
-
-    #[test]
-    fn set_delay_persists() {
-        let (env, client, _admin) = delay_setup();
-        client.set_admin_rotation_delay(&3600);
-        assert_eq!(client.get_admin_rotation_delay(), 3600);
-    }
-
-    #[test]
-    fn set_delay_zero_disables_delay() {
-        let (env, client, _admin) = delay_setup();
-        client.set_admin_rotation_delay(&3600);
-        client.set_admin_rotation_delay(&0);
-        assert_eq!(client.get_admin_rotation_delay(), 0);
-    }
-
-    #[test]
-    fn set_delay_emits_event() {
-        let (env, client, _admin) = delay_setup();
-        let before = env.events().all().len();
-        client.set_admin_rotation_delay(&3600);
-        assert!(env.events().all().len() > before);
-    }
-
-    #[test]
-    fn finalize_before_delay_elapsed_rejected() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin_rotation_delay(&3600);
-        client.propose_admin_rotation(&new_admin);
-
-        let result = client.try_finalize_admin_rotation(&new_admin);
-        assert_eq!(result, Err(Ok(RevoraError::AdminRotationDelayNotElapsed)));
-    }
-
-    #[test]
-    fn finalize_after_delay_elapsed_succeeds() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin_rotation_delay(&3600);
-        client.propose_admin_rotation(&new_admin);
-        advance_time(&env, 3600);
-
-        let result = client.try_finalize_admin_rotation(&new_admin);
-        assert!(result.is_ok());
-        assert_eq!(client.get_admin(), Some(new_admin));
-    }
-
-    #[test]
-    fn finalize_exactly_at_delay_boundary() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin_rotation_delay(&3600);
-        client.propose_admin_rotation(&new_admin);
-        // Advance exactly to the boundary (proposed_at=1_000_000, delay=3600,
-        // so eligible at timestamp >= 1_003_600)
-        advance_time(&env, 3600);
-
-        assert_eq!(client.try_finalize_admin_rotation(&new_admin), Ok(()));
-    }
-
-    #[test]
-    fn delay_only_applies_to_future_proposals() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        // Set delay after proposal — proposal was made with delay=0
-        client.propose_admin_rotation(&new_admin);
-        client.set_admin_rotation_delay(&3600);
-
-        // Should succeed because the proposal was made before delay was set
-        let result = client.try_finalize_admin_rotation(&new_admin);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn cancel_clears_pending_with_delay_active() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin_rotation_delay(&3600);
-        client.propose_admin_rotation(&new_admin);
-        client.cancel_admin_rotation();
-
-        assert_eq!(client.get_pending_admin_rotation(), None);
-    }
-
-    #[test]
-    fn get_pending_details_returns_proposal_timestamp() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-        let before = env.ledger().timestamp();
-
-        client.propose_admin_rotation(&new_admin);
-
-        let details = client.get_pending_admin_rotation_details().unwrap();
-        assert_eq!(details.new_admin, new_admin);
-        assert!(details.proposed_at >= before);
-        assert!(details.proposed_at <= env.ledger().timestamp());
-    }
-
-    #[test]
-    fn get_pending_details_returns_none_when_idle() {
-        let (env, client, _admin) = delay_setup();
-        assert!(client.get_pending_admin_rotation_details().is_none());
-    }
-
-    #[test]
-    fn set_delay_without_auth_fails() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, RevoraRevenueShare);
-        let client = RevoraRevenueShareClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &None::<Address>, &None::<bool>);
-
-        // env.mock_all_auths() is NOT called — auth should fail
-        let result = client.try_set_admin_rotation_delay(&3600);
-        // The host will panic on auth failure, not return RevoraError
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn chained_rotation_with_delay() {
-        let (env, client, _admin) = delay_setup();
-        let admin2 = Address::generate(&env);
-        let admin3 = Address::generate(&env);
-
-        client.set_admin_rotation_delay(&100);
-        client.propose_admin_rotation(&admin2);
-        advance_time(&env, 100);
-        client.finalize_admin_rotation(&admin2);
-
-        assert_eq!(client.get_admin(), Some(admin2));
-
-        client.propose_admin_rotation(&admin3);
-        advance_time(&env, 100);
-        client.finalize_admin_rotation(&admin3);
-
-        assert_eq!(client.get_admin(), Some(admin3));
-    }
-
-    #[test]
-    fn delay_does_not_block_zero_delay_rotation() {
-        let (env, client, _admin) = delay_setup();
-        let new_admin = Address::generate(&env);
-
-        // Delay defaults to 0 — immediate finalization works
-        client.propose_admin_rotation(&new_admin);
-        let result = client.try_finalize_admin_rotation(&new_admin);
-        assert!(result.is_ok());
     }
 }
 

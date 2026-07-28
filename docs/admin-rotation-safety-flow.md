@@ -113,14 +113,14 @@ Read-only. Returns a page of the append-only admin rotation history log. Entries
 
 **Pagination:**
 - `start`: zero-based index of the first entry to return.
-- `limit`: maximum entries to return (capped at `MAX_PAGE_LIMIT` = 20).
+- `limit`: maximum entries to return (capped at [`MAX_PAGE_LIMIT`] = 20).
 
 **Returns:**
-- `entries`: the page of `AdminRotationEntry` values, each containing `prior_admin`, `new_admin`, and `rotated_at` (ledger timestamp).
+- `entries`: the page of [`AdminRotationEntry`] values, each containing `prior_admin`, `new_admin`, and `rotated_at` (ledger timestamp).
 - `next_cursor`: `Some(next_start)` if more entries are available, `None` otherwise.
 
 **Log bounds:**
-The log retains at most `MAX_ADMIN_ROTATION_LOG` = 100 entries. When the limit is reached, the oldest entry is evicted (FIFO) on each new rotation.
+The log retains at most [`MAX_ADMIN_ROTATION_LOG`] = 100 entries. When the limit is reached, the oldest entry is evicted (FIFO) on each new rotation.
 
 **Auth:** None — read-only.
 
@@ -161,10 +161,9 @@ The log retains at most `MAX_ADMIN_ROTATION_LOG` = 100 entries. When the limit i
 | Key | Type | Description |
 |-----|------|-------------|
 | `DataKey::Admin` | `Address` | Authoritative admin; controls admin-gated methods |
-| `DataKey::PendingAdmin` | `PendingAdminRotation` | Proposed new admin + proposal timestamp; cleared on finalize or cancel |
+| `DataKey::PendingAdmin` | `Address` | Proposed new admin during rotation; cleared on accept or cancel |
 | `DataKey2::AdminRotationCount` | `u64` | Monotonically increasing counter of completed rotations |
 | `DataKey2::AdminRotationLog(u64)` | `AdminRotationEntry` | Append-only log entry keyed by `rotation_id` (sequential) |
-| `DataKey2::AdminRotationDelay` | `u64` | Mandatory delay in seconds (0 = disabled) |
 
 All keys use **persistent storage** — state survives ledger close.
 
@@ -177,8 +176,7 @@ All keys use **persistent storage** — state survives ledger close.
 | `adm_prop(current_admin)` | `new_admin: Address` | `propose_admin_rotation` succeeds |
 | `adm_fin(old_admin)` | `new_admin: Address` | `finalize_admin_rotation` completes |
 | `adm_canc(current_admin)` | `cancelled_pending: Address` | `cancel_admin_rotation` completes |
-| `adm_log` (v2) | `AdminRotationEntry` | Rotation entry persisted to history |
-| `adm_dly(admin)` | `delay_secs: u64` | `set_admin_rotation_delay` succeeds |
+| `adm_log` (v2) | `AdminRotationEntry` | `accept_admin_rotation` persists the history entry |
 
 ---
 
@@ -418,9 +416,8 @@ cargo test -- --nocapture  # Full suite with output
 | `admin_rotation_auth` | 9 | Abuse paths: wrong signer, impostor propose, double-propose, wrong finalize |
 | `admin_rotation_edge` | 7 | Invariants: idempotent init, pending cleared, coexistence with other state |
 | `admin_rotation_integration` | 6 | End-to-end: new admin exercises authority, five-admin chain, freeze interaction |
-| `regression` (rotation) | 5 | Double-finalize, stale-cancel, same-address, impostor, frozen-contract |
+| `regression` (rotation) | 5 | Double-accept, stale-cancel, same-address, impostor, frozen-contract |
 | `admin_rotation_history` | 14 | History log: persistence, pagination, eviction, reverts, events |
-| `admin_rotation_two_phase` | 14 | Delay: set/get, boundary, rejection before delay, chained rotations, auth |
 
 **Minimum required coverage:** 95% (validated via `cargo tarpaulin`).
 
@@ -446,9 +443,6 @@ cargo test admin_rotation
 
 # Admin rotation history tests only
 cargo test admin_rotation_history
-
-# Two-phase delay tests only
-cargo test admin_rotation_two_phase
 
 # Regression tests only
 cargo test regression
