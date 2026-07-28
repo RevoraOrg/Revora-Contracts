@@ -738,3 +738,78 @@ fn freeze_is_scoped_to_offering() {
     // Should NOT be frozen on token_b
     assert!(!client.is_holder_frozen(&issuer, &ns, &token_b, &holder));
 }
+
+// ─── #605 set_freeze reason tests ────────────────────────────────────────────
+
+/// Helper: fresh env + initialized client (not yet frozen).
+fn unfrozen_client(
+    env: &Env,
+) -> (
+    RevoraRevenueShareClient<'_>,
+    Address, // admin
+) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let safety = Address::generate(env);
+    client.initialize(&admin, &Some(safety), &None::<bool>);
+    (client, admin)
+}
+
+/// `set_freeze` persists the reason and emits a `frz_set` event carrying it.
+#[test]
+fn set_freeze_records_reason_and_emits_event() {
+    let env = Env::default();
+    let (client, _admin) = unfrozen_client(&env);
+
+    // No reason stored before freeze.
+    assert!(client.get_freeze_reason().is_none());
+
+    client.set_freeze(&FreezeReason::LegalHold);
+
+    // Contract must be frozen.
+    assert!(client.is_frozen());
+    // Reason must be persisted.
+    assert_eq!(client.get_freeze_reason(), Some(FreezeReason::LegalHold));
+
+    // A frz_set event must have been emitted.
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_set")
+        }
+    });
+    assert!(found, "expected frz_set event after set_freeze");
+}
+
+/// Sequential `set_freeze` calls with different reasons overwrite the stored reason.
+#[test]
+fn set_freeze_sequential_different_reasons() {
+    let env = Env::default();
+    let (client, _admin) = unfrozen_client(&env);
+
+    client.set_freeze(&FreezeReason::DisputeOpen);
+    assert_eq!(client.get_freeze_reason(), Some(FreezeReason::DisputeOpen));
+
+    client.set_freeze(&FreezeReason::SanctionsMatch);
+    assert_eq!(client.get_freeze_reason(), Some(FreezeReason::SanctionsMatch));
+}
+
+/// `freeze()` (the no-arg legacy entrypoint) must record `Compliance` as the reason.
+#[test]
+fn default_freeze_sets_compliance_reason() {
+    let env = Env::default();
+    let (client, _admin) = unfrozen_client(&env);
+
+    client.freeze();
+
+    assert!(client.is_frozen());
+    assert_eq!(
+        client.get_freeze_reason(),
+        Some(FreezeReason::Compliance),
+        "freeze() must record Compliance as the default reason"
+    );
+}
