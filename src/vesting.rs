@@ -23,6 +23,8 @@ pub enum VestingKey {
     OfferingScheduleCount(VestingOfferingId),
     /// A scheduled beneficiary entry for an issuer/token pair.
     OfferingScheduleItem(VestingOfferingId, u32),
+    /// Idempotency key for vesting acceleration (beneficiary, trigger_id)
+    Acceleration(Address, Symbol),
 }
 
 /// A simple vesting offering identifier with issuer and token.
@@ -46,6 +48,7 @@ pub struct VestingSchedule {
     pub cliff_ts: u64,
     pub start_ts: u64,
     pub end_ts: u64,
+    pub accelerated_amount: i128,
 }
 
 /// Errors produced by the vesting module.
@@ -67,6 +70,10 @@ pub enum VestingError {
     Unauthorized = 105,
     /// A vesting schedule is pre-cliff and blocks issuer transfer migration.
     SchedulePreCliff = 106,
+    /// Acceleration trigger already processed for this beneficiary.
+    AlreadyAccelerated = 107,
+    /// Acceleration bps must not exceed 10000.
+    InvalidAccelerationBps = 108,
 }
 
 /// Shared schema version for vesting events.
@@ -75,6 +82,7 @@ pub const VESTING_EVENT_SCHEMA_VERSION: u32 = 1;
 // Legacy event symbols (for backward compatibility).
 const EVENT_VESTING_CREATED: Symbol = symbol_short!("vest_crt");
 const EVENT_VESTING_CLAIMED: Symbol = symbol_short!("vest_clm");
+const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_accel");
 
 #[contract]
 pub struct VestingContract;
@@ -115,6 +123,7 @@ impl VestingContract {
             cliff_ts,
             start_ts,
             end_ts,
+            accelerated_amount: 0,
         };
         env.storage().persistent().set(&key, &schedule);
         env.storage().persistent().set(&VestingKey::Claimed(beneficiary.clone()), &0_i128);
@@ -130,6 +139,43 @@ impl VestingContract {
             (EVENT_VESTING_CREATED, beneficiary),
             (total_amount, cliff_ts, start_ts, end_ts),
         );
+
+        Ok(())
+    }
+
+    /// Accelerate vesting for a beneficiary by a given bps (up to 10000) based on a trigger.
+    pub fn accelerate_vesting(
+        env: Env,
+        beneficiary: Address,
+        trigger_id: Symbol,
+        acceleration_bps: u32,
+    ) -> Result<(), VestingError> {
+        if acceleration_bps > 10000 {
+            return Err(VestingError::InvalidAccelerationBps);
+        }
+
+        let sched_key = VestingKey::Schedule(beneficiary.clone());
+        let mut schedule: VestingSchedule =
+            env.storage().persistent().get(&sched_key).ok_or(VestingError::ScheduleNotFound)?;
+
+        schedule.issuer.require_auth();
+
+        let accel_key = VestingKey::Acceleration(beneficiary.clone(), trigger_id.clone());
+        if env.storage().persistent().has(&accel_key) {
+            return Err(VestingError::AlreadyAccelerated);
+        }
+
+        let raw_accel = schedule.total_amount.checked_mul(acceleration_bps as i128).unwrap_or(0) / 10000;
+        
+        schedule.accelerated_amount = schedule.accelerated_amount.saturating_add(raw_accel);
+        if schedule.accelerated_amount > schedule.total_amount {
+            schedule.accelerated_amount = schedule.total_amount;
+        }
+
+        env.storage().persistent().set(&accel_key, &true);
+        env.storage().persistent().set(&sched_key, &schedule);
+
+        env.events().publish((EVENT_VESTING_ACCEL, beneficiary, trigger_id), raw_accel);
 
         Ok(())
     }
@@ -292,21 +338,27 @@ pub fn migrate_offering_schedules(
 
 /// Helper: compute total vested tokens at a given timestamp.
 fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
-    if now < schedule.cliff_ts {
-        return 0;
+    let mut base_vested = 0;
+    if now >= schedule.cliff_ts {
+        if now >= schedule.end_ts {
+            base_vested = schedule.total_amount;
+        } else if now > schedule.start_ts {
+            let elapsed = (now - schedule.start_ts) as i128;
+            let duration = (schedule.end_ts - schedule.start_ts) as i128;
+            if duration == 0 {
+                base_vested = schedule.total_amount;
+            } else {
+                base_vested = schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0);
+            }
+        }
     }
-    if now >= schedule.end_ts {
-        return schedule.total_amount;
+    
+    let total = base_vested.saturating_add(schedule.accelerated_amount);
+    if total > schedule.total_amount {
+        schedule.total_amount
+    } else {
+        total
     }
-    if now <= schedule.start_ts {
-        return 0;
-    }
-    let elapsed = (now - schedule.start_ts) as i128;
-    let duration = (schedule.end_ts - schedule.start_ts) as i128;
-    if duration == 0 {
-        return schedule.total_amount;
-    }
-    schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
 }
 
 /// Helper: compute claimable tokens given prior claimed amount.
