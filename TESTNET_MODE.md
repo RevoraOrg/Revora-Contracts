@@ -267,7 +267,7 @@ DataKey::TestnetMode -> bool
 
 ### Overview
 
-`faucet_seed_holders(issuer, namespace, token, count)` allocates `count` deterministic
+`faucet_seed_holders(requester, issuer, namespace, token, count)` allocates `count` deterministic
 32-byte seeds for an offering's holder slots. It is **strictly testnet-only** — calling it
 while `testnet_mode == false` returns `RevoraError::TestnetOnly` (wire value 51).
 
@@ -315,6 +315,8 @@ retrieved by index without re-calling the function.
 
 - Guarded by `is_testnet_mode()` — panics with `TestnetOnly` on mainnet.
 - Requires the offering to be registered (`OfferingNotFound` otherwise).
+- Requests are throttled per `requester` address with a 1-hour cooldown.
+- Repeated requests inside the cooldown return `RevoraError::FaucetCooldownActive` and emit a `fct_cdrj` event.
 - `count == 0` is a no-op (returns empty vec, emits no events).
 
 ### Example Usage

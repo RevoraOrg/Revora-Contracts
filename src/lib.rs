@@ -176,6 +176,8 @@ pub enum RevoraError {
     BlacklistSizeLimitExceeded = 45,
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
+    /// The requester is still within the faucet cooldown window.
+    FaucetCooldownActive = 56,
     /// Total supply shares would exceed the offering's max total supply shares.
     MaxTotalSupplySharesExceeded = 51,
 
@@ -257,6 +259,7 @@ const EVENT_REVENUE_REPORT_REJECTED: Symbol = symbol_short!("rev_rej");
 const EVENT_REVENUE_REPORT_MISSING_OVERRIDE: Symbol = symbol_short!("rev_omiss");
 const EVENT_REVENUE_REPORT_REJECTED_ASSET: Symbol = symbol_short!("rev_reja");
 pub const EVENT_SCHEMA_VERSION_V2: u32 = 2;
+const DEFAULT_FAUCET_COOLDOWN_SECONDS: u64 = 3_600;
 
 // Versioned event symbols (v2). All core events emit with leading `version` field.
 const EVENT_OFFER_REG_V2: Symbol = symbol_short!("ofr_reg2");
@@ -340,6 +343,7 @@ const EVENT_ISSUER_TRANSFER_VESTING_MIGRATED: Symbol = symbol_short!("iss_vst");
 const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 /// Emitted for each deterministic seed produced by `faucet_seed_holders` (testnet only).
 const EVENT_FAUCET_SEED: Symbol = symbol_short!("fct_seed");
+const EVENT_FAUCET_COOLDOWN_REJECT: Symbol = symbol_short!("fct_cdrj");
 
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
 const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
@@ -1104,6 +1108,8 @@ pub enum DataKey2 {
     MinRevenueThreshold(OfferingId),
     /// Per-offering cumulative deposited revenue tracker.
     DepositedRevenue(OfferingId),
+    /// Timestamp of the last faucet request for a requester address.
+    FaucetLastRequest(Address),
     /// Per-offering investment constraints (min/max stake).
     InvestmentConstraints(OfferingId),
     /// Per-offering supply cap (0 = uncapped).
@@ -9392,6 +9398,7 @@ impl RevoraRevenueShare {
     /// `Vec<BytesN<32>>` of per-slot seeds in index order.
     pub fn faucet_seed_holders(
         env: Env,
+        requester: Address,
         issuer: Address,
         namespace: Symbol,
         token: Address,
@@ -9410,6 +9417,31 @@ impl RevoraRevenueShare {
         if !env.storage().persistent().has(&DataKey2::OfferingRecord(offering_id.clone())) {
             return Err(RevoraError::OfferingNotFound);
         }
+
+        let now = env.ledger().timestamp();
+        let last_request_ts: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::FaucetLastRequest(requester.clone()));
+        if let Some(last_ts) = last_request_ts {
+            if now.saturating_sub(last_ts) < DEFAULT_FAUCET_COOLDOWN_SECONDS {
+                env.events().publish(
+                    (
+                        EVENT_FAUCET_COOLDOWN_REJECT,
+                        requester.clone(),
+                        issuer.clone(),
+                        namespace.clone(),
+                        token.clone(),
+                    ),
+                    (last_ts, now, DEFAULT_FAUCET_COOLDOWN_SECONDS),
+                );
+                return Err(RevoraError::FaucetCooldownActive);
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::FaucetLastRequest(requester), &now);
 
         if count == 0 {
             return Ok(Vec::new(&env));

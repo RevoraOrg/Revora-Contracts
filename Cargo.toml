@@ -9,9 +9,6 @@ kani = []
 
 # `kani` is a cfg set by the Kani verifier (not a Cargo feature), so declare it as a
 # known cfg to keep `unexpected_cfgs` quiet under `clippy --all-features -D warnings`.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
-
 [package.metadata.kani]
 unwind = 4
 
