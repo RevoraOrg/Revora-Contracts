@@ -166,6 +166,8 @@ pub enum RevoraError {
     NoAdminRotationPending = 35,
     /// Admin rotation failed: caller is not the pending new admin.
     UnauthorizedRotationAccept = 36,
+    /// Admin rotation failed: the configured delay has not elapsed since the proposal.
+    AdminRotationDelayNotElapsed = 58,
     /// Offering is frozen.
     OfferingFrozen = 42,
     /// Issuer transfer has expired.
@@ -401,6 +403,10 @@ const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 /// Emitted when an admin rotation is logged to persistent history.
 const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
+/// Emitted when a two-phase admin rotation is finalized (delay elapsed).
+const EVENT_ADMIN_FINALIZE: Symbol = symbol_short!("adm_fin");
+/// Emitted when the admin rotation delay is configured.
+const EVENT_ADMIN_ROTATION_DELAY_SET: Symbol = symbol_short!("adm_dly");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -452,7 +458,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 3;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -886,7 +892,7 @@ pub struct SnapshotEntry {
 
 /// Immutable record of a completed admin rotation, persisted in an append-only log.
 ///
-/// Written once in `accept_admin_rotation` and read via `get_admin_rotation_history_page`.
+/// Written once in finalize and read via `get_admin_rotation_history_page`.
 /// The log is bounded — see `MAX_ADMIN_ROTATION_LOG`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -895,8 +901,22 @@ pub struct AdminRotationEntry {
     pub prior_admin: Address,
     /// Admin address after the rotation.
     pub new_admin: Address,
-    /// Ledger timestamp when `accept_admin_rotation` executed.
+    /// Ledger timestamp when `finalize_admin_rotation` executed.
     pub rotated_at: u64,
+}
+
+/// Pending admin rotation with proposal timestamp for delay enforcement.
+///
+/// Stored under `DataKey::PendingAdmin` during the propose→finalize window.
+/// The `proposed_at` field is compared against the configured delay
+/// (see `DataKey2::AdminRotationDelay`) in `finalize_admin_rotation`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingAdminRotation {
+    /// The proposed new admin address.
+    pub new_admin: Address,
+    /// Ledger timestamp when `propose_admin_rotation` was called.
+    pub proposed_at: u64,
 }
 
 /// Tiered pause state for the contract.
@@ -1098,6 +1118,9 @@ pub enum DataKey2 {
     AdminRotationLog(u64),
     /// Monotonically increasing counter for admin rotation entries.
     AdminRotationCount,
+    /// Configurable delay in seconds that must elapse between proposal and finalization.
+    /// Set by the admin via `set_admin_rotation_delay`. 0 means no delay (immediate).
+    AdminRotationDelay,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -8913,12 +8936,13 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&key)
     }
 
-    // â”€â”€ Admin rotation safety flow (Issue #191) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Admin rotation safety flow (Issue #191, #557) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    /// Propose a two-step admin rotation to `new_admin`.
+    /// Propose a two-phase admin rotation to `new_admin`.
     ///
-    /// The current admin initiates; `new_admin` must call [`accept_admin_rotation`] to complete.
-    /// Only one rotation may be pending at a time.
+    /// The current admin initiates; `new_admin` must call finalize after
+    /// the configured delay to complete the transfer. The proposal timestamp is recorded for
+    /// delay enforcement. Only one rotation may be pending at a time.
     ///
     /// ### Auth
     /// Current admin (`require_auth`).
@@ -8946,14 +8970,22 @@ impl RevoraRevenueShare {
             return Err(RevoraError::AdminRotationPending);
         }
 
-        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        let pending = PendingAdminRotation {
+            new_admin: new_admin.clone(),
+            proposed_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&DataKey::PendingAdmin, &pending);
 
         env.events().publish((symbol_short!("adm_prop"), admin), new_admin);
 
         Ok(())
     }
 
-    /// Accept a pending admin rotation. Completes the transfer and grants admin to `new_admin`.
+    /// Finalize a pending two-phase admin rotation after the configured delay has elapsed.
+    ///
+    /// The new admin must authorize and match the pending proposed address. The delay
+    /// (configured via [`set_admin_rotation_delay`]) is checked against the proposal
+    /// timestamp stored in `propose_admin_rotation`.
     ///
     /// ### Auth
     /// `new_admin` must authorize (`require_auth`). Caller must match the pending proposed address.
@@ -8961,24 +8993,39 @@ impl RevoraRevenueShare {
     /// ### Errors
     /// - `NoAdminRotationPending` â€” no rotation was proposed.
     /// - `UnauthorizedRotationAccept` â€” caller does not match the pending proposed address.
+    /// - `AdminRotationDelayNotElapsed` â€” the configured delay has not yet passed.
     /// - `ContractFrozen` â€” contract is frozen.
     ///
     /// ### Events
-    /// Emits `adm_acc`: `(adm_acc, old_admin)` â†’ `new_admin`.
-    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), RevoraError> {
+    /// Emits `adm_fin`: `(adm_fin, old_admin)` â†’ `new_admin`.
+    /// Emits `adm_log` (v2): the persisted `AdminRotationEntry`.
+    pub fn finalize_admin_rotation(env: Env, new_admin: Address) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
-        let pending: Address = env
+        let pending: PendingAdminRotation = env
             .storage()
             .persistent()
             .get(&DataKey::PendingAdmin)
             .ok_or(RevoraError::NoAdminRotationPending)?;
 
-        if new_admin != pending {
+        if new_admin != pending.new_admin {
             return Err(RevoraError::UnauthorizedRotationAccept);
         }
 
         new_admin.require_auth();
+
+        // Enforce mandatory delay
+        let delay: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationDelay)
+            .unwrap_or(0u64);
+        if delay > 0 {
+            let elapsed = env.ledger().timestamp().saturating_sub(pending.proposed_at);
+            if elapsed < delay {
+                return Err(RevoraError::AdminRotationDelayNotElapsed);
+            }
+        }
 
         let old_admin: Address =
             env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
@@ -9004,13 +9051,13 @@ impl RevoraRevenueShare {
             env.storage().persistent().remove(&DataKey2::AdminRotationLog(evict_id));
         }
 
-        env.events().publish((symbol_short!("adm_acc"), old_admin), new_admin);
+        env.events().publish((EVENT_ADMIN_FINALIZE, old_admin), new_admin);
         Self::emit_v2_event(&env, (EVENT_ADMIN_ROTATION_LOGGED,), entry);
 
         Ok(())
     }
 
-    /// Cancel a pending admin rotation before it is accepted.
+    /// Cancel a pending admin rotation before it is finalized.
     ///
     /// ### Auth
     /// Current admin (`require_auth`).
@@ -9029,7 +9076,7 @@ impl RevoraRevenueShare {
 
         admin.require_auth();
 
-        let pending: Address = env
+        let pending: PendingAdminRotation = env
             .storage()
             .persistent()
             .get(&DataKey::PendingAdmin)
@@ -9037,7 +9084,7 @@ impl RevoraRevenueShare {
 
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
-        env.events().publish((symbol_short!("adm_canc"), admin), pending);
+        env.events().publish((symbol_short!("adm_canc"), admin), pending.new_admin);
 
         Ok(())
     }
@@ -9047,7 +9094,49 @@ impl RevoraRevenueShare {
     /// ### Auth
     /// None â€” read-only.
     pub fn get_pending_admin_rotation(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get::<DataKey, PendingAdminRotation>(&DataKey::PendingAdmin)
+            .map(|p| p.new_admin)
+    }
+
+    /// Return the full [`PendingAdminRotation`] details (new admin + proposal timestamp),
+    /// or `None` if no rotation is pending.
+    ///
+    /// ### Auth
+    /// None â€” read-only.
+    pub fn get_pending_admin_rotation_details(env: Env) -> Option<PendingAdminRotation> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
+    /// Configure the mandatory delay (in seconds) that must elapse between
+    /// [`propose_admin_rotation`] and [`finalize_admin_rotation`].
+    ///
+    /// Once set, any new proposal must wait at least `delay_secs` before the rotation
+    /// can be finalized. The delay applies to proposals made **after** it is configured.
+    /// Set to 0 to disable the delay (immediate finalization, default behavior).
+    ///
+    /// ### Auth
+    /// Current admin (`require_auth`).
+    ///
+    /// ### Events
+    /// Emits `adm_dly`: `(adm_dly, admin)` â†’ `delay_secs`.
+    pub fn set_admin_rotation_delay(env: Env, delay_secs: u64) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().persistent().set(&DataKey2::AdminRotationDelay, &delay_secs);
+        env.events().publish((EVENT_ADMIN_ROTATION_DELAY_SET, admin), delay_secs);
+        Ok(())
+    }
+
+    /// Return the configured admin rotation delay in seconds, or 0 if not set.
+    ///
+    /// ### Auth
+    /// None â€” read-only.
+    pub fn get_admin_rotation_delay(env: Env) -> u64 {
+        env.storage().persistent().get(&DataKey2::AdminRotationDelay).unwrap_or(0u64)
     }
 
     /// Return a page of the append-only admin rotation history log.
