@@ -23,10 +23,10 @@
 /// - Clear error messages aid debugging and forensic analysis
 use core::fmt::Debug;
 
-use crate::RevoraError;
+use crate::{DataKey2, RevoraError};
 #![deny(clippy::arithmetic_side_effects)]
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Bytes, BytesN, Env};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. INPUT VALIDATION ASSERTIONS
@@ -589,6 +589,35 @@ pub mod abort_handling {
     #[allow(dead_code)]
     pub fn log_operation_failure(context: &str, error: RevoraError) {
         let _ = (context, error); // Use in test contexts
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. ORACLE SIGNATURE VALIDATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub mod oracle_validation {
+    use super::*;
+
+    /// Verify an off-chain oracle signature for a quote.
+    pub fn verify_oracle_signature(
+        env: &Env,
+        quote: &Bytes,
+        sig: &BytesN<64>,
+        oracle_id: &Address,
+    ) -> Result<(), RevoraError> {
+        let pk_key = DataKey2::OraclePubKey(oracle_id.clone());
+        let pubkey: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&pk_key)
+            .ok_or(RevoraError::SignerKeyNotRegistered)?;
+
+        // Note: Soroban's ed25519_verify panics (traps) on invalid signature.
+        // It does not return a Result that we can convert to RevoraError.
+        // If it fails, the contract aborts. 
+        env.crypto().ed25519_verify(&pubkey, quote, sig);
+        Ok(())
     }
 }
 
