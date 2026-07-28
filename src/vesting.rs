@@ -37,6 +37,15 @@ pub struct VestingOfferingId {
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VestingCurve {
+    Linear,
+    Cliff,
+    Graded { step_secs: u64 },
+    Step { steps: u32 },
+}
+
 /// A single vesting tranche for a beneficiary.
 #[contracttype]
 #[derive(Clone)]
@@ -48,6 +57,7 @@ pub struct VestingSchedule {
     pub cliff_ts: u64,
     pub start_ts: u64,
     pub end_ts: u64,
+    pub curve: VestingCurve,
     pub accelerated_amount: i128,
 }
 
@@ -99,6 +109,7 @@ impl VestingContract {
         cliff_ts: u64,
         start_ts: u64,
         end_ts: u64,
+        curve: VestingCurve,
     ) -> Result<(), VestingError> {
         issuer.require_auth();
 
@@ -137,7 +148,7 @@ impl VestingContract {
 
         env.events().publish(
             (EVENT_VESTING_CREATED, beneficiary),
-            (total_amount, cliff_ts, start_ts, end_ts),
+            (total_amount, cliff_ts, start_ts, end_ts, curve),
         );
 
         Ok(())
