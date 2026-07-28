@@ -233,6 +233,11 @@ mod test_close_period;
 mod test_disclosure;
 #[cfg(test)]
 mod test_quorum_check;
+/// Self-test module providing a `self_test()` entrypoint that runs contract-internal
+#[cfg(test)]
+mod test_self_test;
+/// invariant checks against a fixed canary dataset embedded in the WASM binary.
+pub mod self_test;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -9979,6 +9984,30 @@ impl RevoraRevenueShare {
         }
         Ok(())
     }
+
+// ── Contract self-test entrypoint (#618) ─────────────────────────────────────
+#[contractimpl]
+impl RevoraRevenueShare {
+    /// Run contract-invariant self-test against the embedded canary dataset.
+    ///
+    /// Returns `0` on success or a non-zero reason code indicating the first
+    /// invariant check that failed. This is a read-only entrypoint that does
+    /// not require authorization and does not read or write contract storage.
+    ///
+    /// The canary dataset is embedded in the WASM binary at compile time via
+    /// `include_bytes!` and contains known-good test vectors for all key
+    /// invariant checks (BPS validation, amount validation, safe math, semver,
+    /// concentration limits, multisig thresholds, etc.).
+    ///
+    /// ## Post-deployment usage
+    /// Off-chain monitoring services can call this method periodically to
+    /// verify that the deployed contract binary has not been corrupted and
+    /// that its internal invariant checks behave correctly.
+    pub fn self_test(env: Env) -> u32 {
+        let _ = env; // Unused but required for Soroban contractimpl ABI
+        crate::self_test::self_test_status()
+    }
+}
 }
 
 #[cfg(test)]
