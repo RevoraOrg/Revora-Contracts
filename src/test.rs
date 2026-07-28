@@ -11496,6 +11496,7 @@ mod regression {
 fn rotation_setup() -> (Env, RevoraRevenueShareClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().with_mut(|ledger| ledger.timestamp = 1_000_000);
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
@@ -11525,7 +11526,7 @@ mod admin_rotation {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         assert_eq!(client.get_admin(), Some(new_admin));
         assert_eq!(client.get_pending_admin_rotation(), None);
@@ -11561,13 +11562,13 @@ mod admin_rotation {
     }
 
     #[test]
-    fn accept_emits_adm_acc_event() {
+    fn finalize_emits_adm_fin_event() {
         let (env, client, _admin) = rotation_setup();
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
         let before = env.events().all().len();
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         assert!(env.events().all().len() > before);
     }
@@ -11598,11 +11599,11 @@ mod admin_rotation {
         let admin3 = Address::generate(&env);
 
         client.propose_admin_rotation(&admin2);
-        client.accept_admin_rotation(&admin2);
+        client.finalize_admin_rotation(&admin2);
         assert_eq!(client.get_admin(), Some(admin2.clone()));
 
         client.propose_admin_rotation(&admin3);
-        client.accept_admin_rotation(&admin3);
+        client.finalize_admin_rotation(&admin3);
         assert_eq!(client.get_admin(), Some(admin3));
     }
 
@@ -11635,7 +11636,7 @@ mod admin_rotation_auth {
 
         client.propose_admin_rotation(&new_admin);
 
-        let result = client.try_accept_admin_rotation(&impostor);
+        let result = client.try_finalize_admin_rotation(&impostor);
         assert_eq!(result, Err(Ok(RevoraError::UnauthorizedRotationAccept)));
     }
 
@@ -11644,7 +11645,7 @@ mod admin_rotation_auth {
         let (env, client, _admin) = rotation_setup();
         let addr = Address::generate(&env);
 
-        let result = client.try_accept_admin_rotation(&addr);
+        let result = client.try_finalize_admin_rotation(&addr);
         assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
     }
 
@@ -11702,7 +11703,7 @@ mod admin_rotation_edge {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         assert_eq!(client.get_pending_admin_rotation(), None);
     }
@@ -11729,7 +11730,7 @@ mod admin_rotation_edge {
         client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         // Offering should still be accessible after rotation
         let offering = client.get_offering(&issuer, &symbol_short!("def"), &token);
@@ -11742,7 +11743,7 @@ mod admin_rotation_edge {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         // get_admin must return new_admin, not old
         assert_eq!(client.get_admin(), Some(new_admin));
@@ -11755,7 +11756,7 @@ mod admin_rotation_edge {
         let admin3 = Address::generate(&env);
 
         client.propose_admin_rotation(&admin2);
-        client.accept_admin_rotation(&admin2);
+        client.finalize_admin_rotation(&admin2);
 
         // admin2 is now admin; propose again
         let result = client.try_propose_admin_rotation(&admin3);
@@ -11775,7 +11776,7 @@ mod admin_rotation_integration {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         // new admin should be able to freeze (admin-gated)
         let result = client.try_freeze();
@@ -11789,7 +11790,7 @@ mod admin_rotation_integration {
 
         for next in &admins {
             client.propose_admin_rotation(next);
-            client.accept_admin_rotation(next);
+            client.finalize_admin_rotation(next);
         }
 
         assert_eq!(client.get_admin(), Some(admins[4].clone()));
@@ -11809,7 +11810,7 @@ mod admin_rotation_integration {
         client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         // Blacklist state must be unaffected
         assert!(client.is_blacklisted(&issuer, &symbol_short!("def"), &token, &investor));
@@ -11851,10 +11852,10 @@ mod admin_rotation_regression {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         // PendingAdmin is gone; second accept must fail
-        let result = client.try_accept_admin_rotation(&new_admin);
+        let result = client.try_finalize_admin_rotation(&new_admin);
         assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
     }
 
@@ -11865,7 +11866,7 @@ mod admin_rotation_regression {
         let new_admin = Address::generate(&env);
 
         client.propose_admin_rotation(&new_admin);
-        client.accept_admin_rotation(&new_admin);
+        client.finalize_admin_rotation(&new_admin);
 
         let result = client.try_cancel_admin_rotation();
         assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
@@ -11892,7 +11893,7 @@ mod admin_rotation_regression {
         client.propose_admin_rotation(&new_admin);
         client.freeze();
 
-        let result = client.try_accept_admin_rotation(&new_admin);
+        let result = client.try_finalize_admin_rotation(&new_admin);
         assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     }
 
