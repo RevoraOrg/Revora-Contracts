@@ -210,6 +210,7 @@ pub enum RevoraError {
 }
 
 pub mod vesting;
+pub mod tax_bucket;
 
 #[cfg(feature = "kani")]
 pub mod kani_harness;
@@ -1116,6 +1117,8 @@ pub enum DataKey2 {
     SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+    /// Per-holder remaining cost basis for tax-bucket tracking.
+    RemainingBasis(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6838,8 +6841,37 @@ impl RevoraRevenueShare {
             share_bps,
             Some(share_class),
         )
+        )
     }
 
+    /// Set a holder's cost basis for an offering.
+    pub fn set_holder_cost_basis(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        cost_basis: i128,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        Self::get_current_issuer(
+            &env,
+            issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+        )
+        .ok_or(RevoraError::OfferingNotFound)?;
+
+        crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, cost_basis);
+        Ok(())
+    }
     /// Get a holder's revenue share in basis points for an offering.
     pub fn get_holder_share(
         env: Env,
@@ -7221,6 +7253,10 @@ impl RevoraRevenueShare {
 
         if last_claimed_idx == start_idx {
             return Err(RevoraError::ClaimDelayNotElapsed);
+        }
+
+        if total_payout > 0 {
+            crate::tax_bucket::rollover_distribution(&env, &offering_id, &holder, total_payout);
         }
 
         // Transfer only if there is a positive payout
