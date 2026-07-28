@@ -156,8 +156,6 @@ pub enum RevoraError {
     ///
     /// Wire value: 51. Stable since v1.
     DisplayDecimalsOutOfRange = 51,
-    /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 34,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -292,6 +290,10 @@ pub enum RevoraError {
     InsufficientClassBalance = 74,
     /// Current time is outside the configured redemption window.
     RedemptionWindowClosed = 75,
+    /// `display_decimals` does not match the on-chain payment token's `decimals()`.
+    ///
+    /// Wire value: 76. Stable since v1.
+    DecimalsMismatch = 76,
 }
 
 pub mod vesting;
@@ -2045,7 +2047,6 @@ impl RevoraRevenueShare {
                     break;
                 }
             }
-            None => {}
         }
 
         let new_total =
@@ -3805,6 +3806,18 @@ impl RevoraRevenueShare {
         // Prevents callers from supplying nonsensical precision that confuses downstream display.
         if display_decimals > MAX_TOKEN_DECIMALS {
             return Err(RevoraError::DisplayDecimalsOutOfRange);
+        }
+
+        // Decimals consistency guard (#612): query the on-chain payout_asset's
+        // decimals() and compare with display_decimals. If the token contract
+        // reverts on decimals() (e.g. non-StellarAsset tokens), skip the check
+        // to remain robust to exotic token implementations.
+        if let Ok(on_chain_decimals) =
+            token::Client::new(&env, &payout_asset).try_decimals()
+        {
+            if on_chain_decimals != display_decimals {
+                return Err(RevoraError::DecimalsMismatch);
+            }
         }
 
         // Skip bps validation in testnet mode (reads the real flag from storage).
@@ -6061,6 +6074,7 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+        }
 
         // Zero-value transfer is meaningless
         if amount_bps == 0 {
@@ -7305,7 +7319,6 @@ impl RevoraRevenueShare {
             holder,
             share_bps,
             Some(share_class),
-        )
         )
     }
 
@@ -12202,6 +12215,7 @@ impl RevoraRevenueShare {
         }
         Ok(())
     }
+}
 
 // ── Contract self-test entrypoint (#618) ─────────────────────────────────────
 #[contractimpl]
@@ -12225,7 +12239,6 @@ impl RevoraRevenueShare {
         let _ = env; // Unused but required for Soroban contractimpl ABI
         crate::self_test::self_test_status()
     }
-}
 }
 
 #[cfg(test)]
