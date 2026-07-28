@@ -383,6 +383,11 @@ const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 /// Emitted when a share transfer with attestation occurs.
 const EVENT_XFER_ATT: Symbol = symbol_short!("xfer_att");
 
+/// Emitted when the V2-compat downgrade flag is toggled by admin.
+/// topic: (ev_v2c, admin)
+/// data:  (enabled: bool)
+const EVENT_V2_COMPAT_SET: Symbol = symbol_short!("ev_v2c");
+
 /// Emitted when a redemption window is set for an offering.
 const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
 /// Emitted when a holder requests a redemption.
@@ -1049,6 +1054,12 @@ pub enum DataKey2 {
     /// Packed flags: (event_versioning_enabled: bool, event_only_mode: bool).
     ContractFlags,
 
+    /// When `true`, V2-shaped indexed events are also emitted alongside V3 events,
+    /// providing a downgrade path for indexers that have not yet migrated to V3.
+    /// Defaults to `true` during the deprecation window.
+    /// Set by admin via `set_emit_v2_compat`.
+    EmitV2Compat,
+
     /// Direct offering index: (issuer, namespace, token) -> Offering for O(1) get_offering (#360).
     OfferingRecord(OfferingId),
 
@@ -1575,6 +1586,37 @@ impl RevoraRevenueShare {
 
     fn is_event_versioning_enabled(_env: Env) -> bool {
         true
+    }
+
+    /// Return `true` if V2-compat downgrade mode is enabled.
+    ///
+    /// When enabled, V2-shaped indexed events (`EVENT_INDEXED_V2`) are emitted
+    /// alongside V3 events, allowing indexers pinned to V2 to continue working
+    /// during the deprecation window.
+    ///
+    /// Defaults to `true` (emit V2 events). Admin can disable via `set_emit_v2_compat`.
+    fn is_emit_v2_compat(env: &Env) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::EmitV2Compat)
+            .unwrap_or(true)
+    }
+
+    /// Emit both V2 and V3 indexed events, suppressing the V2 emission when the
+    /// `emit_v2_compat` flag is disabled.
+    ///
+    /// V3 events are always emitted. V2 events are only emitted when `emit_v2_compat`
+    /// is `true` (the default during the deprecation window).
+    fn emit_v2_and_v3<T>(env: &Env, v2_topic: EventIndexTopicV2, v3_topic: EventIndexTopicV3, data: T)
+    where
+        T: IntoVal<Env, soroban_sdk::Val> + Clone,
+    {
+        // V3 is always emitted — it is the current canonical event schema.
+        env.events().publish((EVENT_INDEXED_V3, v3_topic), data.clone());
+        // V2 is only emitted when the compat flag is on (downgrade path).
+        if Self::is_emit_v2_compat(env) {
+            env.events().publish((EVENT_INDEXED_V2, v2_topic), data);
+        }
     }
 
     /// Advance the cumulative accrual index for an offering and emit an `acc_idx` indexed event.
@@ -3329,6 +3371,37 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Paused, &PauseState::NotPaused);
         env.events().publish((EVENT_UNPAUSED, caller.clone()), ());
         env.events().publish((EVENT_PAUSED2, caller.clone()), (PauseState::NotPaused,));
+        Ok(())
+    }
+
+    /// Toggle the V2-compat downgrade flag.
+    ///
+    /// When enabled (`true`), V2-shaped indexed events (`EVENT_INDEXED_V2`) are
+    /// emitted alongside V3 events, allowing indexers pinned to V2 to continue
+    /// working during the deprecation window. When disabled (`false`), only V3
+    /// events are emitted, and indexers must have migrated to V3.
+    ///
+    /// Defaults to `true` at initialization.
+    ///
+    /// ### Auth
+    /// Requires `caller` to match the contract admin.
+    ///
+    /// ### Events
+    /// Emits `EVENT_V2_COMPAT_SET` on success.
+    ///
+    /// ### Deprecation
+    /// This flag is intended for a limited deprecation window. Once all indexers
+    /// have migrated to V3, the flag should be set to `false` and eventually
+    /// the V2 emission path and this flag can be removed entirely.
+    pub fn set_emit_v2_compat(env: Env, caller: Address, enabled: bool) -> Result<(), RevoraError> {
+        caller.require_auth();
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+        env.storage().persistent().set(&DataKey2::EmitV2Compat, &enabled);
+        env.events().publish((EVENT_V2_COMPAT_SET, caller), enabled);
         Ok(())
     }
 
