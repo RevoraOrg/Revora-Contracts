@@ -27,12 +27,6 @@ soroban-sdk = { version = "21.0.0", features = ["testutils", "alloc"] }
 opt-level = "z"
 overflow-checks = true
 
-# Tell rustc/clippy that `cfg(kani)` is a known condition (set by the Kani
-# verification runner, not a Cargo feature). Without this, -D warnings fails on
-# `unexpected_cfgs` in the kani harness during regular CI.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
-
 [workspace]
 members = ["indexer"]
 
