@@ -207,6 +207,8 @@ pub enum RevoraError {
     DualSigSameSigner = 56,
     /// Dual-signature close is not configured for this offering.
     DualSigNotConfigured = 57,
+    /// Off-chain FX quote signature does not match the registered oracle key.
+    OracleSignatureMismatch = 58,
 }
 
 pub mod vesting;
@@ -1116,6 +1118,8 @@ pub enum DataKey2 {
     SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+    /// Registered oracle public key for off-chain FX attestations.
+    OraclePubkey(Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -7298,6 +7302,18 @@ impl RevoraRevenueShare {
     /// Set a holder's revenue share (in basis points) for an offering.
 
     // â”€â”€ Meta-authorization, claims, windows, and query methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Register an ed25519 public key for an oracle address.
+    /// The oracle (or an admin) must authorize this binding.
+    pub fn register_oracle_pubkey(
+        env: Env,
+        oracle_id: Address,
+        public_key: BytesN<32>,
+    ) -> Result<(), RevoraError> {
+        oracle_id.require_auth();
+        env.storage().persistent().set(&DataKey2::OraclePubkey(oracle_id.clone()), &public_key);
+        Ok(())
+    }
 
     /// Register an ed25519 public key for a signer address.
     /// The signer must authorize this binding.
