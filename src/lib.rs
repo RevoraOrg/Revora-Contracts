@@ -382,6 +382,7 @@ const EVENT_CLAIM_V2: Symbol = symbol_short!("claim2");
 const EVENT_SHARE_SET_V2: Symbol = symbol_short!("sh_set2");
 const EVENT_ACC_UPD: Symbol = symbol_short!("acc_upd");
 const EVENT_FREEZE_V2: Symbol = symbol_short!("frz2");
+const EVENT_FREEZE_REASON_V1: Symbol = symbol_short!("frz_rsn");
 const EVENT_CLAIM_DELAY_SET_V2: Symbol = symbol_short!("dly_set2");
 const EVENT_CONCENTRATION_WARNING_V2: Symbol = symbol_short!("conc2");
 const EVENT_DECIMAL_SET: Symbol = symbol_short!("pt_dec");
@@ -10160,10 +10161,11 @@ impl RevoraRevenueShare {
         (results, next_cursor)
     }
 
-    /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
-    /// Emits event. Claim and read-only functions remain allowed.
+    /// Freeze the contract with a specific reason: no further state-changing operations allowed.
+    /// Only admin may call. Emits freeze_reason_v1 event with reason and target address so
+    /// indexers can categorize halts without inspecting storage.
     /// If multisig is initialized, this function is disabled in favor of execute_action(Freeze).
-    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+    pub fn set_freeze(env: Env, reason: FreezeReason) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey2::MultisigThreshold) {
             return Err(RevoraError::LimitReached);
         }
@@ -10174,6 +10176,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::GlobalFreezeReason, &reason);
         env.events().publish((symbol_short!("frz_set"),), (admin, reason));
         Self::emit_v2_event(&env, (EVENT_FREEZE_V2,), true);
+        Self::emit_v2_event(&env, (EVENT_FREEZE_REASON_V1, admin), reason);
         Ok(())
     }
 

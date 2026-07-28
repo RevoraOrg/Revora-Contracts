@@ -339,6 +339,7 @@ fn v2_event_symbols_are_all_distinct() {
         symbol_short!("claim2"),
         symbol_short!("sh_set2"),
         symbol_short!("frz2"),
+        symbol_short!("frz_rsn"),
     ];
 
     let n = symbols.len();

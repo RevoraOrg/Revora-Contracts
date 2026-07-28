@@ -6,7 +6,7 @@
 /// ## Test coverage
 /// - Happy path: fresh contract deployment returns `0` (pass)
 /// - The entrypoint is callable without any preconditions (no auth, no storage)
-use crate::{DataKey, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{DataKey, FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Helper: deploy a fresh contract and return a client.
@@ -45,7 +45,7 @@ fn test_self_test_works_when_frozen() {
     let admin = Address::generate(&env);
     client.initialize(&admin, &None, &Some(false));
     // Freeze the contract through the proper entrypoint
-    client.set_freeze(&true);
+    client.set_freeze(&FreezeReason::Compliance);
     // self_test does NOT call require_not_frozen, so it should pass even when frozen.
     assert_eq!(client.self_test(), 0);
 }
