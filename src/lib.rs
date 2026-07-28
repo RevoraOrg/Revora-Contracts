@@ -406,6 +406,8 @@ const INDEXER_EVENT_SCHEMA_VERSION: u32 = 3;
 const EVENT_CONC_LIMIT_SET: Symbol = symbol_short!("conc_lim");
 const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
+/// Emitted when an admin rotation is logged to persistent history.
+const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -905,13 +907,28 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
+/// Immutable record of a completed admin rotation, persisted in an append-only log.
+///
+/// Written once in `accept_admin_rotation` and read via `get_admin_rotation_history_page`.
+/// The log is bounded — see `MAX_ADMIN_ROTATION_LOG`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminRotationEntry {
+    /// Admin address before the rotation.
+    pub prior_admin: Address,
+    /// Admin address after the rotation.
+    pub new_admin: Address,
+    /// Ledger timestamp when `accept_admin_rotation` executed.
+    pub rotated_at: u64,
+}
+
 /// Tiered pause state for the contract.
 ///
 /// - `NotPaused`  – all operations open.
 /// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
 /// - `HardPaused` – all state-mutating operations blocked, including `claim`.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PauseState {
     NotPaused,
     SoftPaused,
@@ -1116,6 +1133,10 @@ pub enum DataKey2 {
     SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+    /// Append-only admin rotation log entry keyed by rotation_id (sequential counter).
+    AdminRotationLog(u64),
+    /// Monotonically increasing counter for admin rotation entries.
+    AdminRotationCount,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1143,6 +1164,11 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// Maximum number of periods allowed in a single read-only chunked query.
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
+
+/// Maximum number of admin rotation history entries retained.
+/// Prevents unbounded storage growth. When the log reaches this limit, the oldest
+/// entries are evicted (FIFO) on each new rotation.
+const MAX_ADMIN_ROTATION_LOG: u64 = 100;
 
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -8858,7 +8884,26 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
+        // Persist append-only rotation log entry
+        let rotation_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationCount)
+            .unwrap_or(0u64)
+            + 1;
+        let rotated_at = env.ledger().timestamp();
+        let entry = AdminRotationEntry { prior_admin: old_admin.clone(), new_admin: new_admin.clone(), rotated_at };
+        env.storage().persistent().set(&DataKey2::AdminRotationLog(rotation_id), &entry);
+        env.storage().persistent().set(&DataKey2::AdminRotationCount, &rotation_id);
+
+        // Evict oldest entry to keep log bounded
+        if rotation_id > MAX_ADMIN_ROTATION_LOG {
+            let evict_id = rotation_id - MAX_ADMIN_ROTATION_LOG;
+            env.storage().persistent().remove(&DataKey2::AdminRotationLog(evict_id));
+        }
+
         env.events().publish((symbol_short!("adm_acc"), old_admin), new_admin);
+        Self::emit_v2_event(&env, (EVENT_ADMIN_ROTATION_LOGGED,), entry);
 
         Ok(())
     }
@@ -8901,6 +8946,65 @@ impl RevoraRevenueShare {
     /// None â€” read-only.
     pub fn get_pending_admin_rotation(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
+    /// Return a page of the append-only admin rotation history log.
+    ///
+    /// Entries are returned in chronological order (earliest first). The log is bounded
+    /// to [`MAX_ADMIN_ROTATION_LOG`] entries — the oldest entries are evicted FIFO when
+    /// the limit is reached.
+    ///
+    /// ### Pagination
+    /// - `start`: zero-based index of the first entry to return (0 = most recent first).
+    /// - `limit`: maximum number of entries to return (capped at [`MAX_PAGE_LIMIT`]).
+    ///
+    /// ### Returns
+    /// `(entries, next_cursor)` where:
+    /// - `entries` is the page of [`AdminRotationEntry`] values.
+    /// - `next_cursor` is `Some(next_start)` if there are more entries, or `None` otherwise.
+    ///
+    /// ### Auth
+    /// None — read-only.
+    pub fn get_admin_rotation_history_page(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<AdminRotationEntry>, Option<u32>) {
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AdminRotationCount)
+            .unwrap_or(0u64);
+
+        let effective_limit =
+            if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        if start as u64 >= count {
+            return (Vec::new(&env), None);
+        }
+
+        // Compute the first surviving rotation ID (evicted entries are skipped).
+        let first_surviving: u64 = if count > MAX_ADMIN_ROTATION_LOG {
+            count - MAX_ADMIN_ROTATION_LOG + 1
+        } else {
+            1
+        };
+        let end = core::cmp::min(start as u64 + effective_limit as u64, count);
+        let mut results = Vec::new(&env);
+
+        for i in start as u64..end {
+            let rotation_id = first_surviving + i;
+            let log_key = DataKey2::AdminRotationLog(rotation_id);
+            let entry: AdminRotationEntry = env
+                .storage()
+                .persistent()
+                .get(&log_key)
+                .unwrap();
+            results.push_back(entry);
+        }
+
+        let next_cursor = if end < count { Some(end as u32) } else { None };
+        (results, next_cursor)
     }
 
     /// Freeze the contract: no further state-changing operations allowed. Only admin may call.

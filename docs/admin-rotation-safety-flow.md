@@ -80,6 +80,25 @@ Read-only. Returns the current admin address, or `None` if the contract has not 
 
 ---
 
+### `get_admin_rotation_history_page(start: u32, limit: u32) → (Vec<AdminRotationEntry>, Option<u32>)`
+
+Read-only. Returns a page of the append-only admin rotation history log. Entries are in chronological order (earliest first).
+
+**Pagination:**
+- `start`: zero-based index of the first entry to return.
+- `limit`: maximum entries to return (capped at [`MAX_PAGE_LIMIT`] = 20).
+
+**Returns:**
+- `entries`: the page of [`AdminRotationEntry`] values, each containing `prior_admin`, `new_admin`, and `rotated_at` (ledger timestamp).
+- `next_cursor`: `Some(next_start)` if more entries are available, `None` otherwise.
+
+**Log bounds:**
+The log retains at most [`MAX_ADMIN_ROTATION_LOG`] = 100 entries. When the limit is reached, the oldest entry is evicted (FIFO) on each new rotation.
+
+**Auth:** None — read-only.
+
+---
+
 ## State Machine
 
 ```
@@ -113,8 +132,10 @@ Read-only. Returns the current admin address, or `None` if the contract has not 
 |-----|------|-------------|
 | `DataKey::Admin` | `Address` | Authoritative admin; controls admin-gated methods |
 | `DataKey::PendingAdmin` | `Address` | Proposed new admin during rotation; cleared on accept or cancel |
+| `DataKey2::AdminRotationCount` | `u64` | Monotonically increasing counter of completed rotations |
+| `DataKey2::AdminRotationLog(u64)` | `AdminRotationEntry` | Append-only log entry keyed by `rotation_id` (sequential) |
 
-Both keys use **persistent storage** — state survives ledger close.
+All keys use **persistent storage** — state survives ledger close.
 
 ---
 
@@ -125,6 +146,7 @@ Both keys use **persistent storage** — state survives ledger close.
 | `adm_prop(current_admin)` | `new_admin: Address` | `propose_admin_rotation` succeeds |
 | `adm_acc(old_admin)` | `new_admin: Address` | `accept_admin_rotation` completes |
 | `adm_canc(current_admin)` | `cancelled_pending: Address` | `cancel_admin_rotation` completes |
+| `adm_log` (v2) | `AdminRotationEntry` | `accept_admin_rotation` persists the history entry |
 
 ---
 
@@ -276,6 +298,26 @@ switch (event.topic[0]) {
 }
 ```
 
+**On-chain history query** (instead of indexing events):
+
+```typescript
+// Read the full rotation history in pages
+let cursor = 0;
+const limit = 20;
+let allEntries = [];
+
+while (cursor !== null) {
+  const { entries, next_cursor } = await contract.get_admin_rotation_history_page({
+    start: cursor,
+    limit
+  });
+  allEntries.push(...entries);
+  cursor = next_cursor;
+}
+```
+
+Each entry contains `prior_admin`, `new_admin`, and `rotated_at` (ledger timestamp).
+
 ---
 
 ## Interaction with Multisig
@@ -308,6 +350,7 @@ cargo test -- --nocapture  # Full suite with output
 | `admin_rotation_edge` | 7 | Invariants: idempotent init, pending cleared, coexistence with other state |
 | `admin_rotation_integration` | 6 | End-to-end: new admin exercises authority, five-admin chain, freeze interaction |
 | `regression` (rotation) | 5 | Double-accept, stale-cancel, same-address, impostor, frozen-contract |
+| `admin_rotation_history` | 14 | History log: persistence, pagination, eviction, reverts, events |
 
 **Minimum required coverage:** 95% (validated via `cargo tarpaulin`).
 
@@ -330,6 +373,9 @@ cargo test
 
 # Admin rotation tests only
 cargo test admin_rotation
+
+# Admin rotation history tests only
+cargo test admin_rotation_history
 
 # Regression tests only
 cargo test regression
