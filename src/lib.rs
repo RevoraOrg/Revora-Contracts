@@ -231,6 +231,8 @@ mod test_min_revenue_threshold_boundary;
 mod test_close_period;
 #[cfg(test)]
 mod test_disclosure;
+#[cfg(test)]
+mod test_quorum_check;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -315,6 +317,9 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
+    /// Minimum quorum required in basis points (e.g. 5100 = 51%).
+    /// The sum of `voter_weight_bps` of all approvals must meet or exceed this.
+    pub quorum_bps: u32,
 }
 
 #[contracttype]
@@ -1116,6 +1121,22 @@ pub enum DataKey2 {
     SupplyCap(OfferingId),
     /// Whether dual-signature close-of-period is enabled for this offering.
     DualSigEnabled(OfferingId),
+
+    // ── Multisig / governance storage ──────────────────────────────────────
+    /// Registered multisig owners.
+    MultisigOwners,
+    /// Approval threshold (count of approvals needed).
+    MultisigThreshold,
+    /// Monotonic proposal counter.
+    MultisigProposalCount,
+    /// Default proposal duration in seconds.
+    MultisigProposalDuration,
+    /// A specific proposal by id.
+    MultisigProposal(u32),
+    /// Per-owner voting weight in basis points.
+    VoterWeight(Address),
+    /// Global quorum threshold in basis points.
+    MultisigQuorumBps,
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -7276,10 +7297,27 @@ impl RevoraRevenueShare {
 
         Ok(total_payout)
     }
+
+    /// Read-only: check whether a proposal has reached quorum.
+    /// Returns `true` if total voted weight (sum of voter_weight_bps) >= quorum_bps.
+    /// Returns `false` (no panic) for empty votes (treated as zero).
+    pub fn check_quorum(env: Env, proposal_id: u32) -> bool {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultisigProposal(proposal_id))
+            .expect("Proposal not found");
+        Self::check_quorum_inner(&env, &proposal)
+    }
+
+    /// Read-only: get a proposal by id.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage().persistent().get(&DataKey2::MultisigProposal(proposal_id))
+    }
 }
 
-// â”€â”€ Holder shares, claims, admin, governance, and utility methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Plain impl block â€” excluded from the ABI spec to keep spec XDR within limit.
+// ── Holder shares, claims, admin, governance, and utility methods ──────────
+// Plain impl block — excluded from the ABI spec to keep spec XDR within limit.
 impl RevoraRevenueShare {
     ///
     /// The share determines the percentage of a period's revenue the holder can claim.
@@ -9151,6 +9189,7 @@ impl RevoraRevenueShare {
         owners: Vec<Address>,
         threshold: u32,
         proposal_duration: u64,
+        quorum_bps: u32,
     ) -> Result<(), RevoraError> {
         caller.require_auth();
 
@@ -9176,6 +9215,9 @@ impl RevoraRevenueShare {
         if proposal_duration == 0 {
             return Err(RevoraError::InvalidAmount);
         }
+        if quorum_bps == 0 || quorum_bps > 10_000 {
+            return Err(RevoraError::InvalidShareBps);
+        }
 
         // Check for duplicate owners
         for i in 0..owners.len() {
@@ -9196,6 +9238,15 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey2::MultisigProposalCount, &0_u32);
         env.storage().persistent().set(&DataKey2::MultisigProposalDuration, &proposal_duration);
+        env.storage().persistent().set(&DataKey2::MultisigQuorumBps, &quorum_bps);
+
+        // Store equal voting weight for each owner
+        let weight_per_owner = 10_000u32 / owners.len();
+        for i in 0..owners.len() {
+            let owner = owners.get(i).unwrap();
+            env.storage().persistent().set(&DataKey2::VoterWeight(owner), &weight_per_owner);
+        }
+
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
     }
@@ -9225,6 +9276,8 @@ impl RevoraRevenueShare {
         let mut initial_approvals = Vec::new(&env);
         initial_approvals.push_back(proposer.clone());
 
+        let quorum_bps: u32 = env.storage().persistent().get(&DataKey2::MultisigQuorumBps).unwrap_or(5100);
+
         let proposal = Proposal {
             id,
             action,
@@ -9232,6 +9285,7 @@ impl RevoraRevenueShare {
             approvals: initial_approvals,
             executed: false,
             expiry,
+            quorum_bps,
         };
 
         env.storage().persistent().set(&DataKey2::MultisigProposal(id), &proposal);
@@ -9313,6 +9367,11 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
+        // Quorum check: summed voter weight must meet or exceed quorum_bps
+        if !Self::check_quorum_inner(&env, &proposal) {
+            return Err(RevoraError::NotAuthorized);
+        }
+
         proposal.executed = true;
         env.storage().persistent().set(&key, &proposal);
 
@@ -9375,6 +9434,43 @@ impl RevoraRevenueShare {
 
         env.events().publish((EVENT_PROPOSAL_EXECUTED, executor), proposal_id);
         Ok(())
+    }
+
+    /// Check whether a proposal's total voted weight meets or exceeds its configured quorum.
+    ///
+    /// Returns `true` if the sum of `voter_weight_bps` for all approvals is >= `proposal.quorum_bps`.
+    /// Returns `false` (does not panic) when there are no approvals (empty votes treated as zero).
+    /// The proposal must exist; if not found, this will panic.
+    pub fn check_quorum_inner(env: &Env, proposal: &Proposal) -> bool {
+        if proposal.approvals.is_empty() {
+            return false;
+        }
+        let mut total_voted_bps: u32 = 0;
+        for i in 0..proposal.approvals.len() {
+            let voter = proposal.approvals.get(i).unwrap();
+            let weight: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::VoterWeight(voter))
+                .unwrap_or(0);
+            total_voted_bps = total_voted_bps.saturating_add(weight);
+        }
+        total_voted_bps >= proposal.quorum_bps
+    }
+
+    /// Read a proposal by id (internal helper).
+    pub fn get_proposal_inner(env: &Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage().persistent().get(&DataKey2::MultisigProposal(proposal_id))
+    }
+
+    /// Return the list of registered multisig owners.
+    pub fn get_multisig_owners(env: &Env) -> Option<Vec<Address>> {
+        env.storage().persistent().get(&DataKey2::MultisigOwners)
+    }
+
+    /// Return the current multisig approval threshold.
+    pub fn get_multisig_threshold(env: &Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey2::MultisigThreshold)
     }
 
     // ── Testnet faucet ────────────────────────────────────────────────────────
