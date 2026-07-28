@@ -1,6 +1,7 @@
 #![cfg(test)]
 extern crate alloc;
 
+use soroban_sdk::{testutils::Address as _, Address, Env, symbol_short};
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
 use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
 use crate::{
@@ -98,6 +99,46 @@ fn upgrade_path_allows_operation_and_stamps_layout() {
     client.set_testnet_mode(&true).unwrap();
     let v = client.storage_layout_version();
     assert_eq!(v, Some(STORAGE_LAYOUT_VERSION));
+}
+
+#[test]
+fn test_migration_resumes_from_cursor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+
+    // Instead of halting the real execution midway, we will explicitly simulate it.
+    // By setting the MigrationResumeCursor manually, we simulate a halted migration.
+    // The cursor is 5, meaning keys 1..=5 have been processed.
+    use crate::{MigrationDataKey, MigrationCursor};
+    env.as_contract(&contract_id, || {
+        let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
+        let cursor = MigrationCursor { last_key: 5 };
+        env.storage().persistent().set(&cursor_key, &cursor);
+    });
+
+    // Run explicit walker migration v1 -> v2
+    client.migrate_storage_walker(&issuer, &1u32, &2u32, &false);
+
+    // Verify mig_resume event was emitted
+    let events = env.events().all();
+    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
+    let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
+    assert_eq!(resume_val, 5, "Resume cursor should be 5");
+
+    // Verify mig_step was emitted for keys 6 through 10, meaning it resumed at 6.
+    let step_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+    assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
+    
+    // Assert the exact keys processed in the steps
+    let start_key: u32 = step_events[0].2.clone().into_val(&env);
+    assert_eq!(start_key, 6, "First processed key after resume must be 6");
+
+    let end_key: u32 = step_events[4].2.clone().into_val(&env);
+    assert_eq!(end_key, 10, "Last processed key must be 10");
 }
 
 // ─── assert_semver_forward unit tests ─────────────────────────────────────────
@@ -332,4 +373,101 @@ fn migrate_storage_emits_event() {
     let migrate_events: Vec<_> =
         events.iter().filter(|e| e.0.to_string().contains("migrate")).collect();
     assert!(!migrate_events.is_empty(), "expected migrate event to be emitted");
+}
+
+// ─── Downgrade-rejection guard tests ────────────────────────────────────────
+
+#[test]
+fn contract_version_compatible_after_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // After initialize, DeployedVersion == CONTRACT_VERSION, so the guard must allow operations.
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
+}
+
+#[test]
+fn contract_version_compatible_rejects_when_stored_higher() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Bump DeployedVersion above CONTRACT_VERSION to simulate a lossy downgrade scenario.
+    client.migrate_storage(&admin, &2, &0, &0).unwrap();
+
+    let res = client.try_set_testnet_mode(&true);
+    match res {
+        Err(Ok(RevoraError::MigrationDowngradeNotAllowed)) => {}
+        other => panic!("expected MigrationDowngradeNotAllowed, got: {:?}", other),
+    }
+}
+
+#[test]
+fn contract_version_compatible_emits_downgrade_reject_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    client.migrate_storage(&admin, &2, &0, &0).unwrap();
+
+    let _ = client.try_set_testnet_mode(&true);
+
+    let events = env.events().all();
+    let reject_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("downgrade_reject")).collect();
+    assert!(!reject_events.is_empty(), "expected downgrade_reject event");
+}
+
+#[test]
+fn contract_version_compatible_passes_at_equal_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Bump to exactly CONTRACT_VERSION (should succeed, guard passes equal)
+    // Note: migrate_storage itself will return AlreadyAtTargetVersion since
+    // DeployedVersion already equals CONTRACT_VERSION after init.
+    let res = client.try_migrate_storage(&admin, &1, &0, &23);
+    match res {
+        Err(Ok(RevoraError::AlreadyAtTargetVersion)) => {}
+        other => panic!("expected AlreadyAtTargetVersion, got: {:?}", other),
+    }
+
+    // A state-mutating call must still succeed (guard passes equal boundary)
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
+}
+
+#[test]
+fn contract_version_compatible_allows_operations_when_stored_lower() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Manually set DeployedVersion below CONTRACT_VERSION via the storage directly.
+    // This represents an upgrade path where old storage gets a lower version.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&crate::DataKey::DeployedVersion, &(0, 9, 0));
+    });
+
+    // All operations should be allowed (CONTRACT_VERSION > stored DeployedVersion)
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
 }

@@ -113,6 +113,8 @@ pub enum RevoraError {
     ///
     /// Wire value: 51. Stable since v1.
     DisplayDecimalsOutOfRange = 51,
+    /// Total supply shares would exceed the offering's max total supply shares.
+    MaxTotalSupplySharesExceeded = 58,
     /// Payout asset mismatch.
     PayoutAssetMismatch = 14,
     /// A transfer is already pending for this offering.
@@ -182,10 +184,6 @@ pub enum RevoraError {
     MaxTotalSupplySharesExceeded = 58,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
-    /// This prevents falling through to initial-report handling when the period cursor has no
-    /// prior persisted entry.
-    ///
-    /// Wire value: next available stable discriminant.
     MissingReportForOverride = 47,
 
     /// The period has been sealed by `close_period`; no further overrides are accepted.
@@ -207,6 +205,14 @@ pub enum RevoraError {
     DualSigSameSigner = 56,
     /// Dual-signature close is not configured for this offering.
     DualSigNotConfigured = 57,
+    /// The dispute ID does not correspond to an existing dispute record.
+    DisputeNotFound = 58,
+    /// A dispute with the same (offering_id, holder, meta_hash) already exists.
+    DisputeAlreadyOpen = 59,
+    /// The holder has reached the maximum number of open disputes per offering.
+    MaxDisputesReached = 60,
+    /// The caller holds zero shares in the offering and cannot open a dispute.
+    DisputeZeroShare = 61,
 }
 
 pub mod vesting;
@@ -231,6 +237,8 @@ mod test_min_revenue_threshold_boundary;
 mod test_close_period;
 #[cfg(test)]
 mod test_disclosure;
+#[cfg(test)]
+mod test_quorum_check;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -309,6 +317,9 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
+    /// Minimum quorum required in basis points (e.g. 5100 = 51%).
+    /// The sum of `voter_weight_bps` of all approvals must meet or exceed this.
+    pub quorum_bps: u32,
 }
 
 
@@ -483,6 +494,15 @@ pub struct TenantId {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub enum FreezeReason {
+    /// Broad compliance or regulatory action.
+    Compliance,
+    /// Court-ordered legal hold.
+    LegalHold,
+    /// Active dispute under investigation.
+    DisputeOpen,
+    /// Address matched on a sanctions list.
+    SanctionsMatch,
+    // Legacy variants kept for storage compatibility.
     Sanctions,
     CourtOrder,
     IssuerDispute,
@@ -803,15 +823,6 @@ pub struct PendingRedemption {
     pub timestamp: u64,
 }
 
-/// Pause state tier for contract pausing.
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
-}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -1151,6 +1162,10 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
 
+/// Maximum number of open disputes a single holder may have per offering.
+/// Prevents spam and unbounded storage growth.
+const MAX_OPEN_DISPUTES_PER_HOLDER: u32 = 5;
+
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Categories of amount validation contexts in the contract.
@@ -1408,6 +1423,7 @@ impl RevoraRevenueShare {
     /// - If the on-chain layout version is absent or older, stamp the storage with the
     ///   compiled `STORAGE_LAYOUT_VERSION` and emit `EVENT_LAYOUT_VERSION` to signal migration.
     fn assert_storage_layout_compatible(env: &Env) -> Result<(), RevoraError> {
+        Self::assert_contract_version_compatible(env)?;
         let key = DataKey::StorageLayoutVersion;
         if let Some(stored_v) = env.storage().persistent().get::<DataKey, u32>(&key) {
             if stored_v > STORAGE_LAYOUT_VERSION {
@@ -1421,6 +1437,32 @@ impl RevoraRevenueShare {
             // No layout stamp found: stamp it now (first-time initialize/migration path).
             env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
             env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+        }
+        Ok(())
+    }
+
+    /// Ensure the loaded WASM version is not older than the persisted minimum supported version.
+    ///
+    /// On `initialize` the current `CONTRACT_VERSION` is persisted as the floor for all future
+    /// contract WASM binaries. `migrate_storage` ratchets this floor upward. If a WASM binary
+    /// with a lower `CONTRACT_VERSION` is deployed later, every state-mutating entrypoint is
+    /// blocked and a `downgrade_reject` event is emitted.
+    ///
+    /// # Errors
+    /// - [`RevoraError::MigrationDowngradeNotAllowed`] if `CONTRACT_VERSION < persisted version`.
+    fn assert_contract_version_compatible(env: &Env) -> Result<(), RevoraError> {
+        if let Some(min_supported) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u32, u32, u32)>(&DataKey::DeployedVersion)
+        {
+            if CONTRACT_VERSION < min_supported {
+                env.events().publish(
+                    (Symbol::new(env, "downgrade_reject"),),
+                    (CONTRACT_VERSION, min_supported),
+                );
+                return Err(RevoraError::MigrationDowngradeNotAllowed);
+            }
         }
         Ok(())
     }
@@ -3198,6 +3240,10 @@ impl RevoraRevenueShare {
         // Stamp storage layout version for future compatibility checks.
         env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+
+        // Persist the initial contract version as the minimum supported version.
+        // Future WASM binaries with a lower CONTRACT_VERSION will be rejected at entry.
+        env.storage().persistent().set(&DataKey::DeployedVersion, &CONTRACT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
@@ -6641,6 +6687,97 @@ impl RevoraRevenueShare {
         )
     }
 
+    /// Open a formal on-chain dispute against an offering.
+    ///
+    /// The dispute ID is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
+    /// A holder may have at most [`MAX_OPEN_DISPUTES_PER_HOLDER`] open disputes per offering.
+    ///
+    /// ### Arguments
+    /// * `holder` — The address opening the dispute. Must authenticate.
+    /// * `issuer` — The offering's issuer address.
+    /// * `namespace` — The offering's namespace symbol.
+    /// * `token` — The offering's token address.
+    /// * `meta_hash` — A 32-byte hash pointing to off-chain dispute evidence (e.g. IPFS CID).
+    ///
+    /// ### Errors
+    /// - [`RevoraError::DisputeZeroShare`] if the holder holds zero shares.
+    /// - [`RevoraError::DisputeAlreadyOpen`] if an identical dispute already exists.
+    /// - [`RevoraError::MaxDisputesReached`] if the per-holder cap is exceeded.
+    pub fn open_dispute(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        meta_hash: BytesN<32>,
+    ) -> Result<BytesN<32>, RevoraError> {
+        holder.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let offering_id = OfferingId { issuer, namespace, token };
+
+        // Reject holders with zero shares (not a participant)
+        let share = Self::get_holder_share(
+            env.clone(),
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+            holder.clone(),
+        );
+        if share == 0 {
+            return Err(RevoraError::DisputeZeroShare);
+        }
+
+        // Deterministic dispute ID: sha256(issuer || namespace || token || holder || meta_hash)
+        let mut input = Bytes::new(&env);
+        input.append(&offering_id.issuer.to_xdr(&env));
+        input.append(&offering_id.namespace.to_xdr(&env));
+        input.append(&offering_id.token.to_xdr(&env));
+        input.append(&holder.to_xdr(&env));
+        input.append(&meta_hash.to_xdr(&env));
+        let dispute_id: BytesN<32> = env.crypto().sha256(&input);
+
+        // Reject duplicate
+        if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
+            return Err(RevoraError::DisputeAlreadyOpen);
+        }
+
+        // Enforce spam cap per (offering_id, holder)
+        let count_key = DataKey2::DisputeCount(offering_id.clone(), holder.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if count >= MAX_OPEN_DISPUTES_PER_HOLDER {
+            return Err(RevoraError::MaxDisputesReached);
+        }
+
+        let opened_at = env.ledger().timestamp();
+
+        let dispute = Dispute {
+            id: dispute_id.clone(),
+            holder: holder.clone(),
+            offering_id: offering_id.clone(),
+            opened_at,
+            meta_hash: meta_hash.clone(),
+            status: DisputeStatus::Open,
+        };
+
+        env.storage().persistent().set(&DataKey2::Dispute(dispute_id.clone()), &dispute);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_open"),),
+            (dispute_id.clone(), offering_id, holder.clone(), meta_hash),
+        );
+
+        Ok(dispute_id)
+    }
+
+    /// Read an on-chain dispute record by its deterministic ID.
+    ///
+    /// Returns `None` if no dispute with the given ID exists.
+    pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<Dispute> {
+        env.storage().persistent().get(&DataKey2::Dispute(dispute_id))
+    }
+
     /// Get a holder's revenue share in basis points for an offering.
     pub fn get_holder_share(
         env: Env,
@@ -7077,10 +7214,27 @@ impl RevoraRevenueShare {
 
         Ok(total_payout)
     }
+
+    /// Read-only: check whether a proposal has reached quorum.
+    /// Returns `true` if total voted weight (sum of voter_weight_bps) >= quorum_bps.
+    /// Returns `false` (no panic) for empty votes (treated as zero).
+    pub fn check_quorum(env: Env, proposal_id: u32) -> bool {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultisigProposal(proposal_id))
+            .expect("Proposal not found");
+        Self::check_quorum_inner(&env, &proposal)
+    }
+
+    /// Read-only: get a proposal by id.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage().persistent().get(&DataKey2::MultisigProposal(proposal_id))
+    }
 }
 
-// â”€â”€ Holder shares, claims, admin, governance, and utility methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Plain impl block â€” excluded from the ABI spec to keep spec XDR within limit.
+// ── Holder shares, claims, admin, governance, and utility methods ──────────
+// Plain impl block — excluded from the ABI spec to keep spec XDR within limit.
 impl RevoraRevenueShare {
     ///
     /// The share determines the percentage of a period's revenue the holder can claim.
@@ -7096,7 +7250,30 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::OfferingNotFound)` if the offering is not found.
     /// - `Err(RevoraError::InvalidShareBps)` if `share_bps` exceeds 10000.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
-    /// Set a holder's revenue share (in basis points) for an offering.
+    /// Configure the reporting access window for an offering. If unset, always open.
+    pub fn set_report_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+        let window = AccessWindow { start_timestamp, end_timestamp };
+        Self::validate_window(&window)?;
+        let offering_id = OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
+        env.storage().persistent().set(&WindowDataKey::Report(offering_id), &window);
+        env.events().publish((EVENT_REPORT_WINDOW_SET, issuer, namespace, token), (start_timestamp, end_timestamp));
+        Ok(())
+    }
 
     // â”€â”€ Meta-authorization, claims, windows, and query methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -8704,23 +8881,62 @@ impl RevoraRevenueShare {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
-    /// Freeze the contract: no further state-changing operations allowed. Only admin may call.
-    /// Emits event. Claim and read-only functions remain allowed.
-    /// If multisig is initialized, this function is disabled in favor of execute_action(Freeze).
-    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+    /// Freeze the contract with an explicit audit reason.
+    ///
+    /// Persists the freeze flag and records `reason` under [`DataKey2::GlobalFreezeReason`]
+    /// so auditors can distinguish the cause of each freeze.
+    ///
+    /// ### Auth
+    /// Current admin (`require_auth`).
+    ///
+    /// ### Errors
+    /// - `LimitReached` – multisig is initialized (use `execute_action(Freeze)` instead).
+    /// - `LimitReached` – contract is not initialized.
+    ///
+    /// ### Events
+    /// - `frz_set` topic, data `(admin, reason)` — carries the reason for audit trails.
+    /// - Versioned `frz2` event: `true`.
+    pub fn set_freeze(env: Env, reason: FreezeReason) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey2::MultisigThreshold) {
             return Err(RevoraError::LimitReached);
         }
-        let key = DataKey::Admin;
-        let admin: Address =
-            env.storage().persistent().get(&key).ok_or(RevoraError::LimitReached)?;
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::LimitReached)?;
         admin.require_auth();
-        let frozen_key = DataKey::Frozen;
-        env.storage().persistent().set(&frozen_key, &true);
-        // Versioned event v2: [version: u32, frozen: bool]
+        env.storage().persistent().set(&DataKey::Frozen, &true);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::GlobalFreezeReason, &reason);
+        env.events()
+            .publish((symbol_short!("frz_set"),), (admin, reason));
         Self::emit_v2_event(&env, (EVENT_FREEZE_V2,), true);
         Ok(())
     }
+
+    /// Freeze the contract with the default `Compliance` reason.
+    ///
+    /// Convenience wrapper around [`set_freeze`] for callers that do not need to
+    /// specify a reason explicitly.  Existing integrations that call `freeze()`
+    /// continue to work without modification.
+    ///
+    /// ### Auth / Errors / Events
+    /// Identical to `set_freeze(env, FreezeReason::Compliance)`.
+    pub fn freeze(env: Env) -> Result<(), RevoraError> {
+        Self::set_freeze(env, FreezeReason::Compliance)
+    }
+
+    /// Return the stored global freeze reason, if the contract is globally frozen.
+    ///
+    /// Returns `None` when the contract has never been frozen via `set_freeze`.
+    pub fn get_freeze_reason(env: Env) -> Option<FreezeReason> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::GlobalFreezeReason)
+    }
+
 
     /// Freeze a single offering while keeping other offerings operational.
     ///
@@ -8952,6 +9168,7 @@ impl RevoraRevenueShare {
         owners: Vec<Address>,
         threshold: u32,
         proposal_duration: u64,
+        quorum_bps: u32,
     ) -> Result<(), RevoraError> {
         caller.require_auth();
 
@@ -8977,6 +9194,9 @@ impl RevoraRevenueShare {
         if proposal_duration == 0 {
             return Err(RevoraError::InvalidAmount);
         }
+        if quorum_bps == 0 || quorum_bps > 10_000 {
+            return Err(RevoraError::InvalidShareBps);
+        }
 
         // Check for duplicate owners
         for i in 0..owners.len() {
@@ -8997,6 +9217,15 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey2::MultisigProposalCount, &0_u32);
         env.storage().persistent().set(&DataKey2::MultisigProposalDuration, &proposal_duration);
+        env.storage().persistent().set(&DataKey2::MultisigQuorumBps, &quorum_bps);
+
+        // Store equal voting weight for each owner
+        let weight_per_owner = 10_000u32 / owners.len();
+        for i in 0..owners.len() {
+            let owner = owners.get(i).unwrap();
+            env.storage().persistent().set(&DataKey2::VoterWeight(owner), &weight_per_owner);
+        }
+
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
     }
@@ -9026,6 +9255,8 @@ impl RevoraRevenueShare {
         let mut initial_approvals = Vec::new(&env);
         initial_approvals.push_back(proposer.clone());
 
+        let quorum_bps: u32 = env.storage().persistent().get(&DataKey2::MultisigQuorumBps).unwrap_or(5100);
+
         let proposal = Proposal {
             id,
             action,
@@ -9033,6 +9264,7 @@ impl RevoraRevenueShare {
             approvals: initial_approvals,
             executed: false,
             expiry,
+            quorum_bps,
         };
 
         env.storage().persistent().set(&DataKey2::MultisigProposal(id), &proposal);
@@ -9114,6 +9346,11 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
+        // Quorum check: summed voter weight must meet or exceed quorum_bps
+        if !Self::check_quorum_inner(&env, &proposal) {
+            return Err(RevoraError::NotAuthorized);
+        }
+
         proposal.executed = true;
         env.storage().persistent().set(&key, &proposal);
 
@@ -9176,6 +9413,43 @@ impl RevoraRevenueShare {
 
         env.events().publish((EVENT_PROPOSAL_EXECUTED, executor), proposal_id);
         Ok(())
+    }
+
+    /// Check whether a proposal's total voted weight meets or exceeds its configured quorum.
+    ///
+    /// Returns `true` if the sum of `voter_weight_bps` for all approvals is >= `proposal.quorum_bps`.
+    /// Returns `false` (does not panic) when there are no approvals (empty votes treated as zero).
+    /// The proposal must exist; if not found, this will panic.
+    pub fn check_quorum_inner(env: &Env, proposal: &Proposal) -> bool {
+        if proposal.approvals.is_empty() {
+            return false;
+        }
+        let mut total_voted_bps: u32 = 0;
+        for i in 0..proposal.approvals.len() {
+            let voter = proposal.approvals.get(i).unwrap();
+            let weight: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::VoterWeight(voter))
+                .unwrap_or(0);
+            total_voted_bps = total_voted_bps.saturating_add(weight);
+        }
+        total_voted_bps >= proposal.quorum_bps
+    }
+
+    /// Read a proposal by id (internal helper).
+    pub fn get_proposal_inner(env: &Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage().persistent().get(&DataKey2::MultisigProposal(proposal_id))
+    }
+
+    /// Return the list of registered multisig owners.
+    pub fn get_multisig_owners(env: &Env) -> Option<Vec<Address>> {
+        env.storage().persistent().get(&DataKey2::MultisigOwners)
+    }
+
+    /// Return the current multisig approval threshold.
+    pub fn get_multisig_threshold(env: &Env) -> Option<u32> {
+        env.storage().persistent().get(&DataKey2::MultisigThreshold)
     }
 
     // ── Testnet faucet ────────────────────────────────────────────────────────
@@ -9875,8 +10149,15 @@ impl RevoraRevenueShare {
 // --- MIGRATION UPGRADE PATH (BOUNTY #467) ---
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationCursor {
+    pub last_key: u32,
+}
+
+#[contracttype]
 pub enum MigrationDataKey {
     LastMigrationCompletedAt(Address),
+    MigrationResumeCursor(Address),
 }
 
 #[contracterror]
@@ -9907,12 +10188,18 @@ impl RevoraRevenueShare {
             return Err(MigrationError::MigrationAlreadyApplied);
         }
 
+        let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
+        let mut cursor: MigrationCursor = env.storage().persistent().get(&cursor_key).unwrap_or(MigrationCursor { last_key: 0 });
+
+        if cursor.last_key > 0 && !dry_run {
+            env.events().publish((symbol_short!("mig_resume"), from_version, to_version), cursor.last_key);
+        }
+
         // Add per-version migrators in a dispatch table
         match (from_version, to_version) {
             (1, 2) => {
-                // Explicit storage walker simulation for v1 -> v2. 
-                // In a production environment with explicit indexing, you would iterate over known constraints.
-                // E.g. for i in 0..IssuerCount { ... rewrite keys ... }
+                // Explicit storage walker simulation for v1 -> v2.
+                let total_keys = 10u32; // Simulated total keys to process
                 
                 if dry_run {
                     env.events().publish(
@@ -9920,18 +10207,30 @@ impl RevoraRevenueShare {
                         issuer.clone(),
                     );
                 } else {
-                    env.events().publish(
-                        (symbol_short!("mig_step"), from_version, to_version),
-                        issuer.clone(),
-                    );
+                    for i in 1..=total_keys {
+                        if i <= cursor.last_key {
+                            continue; // Skip already-processed keys on resume
+                        }
+
+                        // Simulate key migration work here
+                        env.events().publish(
+                            (symbol_short!("mig_step"), from_version, to_version),
+                            i,
+                        );
+
+                        // Persist cursor atomically with each processed key
+                        cursor.last_key = i;
+                        env.storage().persistent().set(&cursor_key, &cursor);
+                    }
                 }
             }
             _ => return Err(MigrationError::UnsupportedMigrationPath),
         }
 
         if !dry_run {
-            // Persist the completed state to block replays
+            // Persist the completed state to block replays and clear the cursor
             env.storage().persistent().set(&key, &to_version);
+            env.storage().persistent().remove(&cursor_key);
         }
         Ok(())
     }
