@@ -201,6 +201,10 @@ pub enum RevoraError {
     DisclosureUriTooLong = 54,
     /// Empty URI paired with a non-zero hash is incoherent.
     InconsistentDisclosure = 55,
+    /// sig_a and sig_b must be distinct addresses for dual-signature close.
+    DualSigSameSigner = 56,
+    /// Dual-signature close is not configured for this offering.
+    DualSigNotConfigured = 57,
 }
 
 pub mod vesting;
@@ -356,6 +360,8 @@ const EVENT_INDEXED_V3: Symbol = symbol_short!("ev_idx3");
 const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 /// Emitted when a period is sealed by `close_period`.
 const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
+/// Emitted when a period is sealed via dual-signature `close_period_dual_sig`.
+const EVENT_DUAL_SIG_CLOSE: Symbol = symbol_short!("dual_cls");
 /// Emitted when an offering's off-chain disclosure metadata is set or updated (#485).
 const EVENT_DISCLOSURE_UPDATED: Symbol = symbol_short!("disc_upd");
 const EVENT_TYPE_REV_INIT: Symbol = symbol_short!("rv_init");
@@ -1102,6 +1108,8 @@ pub enum DataKey2 {
     InvestmentConstraints(OfferingId),
     /// Per-offering supply cap (0 = uncapped).
     SupplyCap(OfferingId),
+    /// Whether dual-signature close-of-period is enabled for this offering.
+    DualSigEnabled(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1705,22 +1713,22 @@ impl RevoraRevenueShare {
         let total_key = DataKey::HolderShareTotal(offering_id.clone());
         let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
 
-        match classes {
-            Some(cls_vec) => {
-                let sc = match share_class {
-                    Some(sc) => sc,
-                    None => return Err(RevoraError::InvalidShareClass),
-                };
-                let mut found = false;
-                for (class_name, _) in cls_vec.iter() {
-                    if class_name == sc {
-                        found = true;
-                        break;
-                    }
+        if let Some(cls_vec) = classes {
+            let sc = match share_class {
+                Some(sc) => sc,
+                None => return Err(RevoraError::InvalidShareClass),
+            };
+            let mut found = false;
+            for (class_name, _) in cls_vec.iter() {
+                if class_name == sc {
+                    found = true;
+                    break;
                 }
-                if !found {
-                    return Err(RevoraError::InvalidShareClass);
-                }
+            }
+            if !found {
+                return Err(RevoraError::InvalidShareClass);
+            }
+        }
 
         let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
@@ -7282,34 +7290,6 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::InvalidShareBps)` if `share_bps` exceeds 10000.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     /// Set a holder's revenue share (in basis points) for an offering.
-    fn set_holder_share_full(
-
-    /// Configure the reporting access window for an offering. If unset, always open.
-    pub fn set_report_window(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        start_timestamp: u64,
-        end_timestamp: u64,
-    ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        if current_issuer != issuer {
-            return Err(RevoraError::OfferingNotFound);
-        }
-        issuer.require_auth();
-        Self::set_holder_share_internal(
-            &env,
-            offering_id.issuer,
-            offering_id.namespace,
-            offering_id.token,
-            holder,
-            share_bps,
-        )
-    }
 
     // â”€â”€ Meta-authorization, claims, windows, and query methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -7339,37 +7319,6 @@ impl RevoraRevenueShare {
     }
 
     /// Configure the claiming access window for an offering. If unset, always open.
-    pub fn set_claim_window(
-        env: Env,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        start_timestamp: u64,
-        end_timestamp: u64,
-    ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(&env)?;
-        let current_issuer =
-            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
-                .ok_or(RevoraError::OfferingNotFound)?;
-        if current_issuer != issuer {
-            return Err(RevoraError::OfferingNotFound);
-        }
-        issuer.require_auth();
-        let window = AccessWindow { start_timestamp, end_timestamp };
-        Self::validate_window(&window)?;
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: namespace.clone(),
-            token: token.clone(),
-        };
-        env.storage().persistent().set(&WindowDataKey::Claim(offering_id), &window);
-        env.events().publish(
-            (EVENT_CLAIM_WINDOW_SET, issuer, namespace, token),
-            (start_timestamp, end_timestamp),
-        );
-        Ok(())
-    }
-
     /// Read configured reporting window (if any) for an offering.
     pub fn get_report_window(
         env: Env,
@@ -7461,7 +7410,6 @@ impl RevoraRevenueShare {
 
     /// Return unclaimed period IDs for a holder on an offering.
     /// Ordering: by deposit index (creation order), deterministic (#38).
-    pub fn get_pending_periods(
     pub fn claim(
         env: Env,
         holder: Address,
@@ -7676,6 +7624,12 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
+        // If dual-signature mode is enabled for this offering, the single-sig
+        // `close_period` path is not available — callers must use `close_period_dual_sig`.
+        if env.storage().persistent().get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone())).unwrap_or(false) {
+            return Err(RevoraError::DualSigNotConfigured);
+        }
+
         let closed_key = DataKey2::ClosedPeriod(offering_id, period_id);
         if env.storage().persistent().has(&closed_key) {
             return Err(RevoraError::PeriodAlreadyClosed);
@@ -7700,6 +7654,133 @@ impl RevoraRevenueShare {
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().has(&DataKey2::ClosedPeriod(offering_id, period_id))
+    }
+
+    /// Enable or disable dual-signature close-of-period mode for an offering (#565).
+    ///
+    /// When enabled, `close_period` will reject with `DualSigNotConfigured` and the
+    /// issuer must use `close_period_dual_sig` instead, which requires two distinct
+    /// authorized signers.
+    ///
+    /// ### Auth
+    /// Requires `issuer.require_auth()`.
+    ///
+    /// ### Errors
+    /// - `OfferingNotFound` – offering does not exist or caller is not the current issuer.
+    /// - `ContractFrozen` / `ContractPaused` – contract is not operational.
+    pub fn set_dual_sig_config(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        enabled: bool,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists and caller is the current issuer.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        env.storage().persistent().set(&DataKey2::DualSigEnabled(offering_id), &enabled);
+
+        env.events().publish(
+            (symbol_short!("dual_cfg"), issuer, namespace, token),
+            (enabled,),
+        );
+        Ok(())
+    }
+
+    /// Close a period using dual-signature authorization.
+    ///
+    /// For high-value periods, this function requires two distinct signers to
+    /// authorize the close. Both signers must be valid issuers of the offering
+    /// (the primary issuer or a co-issuer).
+    ///
+    /// ### Auth
+    /// Requires both `sig_a.require_auth()` and `sig_b.require_auth()`.
+    ///
+    /// ### Errors
+    /// - `DualSigSameSigner` – `sig_a` and `sig_b` are the same address.
+    /// - `DualSigNotConfigured` – dual-signature mode has not been enabled for this offering.
+    /// - `OfferingNotFound` – offering does not exist or a signer is not a valid issuer.
+    /// - `InvalidPeriodId` – `period_id` is 0.
+    /// - `PeriodAlreadyClosed` – period has already been sealed.
+    /// - `ContractFrozen` / `ContractPaused` – contract is not operational.
+    pub fn close_period_dual_sig(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+        sig_a: Address,
+        sig_b: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        sig_a.require_auth();
+        sig_b.require_auth();
+
+        // Both signers must be distinct.
+        if sig_a == sig_b {
+            return Err(RevoraError::DualSigSameSigner);
+        }
+
+        if period_id == 0 {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists and retrieve the full Offering (including issuers).
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+
+        // Both signers must be valid issuers (primary or co-issuer).
+        let is_valid = |addr: &Address| -> bool {
+            if &offering.issuers.primary == addr {
+                return true;
+            }
+            offering.issuers.co.iter().any(|co| co == addr)
+        };
+        if !is_valid(&sig_a) || !is_valid(&sig_b) {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Dual-signature mode must be enabled for this offering.
+        if !env.storage().persistent().get::<_, bool>(&DataKey2::DualSigEnabled(offering_id.clone())).unwrap_or(false) {
+            return Err(RevoraError::DualSigNotConfigured);
+        }
+
+        let closed_key = DataKey2::ClosedPeriod(offering_id, period_id);
+        if env.storage().persistent().has(&closed_key) {
+            return Err(RevoraError::PeriodAlreadyClosed);
+        }
+
+        let closed_at = env.ledger().timestamp();
+        env.storage().persistent().set(&closed_key, &closed_at);
+
+        env.events().publish(
+            (EVENT_DUAL_SIG_CLOSE, issuer, namespace, token),
+            (period_id, closed_at, sig_a, sig_b),
+        );
+
+        Ok(())
     }
 
     /// Attach or replace off-chain disclosure metadata for an offering (#485).
