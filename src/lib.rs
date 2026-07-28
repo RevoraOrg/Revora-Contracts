@@ -729,6 +729,18 @@ pub struct HolderAccrualState {
     pub accrued_owed: i128,
 }
 
+/// Read-only per-period statement row for a holder.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolderStatementEntry {
+    /// Deterministic revenue period identifier.
+    pub period_id: u64,
+    /// Timestamp at which the period's revenue was deposited.
+    pub deposit_timestamp: u64,
+    /// Amount currently attributable to the holder for this period.
+    pub claimable_amount: i128,
+}
+
 /// Versioned structured topic payload for indexers.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -8269,6 +8281,104 @@ impl RevoraRevenueShare {
 
         let next_cursor = if end < period_count { Some(end) } else { None };
         (results, next_cursor)
+    }
+
+    /// Read-only: return a paginated statement page for a holder.
+    ///
+    /// Each entry is ordered by the persisted `PeriodEntry` index, which is monotonic in
+    /// `period_id` for valid offering state. The cursor is the zero-based period-entry index
+    /// and is clamped to the holder's current `LastClaimedIdx`, so stale callers cannot page
+    /// back into already-claimed history.
+    ///
+    /// Security assumptions:
+    /// - Returning an empty page for a cursor past the end must be safe and deterministic.
+    /// - The first delayed period forms a hard stop because later periods are not claimable yet.
+    /// - `limit` is capped to `MAX_PAGE_LIMIT` to keep read gas bounded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_holder_statement_page(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<HolderStatementEntry>, Option<u32>) {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if Self::is_blacklisted(env.clone(), issuer, namespace, token, holder.clone()) {
+            return (Vec::new(&env), None);
+        }
+        if Self::require_claim_window_open(&env, &offering_id).is_err() {
+            return (Vec::new(&env), None);
+        }
+
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder.clone());
+        let holder_start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+        let start_idx = core::cmp::max(cursor, holder_start_idx);
+        if start_idx >= period_count {
+            return (Vec::new(&env), None);
+        }
+
+        let effective_limit =
+            if limit == 0 || limit > MAX_PAGE_LIMIT { MAX_PAGE_LIMIT } else { limit };
+
+        let delay_key = DataKey::ClaimDelaySecs(offering_id.clone());
+        let delay_secs: u64 = env.storage().persistent().get(&delay_key).unwrap_or(0);
+        let now = env.ledger().timestamp();
+
+        let mut entries = Vec::new(&env);
+        let mut processed: u32 = 0;
+        let mut idx = start_idx;
+        let mut previous_period_id: Option<u64> = None;
+
+        while idx < period_count && processed < effective_limit {
+            let entry_key = DataKey::PeriodEntry(offering_id.clone(), idx);
+            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
+            if period_id == 0 {
+                idx = idx.saturating_add(1);
+                continue;
+            }
+
+            if let Some(previous) = previous_period_id {
+                if period_id <= previous {
+                    break;
+                }
+            }
+            previous_period_id = Some(period_id);
+
+            let time_key = DataKey::PeriodDepositTime(offering_id.clone(), period_id);
+            let deposit_timestamp: u64 = env.storage().persistent().get(&time_key).unwrap_or(0);
+            if delay_secs > 0 && now < deposit_timestamp.saturating_add(delay_secs) {
+                return (entries, Some(idx));
+            }
+
+            let claimable_amount = Self::compute_holder_payout_for_range(
+                &env,
+                &offering_id,
+                &holder,
+                idx,
+                idx.saturating_add(1),
+            );
+            entries.push_back(HolderStatementEntry {
+                period_id,
+                deposit_timestamp,
+                claimable_amount,
+            });
+
+            processed = processed.saturating_add(1);
+            idx = idx.saturating_add(1);
+        }
+
+        let next_cursor = if idx < period_count { Some(idx) } else { None };
+        (entries, next_cursor)
     }
 
     /// Shared claim-preview engine used by both full and chunked read-only views.
