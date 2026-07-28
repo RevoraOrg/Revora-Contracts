@@ -396,3 +396,86 @@ fn vesting_event_schema_version_is_stable_and_partial_claim_emits_v1_events() {
     assert!(has_event_symbol(&env, symbol_short!("vest_pcl")));
     assert!(has_event_symbol(&env, symbol_short!("vst_pcl1")));
 }
+
+// ----------------------------------------------------------------------------
+// Tests for VestingContract (new implementation stub)
+// ----------------------------------------------------------------------------
+use crate::vesting::{VestingContract, VestingContractClient, VestingError};
+
+#[test]
+fn test_accelerate_vesting_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = Address::generate(&env);
+    
+    let total_amount = 1000;
+    let cliff_ts = 100;
+    let start_ts = 200;
+    let end_ts = 1200;
+    
+    client.vesting_register(
+        &issuer,
+        &beneficiary,
+        &token,
+        &total_amount,
+        &cliff_ts,
+        &start_ts,
+        &end_ts,
+    );
+    
+    let trigger_id = symbol_short!("ipo");
+    
+    // Accelerate by 20% (2000 bps)
+    client.accelerate_vesting(&beneficiary, &trigger_id, &2000u32);
+    
+    // Test that claimable amount correctly reflects the accelerated amount before start
+    env.ledger().with_mut(|l| l.timestamp = 150); // After cliff, before start
+    let claimable = client.get_claimable_amount(&beneficiary).unwrap();
+    assert_eq!(claimable, 200); // 20% of 1000 = 200
+}
+
+#[test]
+fn test_accelerate_vesting_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = Address::generate(&env);
+    
+    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200);
+    
+    let trigger_id = symbol_short!("acq");
+    client.accelerate_vesting(&beneficiary, &trigger_id, &5000u32);
+    
+    // Replay should fail with AlreadyAccelerated (107)
+    let err = client.try_accelerate_vesting(&beneficiary, &trigger_id, &5000u32).unwrap_err();
+    assert_eq!(err.unwrap().unwrap(), VestingError::AlreadyAccelerated as u32);
+}
+
+#[test]
+fn test_accelerate_vesting_invalid_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = Address::generate(&env);
+    
+    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200);
+    
+    let trigger_id = symbol_short!("ipo");
+    
+    // Acceleration > 10000 should fail with InvalidAccelerationBps (108)
+    let err = client.try_accelerate_vesting(&beneficiary, &trigger_id, &10001u32).unwrap_err();
+    assert_eq!(err.unwrap().unwrap(), VestingError::InvalidAccelerationBps as u32);
+}
