@@ -1,4 +1,3 @@
-
 use axum::{
     extract::{Query, State},
     http::header,
@@ -45,9 +44,7 @@ async fn create_event(
     }
 }
 
-async fn get_analytics(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn get_analytics(State(state): State<AppState>) -> impl IntoResponse {
     match state.indexer.get_analytics().await {
         Ok(analytics) => (StatusCode::OK, axum::Json(analytics)),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to get analytics")),
@@ -65,7 +62,12 @@ async fn export_csv(
             [(header::CONTENT_DISPOSITION, "attachment; filename=\"events.csv\"")],
             data,
         ),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE, "text/plain")], vec![], "Failed to export CSV".to_string().into_bytes()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE, "text/plain")],
+            vec![],
+            "Failed to export CSV".to_string().into_bytes(),
+        ),
     }
 }
 
@@ -80,26 +82,27 @@ async fn export_json(
             [(header::CONTENT_DISPOSITION, "attachment; filename=\"events.json\"")],
             data,
         ),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE, "text/plain")], vec![], "Failed to export JSON".to_string().into_bytes()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE, "text/plain")],
+            vec![],
+            "Failed to export JSON".to_string().into_bytes(),
+        ),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:password@localhost/revora_indexer".to_string());
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:password@localhost/revora_indexer".to_string());
     let indexer = EventIndexer::new(&database_url).await?;
     indexer.initialize_schema().await?;
 
     let state = AppState { indexer };
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     let app = Router::new()
         .route("/events", get(get_events).post(create_event))
@@ -111,9 +114,7 @@ async fn main() -> Result<()> {
 
     let addr = ([0, 0, 0, 0], 3000).into();
     tracing::info!("Listening on http://{}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
 
     Ok(())
 }

@@ -69,6 +69,8 @@ Every pause/unpause call emits two events:
 | `set_holder_share` | `issuer` | `current_issuer == issuer` | Issuer sets holder share. |
 | `set_claim_delay` | `issuer` | `current_issuer == issuer` | Issuer sets claim delay. |
 | `set_offering_metadata` | `issuer` | `current_issuer == issuer` | Issuer sets metadata. |
+| `close_period_dual_sig` | `sig_a` and `sig_b` | Both must be valid issuers (primary or co-issuer) and distinct | Dual-signature close-of-period for high-value periods. |
+| `set_dual_sig_config` | `issuer` | `current_issuer == issuer` | Enables or disables dual-sig mode for an offering. |
 
 ## Identified Issues
 
