@@ -396,3 +396,91 @@ fn vesting_event_schema_version_is_stable_and_partial_claim_emits_v1_events() {
     assert!(has_event_symbol(&env, symbol_short!("vest_pcl")));
     assert!(has_event_symbol(&env, symbol_short!("vst_pcl1")));
 }
+
+// ── Proptests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::vesting::{VestingCurve, VestingSchedule};
+    use proptest::prelude::*;
+
+    fn arb_vesting_curve() -> impl Strategy<Value = VestingCurve> {
+        prop_oneof![
+            Just(VestingCurve::Linear),
+            Just(VestingCurve::Cliff),
+            (1u64..1000).prop_map(|s| VestingCurve::Graded { step_secs: s }),
+            (1u32..100).prop_map(|s| VestingCurve::Step { steps: s }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 100,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_vesting_monotonicity(
+            total_amount in 1i128..1_000_000_000,
+            start_ts in 100u64..100_000,
+            duration in 10u64..10_000,
+            cliff_offset in 0u64..10_000,
+            curve in arb_vesting_curve(),
+            t1 in 0u64..200_000,
+            t2 in 0u64..200_000,
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+            let dummy = Address::generate(&env);
+
+            let end_ts = start_ts + duration;
+            let cliff_ts = start_ts + cliff_offset;
+
+            let schedule = VestingSchedule {
+                issuer: dummy.clone(),
+                beneficiary: dummy.clone(),
+                token: dummy,
+                total_amount,
+                cliff_ts,
+                start_ts,
+                end_ts,
+                curve,
+            };
+
+            let (time1, time2) = if t1 <= t2 { (t1, t2) } else { (t2, t1) };
+
+            // We use a helper here to access compute_vested directly since we're testing the math curve itself.
+            // Since compute_vested is private in vesting.rs, we can re-implement the pure logic here 
+            // for the property test invariant, or ideally we'd expose it. Assuming we can't easily expose it,
+            // we will simulate by registering the schedule in the contract state if possible, but 
+            // `vesting_register` needs curve now. 
+            // Since the contract is broken in master, we can just write the test logic assuming `compute_vested` 
+            // is accessible if this was part of the same crate. Since this is in `vesting_test.rs` (a different module),
+            // and `compute_vested` is private in `vesting.rs`, we can't directly call it.
+            // Wait, vesting.rs has `get_vested_amount(env, beneficiary) -> Option<i128>`.
+            // Let's use `get_vested_amount` through the client!
+            
+            let (client, admin, beneficiary, token_id) = setup(&env);
+            client.initialize_vesting(&admin);
+            
+            // Note: client.create_schedule does not take curve in the broken master branch currently.
+            // But we can directly write the schedule to storage to bypass the client wrapper for the test.
+            use crate::vesting::VestingKey;
+            let key = VestingKey::Schedule(beneficiary.clone());
+            env.as_contract(&client.address, || {
+                env.storage().persistent().set(&key, &schedule);
+            });
+
+            // t1
+            crate::test_utils::set_timestamp(&env, time1);
+            let vested1 = client.get_vested_amount(&beneficiary).unwrap();
+
+            // t2
+            crate::test_utils::set_timestamp(&env, time2);
+            let vested2 = client.get_vested_amount(&beneficiary).unwrap();
+
+            prop_assert!(vested1 <= vested2, "vested_at(t1)={} should be <= vested_at(t2)={} for schedule {:?}", vested1, vested2, schedule);
+        }
+    }
+}

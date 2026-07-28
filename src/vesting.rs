@@ -35,6 +35,15 @@ pub struct VestingOfferingId {
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VestingCurve {
+    Linear,
+    Cliff,
+    Graded { step_secs: u64 },
+    Step { steps: u32 },
+}
+
 /// A single vesting tranche for a beneficiary.
 #[contracttype]
 #[derive(Clone)]
@@ -46,6 +55,7 @@ pub struct VestingSchedule {
     pub cliff_ts: u64,
     pub start_ts: u64,
     pub end_ts: u64,
+    pub curve: VestingCurve,
 }
 
 /// Errors produced by the vesting module.
@@ -91,6 +101,7 @@ impl VestingContract {
         cliff_ts: u64,
         start_ts: u64,
         end_ts: u64,
+        curve: VestingCurve,
     ) -> Result<(), VestingError> {
         issuer.require_auth();
 
@@ -115,6 +126,7 @@ impl VestingContract {
             cliff_ts,
             start_ts,
             end_ts,
+            curve: curve.clone(),
         };
         env.storage().persistent().set(&key, &schedule);
         env.storage().persistent().set(&VestingKey::Claimed(beneficiary.clone()), &0_i128);
@@ -128,7 +140,7 @@ impl VestingContract {
 
         env.events().publish(
             (EVENT_VESTING_CREATED, beneficiary),
-            (total_amount, cliff_ts, start_ts, end_ts),
+            (total_amount, cliff_ts, start_ts, end_ts, curve),
         );
 
         Ok(())
@@ -306,7 +318,38 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
     if duration == 0 {
         return schedule.total_amount;
     }
-    schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+
+    match schedule.curve {
+        VestingCurve::Linear => {
+            schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+        }
+        VestingCurve::Cliff => {
+            // Cliff curve implies all-at-once at end_ts (or cliff_ts). Since we handled now >= end_ts above,
+            // and this is before end_ts, it's 0.
+            0
+        }
+        VestingCurve::Graded { step_secs } => {
+            if step_secs == 0 {
+                schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+            } else {
+                let active_elapsed = (elapsed / (step_secs as i128)) * (step_secs as i128);
+                schedule.total_amount.checked_mul(active_elapsed).map(|m| m / duration).unwrap_or(0)
+            }
+        }
+        VestingCurve::Step { steps } => {
+            if steps == 0 {
+                schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+            } else {
+                let step_size = duration / (steps as i128);
+                if step_size == 0 {
+                    schedule.total_amount
+                } else {
+                    let current_step = elapsed / step_size;
+                    schedule.total_amount.checked_mul(current_step).map(|m| m / (steps as i128)).unwrap_or(0)
+                }
+            }
+        }
+    }
 }
 
 /// Helper: compute claimable tokens given prior claimed amount.
