@@ -215,6 +215,12 @@ pub enum RevoraError {
     MaxDisputesReached = 60,
     /// The caller holds zero shares in the offering and cannot open a dispute.
     DisputeZeroShare = 61,
+    /// Claims are halted for this offering due to an active critical dispute.
+    DisputeFreezeActive = 62,
+    /// The dispute resolution caller is not the issuer of the disputed offering.
+    NotDisputeIssuer = 63,
+    /// The dispute is already resolved or rejected and cannot be resolved again.
+    DisputeAlreadyResolved = 64,
 }
 
 pub mod vesting;
@@ -350,6 +356,16 @@ pub enum DisputeStatus {
     Rejected,
 }
 
+/// Severity level of an on-chain dispute.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeSeverity {
+    /// Standard dispute — no special side-effects.
+    Standard,
+    /// Critical dispute — halts claims for the affected offering until resolved.
+    Critical,
+}
+
 /// An on-chain dispute opened by a holder against an offering.
 ///
 /// The `id` is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
@@ -364,6 +380,8 @@ pub struct Dispute {
     pub offering_id: OfferingId,
     /// Ledger timestamp when the dispute was opened.
     pub opened_at: u64,
+    /// Severity level of the dispute.
+    pub severity: DisputeSeverity,
     /// Hash of the off-chain dispute metadata (evidence, description, etc.).
     pub meta_hash: BytesN<32>,
     /// Current status of the dispute.
@@ -454,6 +472,8 @@ const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
+const EVENT_DISPUTE_FREEZE_ON: Symbol = symbol_short!("dsp_frzon");
+const EVENT_DISPUTE_FREEZE_OFF: Symbol = symbol_short!("dsp_frzoff");
 const BPS_DENOMINATOR: i128 = 10_000;
 const ACCRUAL_SCALE_E18: i128 = 1_000_000_000_000_000_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
@@ -1165,6 +1185,8 @@ pub enum DataKey2 {
     DisputeCount(OfferingId, Address),
     /// Persistent dispute record keyed by deterministic dispute ID.
     Dispute(BytesN<32>),
+    /// Per-offering count of open critical disputes (for O(1) freeze check).
+    CriticalDisputeCount(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6929,11 +6951,15 @@ impl RevoraRevenueShare {
     /// The dispute ID is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
     /// A holder may have at most [`MAX_OPEN_DISPUTES_PER_HOLDER`] open disputes per offering.
     ///
+    /// When `severity` is [`DisputeSeverity::Critical`] the offering's claims are frozen
+    /// (blocked) until the dispute is resolved or rejected via [`resolve_dispute`].
+    ///
     /// ### Arguments
     /// * `holder` — The address opening the dispute. Must authenticate.
     /// * `issuer` — The offering's issuer address.
     /// * `namespace` — The offering's namespace symbol.
     /// * `token` — The offering's token address.
+    /// * `severity` — [`DisputeSeverity::Critical`] halts claims until resolved.
     /// * `meta_hash` — A 32-byte hash pointing to off-chain dispute evidence (e.g. IPFS CID).
     ///
     /// ### Errors
@@ -6946,6 +6972,7 @@ impl RevoraRevenueShare {
         issuer: Address,
         namespace: Symbol,
         token: Address,
+        severity: DisputeSeverity,
         meta_hash: BytesN<32>,
     ) -> Result<BytesN<32>, RevoraError> {
         holder.require_auth();
@@ -6993,6 +7020,7 @@ impl RevoraRevenueShare {
             holder: holder.clone(),
             offering_id: offering_id.clone(),
             opened_at,
+            severity: severity.clone(),
             meta_hash: meta_hash.clone(),
             status: DisputeStatus::Open,
         };
@@ -7000,9 +7028,22 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::Dispute(dispute_id.clone()), &dispute);
         env.storage().persistent().set(&count_key, &(count + 1));
 
+        // Track critical dispute for O(1) freeze lookups
+        if severity == DisputeSeverity::Critical {
+            let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
+            let crit_count: u32 = env.storage().persistent().get(&crit_key).unwrap_or(0);
+            env.storage().persistent().set(&crit_key, &(crit_count + 1));
+            if crit_count == 0 {
+                env.events().publish(
+                    (EVENT_DISPUTE_FREEZE_ON,),
+                    (offering_id.clone(), holder.clone(), dispute_id.clone()),
+                );
+            }
+        }
+
         env.events().publish(
             (Symbol::new(&env, "dispute_open"),),
-            (dispute_id.clone(), offering_id, holder.clone(), meta_hash),
+            (dispute_id.clone(), offering_id, holder.clone(), meta_hash, severity),
         );
 
         Ok(dispute_id)
@@ -7013,6 +7054,72 @@ impl RevoraRevenueShare {
     /// Returns `None` if no dispute with the given ID exists.
     pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<Dispute> {
         env.storage().persistent().get(&DataKey2::Dispute(dispute_id))
+    }
+
+    /// Check whether any critical dispute is active for the given offering.
+    ///
+    /// When `true`, claims for this offering are halted (returns [`RevoraError::DisputeFreezeActive`]).
+    pub fn is_dispute_freeze_active(env: &Env, offering_id: &OfferingId) -> bool {
+        let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
+        env.storage().persistent().get::<DataKey2, u32>(&crit_key).unwrap_or(0) > 0
+    }
+
+    /// Resolve or reject an open dispute.
+    ///
+    /// Only the issuer of the disputed offering may call this.
+    /// When the last critical dispute for an offering transitions from `Open` to
+    /// `Resolved` / `Rejected`, the dispute freeze is lifted and a `dispute_freeze_off`
+    /// event is emitted.
+    ///
+    /// ### Arguments
+    /// * `caller` — The address resolving the dispute. Must be the offering's issuer.
+    /// * `dispute_id` — The deterministic dispute ID to resolve.
+    /// * `resolution` — The target status: [`DisputeStatus::Resolved`] or [`DisputeStatus::Rejected`].
+    ///
+    /// ### Errors
+    /// - [`RevoraError::NotDisputeIssuer`] if the caller is not the dispute's offering issuer.
+    /// - [`RevoraError::DisputeNotFound`] if no dispute with the given ID exists.
+    /// - [`RevoraError::DisputeAlreadyResolved`] if the dispute is not `Open`.
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        dispute_id: BytesN<32>,
+        resolution: DisputeStatus,
+    ) -> Result<(), RevoraError> {
+        caller.require_auth();
+
+        let mut dispute: Dispute =
+            env.storage().persistent().get(&DataKey2::Dispute(dispute_id.clone()))
+                .ok_or(RevoraError::DisputeNotFound)?;
+
+        if dispute.status != DisputeStatus::Open {
+            return Err(RevoraError::DisputeAlreadyResolved);
+        }
+        if caller != dispute.offering_id.issuer {
+            return Err(RevoraError::NotDisputeIssuer);
+        }
+
+        let was_critical = dispute.severity == DisputeSeverity::Critical;
+        dispute.status = resolution.clone();
+        env.storage().persistent().set(&DataKey2::Dispute(dispute_id), &dispute);
+
+        // Decrement critical dispute count and emit freeze_off when it hits zero
+        if was_critical {
+            let crit_key = DataKey2::CriticalDisputeCount(dispute.offering_id.clone());
+            let crit_count: u32 = env.storage().persistent().get(&crit_key).unwrap_or(0);
+            if crit_count > 0 {
+                let new_count = crit_count - 1;
+                env.storage().persistent().set(&crit_key, &new_count);
+                if new_count == 0 {
+                    env.events().publish(
+                        (EVENT_DISPUTE_FREEZE_OFF,),
+                        (dispute.offering_id, dispute.holder, dispute.id),
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get a holder's revenue share in basis points for an offering.
@@ -7295,6 +7402,11 @@ impl RevoraRevenueShare {
         holder.require_auth();
 
         let offering_id = OfferingId { issuer, namespace, token };
+
+        // Halt claims while a critical dispute is active for this offering
+        if Self::is_dispute_freeze_active(&env, &offering_id) {
+            return Err(RevoraError::DisputeFreezeActive);
+        }
 
         // Initial blacklist check for early fail-fast
         if Self::is_blacklisted(
@@ -7642,6 +7754,11 @@ impl RevoraRevenueShare {
         holder.require_auth();
 
         let offering_id = OfferingId { issuer, namespace, token };
+
+        // Halt claims while a critical dispute is active for this offering
+        if Self::is_dispute_freeze_active(&env, &offering_id) {
+            return Err(RevoraError::DisputeFreezeActive);
+        }
 
         // Initial blacklist and freeze checks for early fail-fast
         if Self::is_blacklisted(
