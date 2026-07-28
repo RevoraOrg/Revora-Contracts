@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 #![deny(unsafe_code)]
 #![deny(clippy::arithmetic_side_effects)]
 #![allow(dead_code)]
@@ -9701,11 +9701,12 @@ pub enum MigrationError {
 
 #[contractimpl]
 impl RevoraRevenueShare {
-    pub fn migrate_storage(
+    pub fn migrate_storage_walker(
         env: Env,
         issuer: Address,
         from_version: u32,
         to_version: u32,
+        dry_run: bool,
     ) -> Result<(), MigrationError> {
         // Must be gated by the issuer initiating the migration
         issuer.require_auth();
@@ -9725,16 +9726,25 @@ impl RevoraRevenueShare {
                 // In a production environment with explicit indexing, you would iterate over known constraints.
                 // E.g. for i in 0..IssuerCount { ... rewrite keys ... }
                 
-                env.events().publish(
-                    (symbol_short!("mig_step"), from_version, to_version),
-                    issuer.clone(),
-                );
+                if dry_run {
+                    env.events().publish(
+                        (soroban_sdk::Symbol::new(&env, "migration_plan"), from_version, to_version),
+                        issuer.clone(),
+                    );
+                } else {
+                    env.events().publish(
+                        (symbol_short!("mig_step"), from_version, to_version),
+                        issuer.clone(),
+                    );
+                }
             }
             _ => return Err(MigrationError::UnsupportedMigrationPath),
         }
 
-        // Persist the completed state to block replays
-        env.storage().persistent().set(&key, &to_version);
+        if !dry_run {
+            // Persist the completed state to block replays
+            env.storage().persistent().set(&key, &to_version);
+        }
         Ok(())
     }
 }
