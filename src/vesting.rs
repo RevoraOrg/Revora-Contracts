@@ -176,8 +176,9 @@ impl VestingContract {
             return Err(VestingError::AlreadyAccelerated);
         }
 
-        let raw_accel = schedule.total_amount.checked_mul(acceleration_bps as i128).unwrap_or(0) / 10000;
-        
+        let raw_accel =
+            schedule.total_amount.checked_mul(acceleration_bps as i128).unwrap_or(0) / 10000;
+
         schedule.accelerated_amount = schedule.accelerated_amount.saturating_add(raw_accel);
         if schedule.accelerated_amount > schedule.total_amount {
             schedule.accelerated_amount = schedule.total_amount;
@@ -359,11 +360,12 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
             if duration == 0 {
                 base_vested = schedule.total_amount;
             } else {
-                base_vested = schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0);
+                base_vested =
+                    schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0);
             }
         }
     }
-    
+
     let total = base_vested.saturating_add(schedule.accelerated_amount);
     if total > schedule.total_amount {
         schedule.total_amount
