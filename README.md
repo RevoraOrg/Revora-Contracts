@@ -109,6 +109,7 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `iss_acc` | `(token), (old_issuer, new_issuer)` | When `accept_issuer_transfer` completes the transfer. |
 | `iss_canc` | `(token), (current_issuer, proposed_new_issuer)` | When `cancel_issuer_transfer` revokes a pending transfer. |
 | `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
+| `downgrade_reject` | `(compiled_version, stored_version)` | When a state-mutating entrypoint is invoked but the loaded WASM's `CONTRACT_VERSION` is lower than the persisted `DeployedVersion` (lossy downgrade detected). Blocked with `MigrationDowngradeNotAllowed`. |
 | `ev_idx2` (V2) | `(version, event_type, issuer, namespace, token, period_id), (event_data...)` | Indexed V2 event — emitted by all state-changing entries for off-chain indexers. |
 | `ev_idx3` (V3) | `(version, event_type, issuer, namespace, token, period_id, _reserved), (event_data...)` | Indexed V3 event — dual-emitted alongside V2. Additive fields land here in future minor versions. |
 
@@ -359,7 +360,8 @@ Comprehensive tests verify these invariants:
      - Check `get_version()` on the new contract to confirm the upgrade.
      - Update event parsing and API handling logic if the new version introduces changes to event schemas or method signatures.
      - Treat the first successful transaction on the new contract as the migration cutover point.
-  4. The old contract remains deployed but should be considered inactive; consumers should not interact with it post-migration.
+   4. The old contract remains deployed but should be considered inactive; consumers should not interact with it post-migration.
+- **Downgrade guard:** On `initialize`, the current `CONTRACT_VERSION` is persisted as `DeployedVersion`. Every subsequent state-mutating entrypoint checks that the compiled `CONTRACT_VERSION` is not lower than the persisted `DeployedVersion`. If a WASM binary with a lower version is deployed (lossy downgrade), all state-mutating operations are blocked and a `downgrade_reject` event is emitted. The `migrate_storage` entrypoint remains accessible as an admin escape hatch.
 - **Migration milestones:** When a new version is deployed, integrators can treat the first transaction that succeeds on the new contract as a migration milestone; the contract does not currently emit a dedicated "migration" event, but event schemas may include a version field (e.g., v1 events) for consumers.
 
 ### Input parameter validation (#35)

@@ -1401,6 +1401,7 @@ impl RevoraRevenueShare {
     /// - If the on-chain layout version is absent or older, stamp the storage with the
     ///   compiled `STORAGE_LAYOUT_VERSION` and emit `EVENT_LAYOUT_VERSION` to signal migration.
     fn assert_storage_layout_compatible(env: &Env) -> Result<(), RevoraError> {
+        Self::assert_contract_version_compatible(env)?;
         let key = DataKey::StorageLayoutVersion;
         if let Some(stored_v) = env.storage().persistent().get::<DataKey, u32>(&key) {
             if stored_v > STORAGE_LAYOUT_VERSION {
@@ -1414,6 +1415,32 @@ impl RevoraRevenueShare {
             // No layout stamp found: stamp it now (first-time initialize/migration path).
             env.storage().persistent().set(&key, &STORAGE_LAYOUT_VERSION);
             env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+        }
+        Ok(())
+    }
+
+    /// Ensure the loaded WASM version is not older than the persisted minimum supported version.
+    ///
+    /// On `initialize` the current `CONTRACT_VERSION` is persisted as the floor for all future
+    /// contract WASM binaries. `migrate_storage` ratchets this floor upward. If a WASM binary
+    /// with a lower `CONTRACT_VERSION` is deployed later, every state-mutating entrypoint is
+    /// blocked and a `downgrade_reject` event is emitted.
+    ///
+    /// # Errors
+    /// - [`RevoraError::MigrationDowngradeNotAllowed`] if `CONTRACT_VERSION < persisted version`.
+    fn assert_contract_version_compatible(env: &Env) -> Result<(), RevoraError> {
+        if let Some(min_supported) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u32, u32, u32)>(&DataKey::DeployedVersion)
+        {
+            if CONTRACT_VERSION < min_supported {
+                env.events().publish(
+                    (Symbol::new(env, "downgrade_reject"),),
+                    (CONTRACT_VERSION, min_supported),
+                );
+                return Err(RevoraError::MigrationDowngradeNotAllowed);
+            }
         }
         Ok(())
     }
@@ -3191,6 +3218,10 @@ impl RevoraRevenueShare {
         // Stamp storage layout version for future compatibility checks.
         env.storage().persistent().set(&DataKey::StorageLayoutVersion, &STORAGE_LAYOUT_VERSION);
         env.events().publish((EVENT_LAYOUT_VERSION,), STORAGE_LAYOUT_VERSION);
+
+        // Persist the initial contract version as the minimum supported version.
+        // Future WASM binaries with a lower CONTRACT_VERSION will be rejected at entry.
+        env.storage().persistent().set(&DataKey::DeployedVersion, &CONTRACT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
     }
