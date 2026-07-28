@@ -215,9 +215,18 @@ pub enum RevoraError {
 
 pub mod vesting;
 
+/// Deterministic Merkle-tree helpers for snapshot finalization.
+///
+/// Provides [`merkle_helpers::canonical_leaves`] and [`merkle_helpers::build_merkle_root`].
+/// See the module-level documentation in `src/merkle_helpers.rs` for full usage and
+/// security notes.
+pub mod merkle_helpers;
+
 #[cfg(feature = "kani")]
 pub mod kani_harness;
 
+#[cfg(test)]
+mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
