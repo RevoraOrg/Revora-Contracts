@@ -1705,6 +1705,9 @@ impl RevoraRevenueShare {
         let total_key = DataKey::HolderShareTotal(offering_id.clone());
         let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
 
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&DataKey2::OfferingClasses(offering_id.clone()));
+
         match classes {
             Some(cls_vec) => {
                 let sc = match share_class {
@@ -1721,6 +1724,15 @@ impl RevoraRevenueShare {
                 if !found {
                     return Err(RevoraError::InvalidShareClass);
                 }
+            }
+            None => {}
+        }
+
+        let old_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
 
         let new_total = current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
         if new_total > 10_000 {
@@ -7283,6 +7295,42 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
     /// Set a holder's revenue share (in basis points) for an offering.
     fn set_holder_share_full(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        share_bps: u32,
+        share_class: Option<ShareClass>,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        // Verify offering exists and issuer is current
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+        Self::set_holder_share_internal(
+            &env,
+            offering_id.issuer,
+            offering_id.namespace,
+            offering_id.token,
+            holder,
+            share_bps,
+            share_class,
+        )
+    }
 
     /// Configure the reporting access window for an offering. If unset, always open.
     pub fn set_report_window(
@@ -7462,6 +7510,31 @@ impl RevoraRevenueShare {
     /// Return unclaimed period IDs for a holder on an offering.
     /// Ordering: by deposit index (creation order), deterministic (#38).
     pub fn get_pending_periods(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Vec<u64> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let count_key = DataKey::PeriodCount(offering_id.clone());
+        let period_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let idx_key = DataKey::LastClaimedIdx(offering_id.clone(), holder);
+        let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
+
+        let mut periods = Vec::new(&env);
+        for i in start_idx..period_count {
+            let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);
+            let period_id: u64 = env.storage().persistent().get(&entry_key).unwrap_or(0);
+            if period_id == 0 {
+                continue;
+            }
+            periods.push_back(period_id);
+        }
+        periods
+    }
+
     pub fn claim(
         env: Env,
         holder: Address,
