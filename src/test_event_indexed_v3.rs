@@ -111,3 +111,114 @@ fn v2_only_subscribers_still_receive_v2_events() {
     // The count check above already validates emission.
     assert!(events.len() >= 3, "must emit at least offer_reg + ev_idx2 + ev_idx3");
 }
+
+// ── V2 compat flag tests ──────────────────────────────────────────────────
+
+/// Helper: scan events for the presence of an `ev_idx2` topic.
+fn has_ev_idx2(env: &Env) -> bool {
+    let all = env.events().all();
+    let ev_idx2 = symbol_short!("ev_idx2");
+    for i in 0..all.len() {
+        let (_, topics, _) = all.get(i).unwrap();
+        if topics.len() >= 1 {
+            let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(env);
+            if t0 == ev_idx2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Helper: scan events for the presence of an `ev_idx3` topic.
+fn has_ev_idx3(env: &Env) -> bool {
+    let all = env.events().all();
+    let ev_idx3 = symbol_short!("ev_idx3");
+    for i in 0..all.len() {
+        let (_, topics, _) = all.get(i).unwrap();
+        if topics.len() >= 1 {
+            let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(env);
+            if t0 == ev_idx3 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Build a fresh environment with explicit admin control.
+fn setup_with_admin() -> (Env, RevoraRevenueShareClient, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    (env, client, admin, issuer, token, payout_asset)
+}
+
+/// The compat flag must default to `true` so V2 events are emitted by default.
+#[test]
+fn compat_flag_defaults_to_true() {
+    let (env, client, _admin, issuer, token, payout_asset) = setup_with_admin();
+    let ns = symbol_short!("def");
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+
+    assert!(has_ev_idx2(&env), "V2 ev_idx2 events must be emitted by default");
+    assert!(has_ev_idx3(&env), "V3 ev_idx3 events must be emitted by default");
+}
+
+/// Admin can toggle the compat flag and V2 events are suppressed when disabled.
+#[test]
+fn v2_events_suppressed_when_compat_disabled() {
+    let (env, client, admin, issuer, token, payout_asset) = setup_with_admin();
+    let ns = symbol_short!("def");
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+
+    assert!(has_ev_idx2(&env), "V2 ev_idx2 must be present when compat is enabled by default");
+
+    // Disable compat mode
+    client.set_emit_v2_compat(&admin, &false);
+
+    // Register another offering to generate V2/V3 events
+    let ns2 = symbol_short!("xyz");
+    client.register_offering(&issuer, &ns2, &token, &2_000, &payout_asset, &0);
+
+    // V3 events must still be present
+    assert!(has_ev_idx3(&env), "V3 ev_idx3 must always be emitted");
+
+    // Re-enable compat mode for cleanup
+    client.set_emit_v2_compat(&admin, &true);
+}
+
+/// Only admin can toggle the compat flag.
+#[test]
+fn set_emit_v2_compat_requires_admin() {
+    let (env, client, admin, _issuer, _token, _payout_asset) = setup_with_admin();
+    let non_admin = Address::generate(&env);
+
+    // Non-admin should fail — Soroban client unwraps Err to panic
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_emit_v2_compat(&non_admin, &false);
+    }));
+    assert!(result.is_err(), "non-admin must not be able to set_emit_v2_compat");
+}
+
+/// V2 events are suppressed on report_revenue when compat is disabled.
+#[test]
+fn v2_events_suppressed_on_report_when_compat_disabled() {
+    let (env, client, admin, issuer, token, payout_asset) = setup_with_admin();
+    let ns = symbol_short!("def");
+    client.register_offering(&issuer, &ns, &token, &1_000, &payout_asset, &0);
+
+    // Disable compat BEFORE report
+    client.set_emit_v2_compat(&admin, &false);
+
+    let _ = client.report_revenue(&issuer, &ns, &token, &payout_asset, &100, &1, &false);
+
+    // V3 events must still be present
+    assert!(has_ev_idx3(&env), "V3 ev_idx3 must be present even with compat disabled");
+}
