@@ -1,7 +1,7 @@
 #![cfg(test)]
 extern crate alloc;
 
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
+use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError, RevoraError, DataKey, CONTRACT_VERSION};
 use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
 
 
@@ -336,4 +336,101 @@ fn migrate_storage_emits_event() {
     let migrate_events: Vec<_> =
         events.iter().filter(|e| e.0.to_string().contains("migrate")).collect();
     assert!(!migrate_events.is_empty(), "expected migrate event to be emitted");
+}
+
+// ─── Downgrade-rejection guard tests ────────────────────────────────────────
+
+#[test]
+fn contract_version_compatible_after_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // After initialize, DeployedVersion == CONTRACT_VERSION, so the guard must allow operations.
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
+}
+
+#[test]
+fn contract_version_compatible_rejects_when_stored_higher() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Bump DeployedVersion above CONTRACT_VERSION to simulate a lossy downgrade scenario.
+    client.migrate_storage(&admin, &2, &0, &0).unwrap();
+
+    let res = client.try_set_testnet_mode(&true);
+    match res {
+        Err(Ok(RevoraError::MigrationDowngradeNotAllowed)) => {}
+        other => panic!("expected MigrationDowngradeNotAllowed, got: {:?}", other),
+    }
+}
+
+#[test]
+fn contract_version_compatible_emits_downgrade_reject_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    client.migrate_storage(&admin, &2, &0, &0).unwrap();
+
+    let _ = client.try_set_testnet_mode(&true);
+
+    let events = env.events().all();
+    let reject_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("downgrade_reject")).collect();
+    assert!(!reject_events.is_empty(), "expected downgrade_reject event");
+}
+
+#[test]
+fn contract_version_compatible_passes_at_equal_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Bump to exactly CONTRACT_VERSION (should succeed, guard passes equal)
+    // Note: migrate_storage itself will return AlreadyAtTargetVersion since
+    // DeployedVersion already equals CONTRACT_VERSION after init.
+    let res = client.try_migrate_storage(&admin, &1, &0, &23);
+    match res {
+        Err(Ok(RevoraError::AlreadyAtTargetVersion)) => {}
+        other => panic!("expected AlreadyAtTargetVersion, got: {:?}", other),
+    }
+
+    // A state-mutating call must still succeed (guard passes equal boundary)
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
+}
+
+#[test]
+fn contract_version_compatible_allows_operations_when_stored_lower() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    // Manually set DeployedVersion below CONTRACT_VERSION via the storage directly.
+    // This represents an upgrade path where old storage gets a lower version.
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&crate::DataKey::DeployedVersion, &(0, 9, 0));
+    });
+
+    // All operations should be allowed (CONTRACT_VERSION > stored DeployedVersion)
+    let res = client.try_set_testnet_mode(&true);
+    assert_eq!(res, Ok(()));
 }
