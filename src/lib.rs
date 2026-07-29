@@ -354,6 +354,8 @@ mod test_twap_window;
 mod test_faucet_seed;
 #[cfg(test)]
 mod test_faucet_metrics;
+#[cfg(test)]
+mod test_compute_share_decomposition_prop;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
