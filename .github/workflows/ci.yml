@@ -77,7 +77,43 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # ── 3. Build + test ───────────────────────────────────────────────────────
+  # ── 3. Event-sunset table validation ─────────────────────────────────────
+  # Ensures every entry in docs/EVENT_SUNSET.yaml has a non-null sunset_epoch
+  # and that docs/EVENT_SUNSET.json is in sync with the YAML source of truth.
+  #
+  # How to fix failures:
+  #   a) If "VALIDATION ERRORS" → add sunset_epoch to the offending entry in
+  #      docs/EVENT_SUNSET.yaml.
+  #   b) If "JSON is stale" → run `python3 scripts/generate_event_sunset_json.py`
+  #      locally and commit the regenerated docs/EVENT_SUNSET.json.
+  #   c) If Python tests fail → fix the generator logic in
+  #      scripts/generate_event_sunset_json.py.
+  event_sunset:
+    name: Event-sunset table validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Run unit tests for the sunset generator
+        run: python3 -m unittest scripts/test_event_sunset.py -v
+
+      # Validates that:
+      #   1. Every deprecated topic has a non-null sunset_epoch.
+      #   2. No duplicate topic names exist.
+      #   3. docs/EVENT_SUNSET.json exactly matches what the generator
+      #      would produce from the current docs/EVENT_SUNSET.yaml.
+      - name: Check EVENT_SUNSET.json is up-to-date with YAML
+        run: python3 scripts/generate_event_sunset_json.py --check
+
+  # ── 4. Build + test ───────────────────────────────────────────────────────
   test:
     name: Build and test
     runs-on: ubuntu-latest
@@ -103,6 +139,20 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      - name: Check storage layout JSON drift
+        run: cargo test --test storage_layout_json storage_layout_json_matches_checked_in_docs -- --exact --test-threads=1
+
+      # Verify indexer/event_sunset.json is in sync with docs/EVENT_SUNSET.yaml.
+      # The generator validates every entry has a non-zero sunset_epoch and no
+      # chained deprecations.  Run locally: python3 scripts/gen_event_sunset.py
+      - name: Check event sunset JSON drift
+        run: python3 scripts/gen_event_sunset.py --check
+
+      # Validate the event sunset JSON is also covered by the Rust integration
+      # test (tests/event_sunset_json.rs).
+      - name: Test event sunset JSON (Rust integration)
+        run: cargo test --test event_sunset_json -- --test-threads=1
 
       # --test-threads=1 keeps Soroban test output deterministic.
       # Local command: cargo test -- --test-threads=1

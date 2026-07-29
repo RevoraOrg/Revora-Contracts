@@ -57,6 +57,9 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
 | `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
 | `get_version` | — | `u32` | — | Return the current contract version (#23). Used for upgrade compatibility. |
+| `open_dispute` | `holder: Address`, `issuer: Address`, `namespace: Symbol`, `token: Address`, `severity: DisputeSeverity`, `meta_hash: BytesN<32>` | `Result<BytesN<32>, RevoraError>` | holder | Open a formal on-chain dispute with off-chain evidence identified by `meta_hash`. Returns the deterministic dispute ID. `severity=Critical` halts claims until resolved. |
+| `resolve_dispute` | `caller: Address`, `dispute_id: BytesN<32>`, `resolution: DisputeStatus` | `Result<(), RevoraError>` | caller (must be offering issuer) | Resolve (`Resolved`) or reject (`Rejected`) an open dispute. Lifts dispute freeze when the last Critical dispute transitions out of `Open`. |
+| `get_dispute` | `dispute_id: BytesN<32>` | `Option<Dispute>` | — | Retrieve a dispute record by its ID. |
 
 ### Types
 
@@ -64,6 +67,9 @@ Soroban contract for revenue-share offerings and blacklist management.
 - **ConcentrationLimitConfig:** `{ max_bps: u32, enforce: bool, max_staleness_secs: u64 }` — per-offering concentration guardrail. When `enforce` is true and `max_staleness_secs > 0`, `report_revenue` rejects with `StaleConcentrationData` if no concentration has been reported or the last report is older than `max_staleness_secs` seconds.
 - **AuditSummary:** `{ total_revenue: i128, report_count: u64 }` — per-offering audit log summary.
 - **RoundingMode:** `Truncation` (0) or `RoundHalfUp` (1) — used by `compute_share` and per-offering default.
+- **DisputeStatus:** `Open` | `Resolved` | `Rejected` — lifecycle status of an on-chain dispute.
+- **DisputeSeverity:** `Standard` | `Critical` — severity level of a dispute. Critical disputes halt claims for the affected offering until resolved.
+- **Dispute:** `{ id: BytesN<32>, holder: Address, offering_id: OfferingId, opened_at: u64, severity: DisputeSeverity, meta_hash: BytesN<32>, status: DisputeStatus }` — an on-chain dispute record. The `id` is `sha256(issuer \|\| namespace \|\| token \|\| holder \|\| meta_hash)`.
 
 ### Error codes (RevoraError)
 
@@ -82,6 +88,13 @@ Soroban contract for revenue-share offerings and blacklist management.
 | 26 | `ClaimWindowClosed` | Current ledger timestamp is outside the configured claiming window; `claim` rejected. |
 | 31 | `JurisdictionDisallowed` | Holder jurisdiction is not currently allowed for a new `set_holder_share` write or snapshot inclusion batch. Existing persisted shares remain claimable. |
 | 51 | `StaleConcentrationData` | `report_concentration` has never been called, or the last call is older than `max_staleness_secs`; `report_revenue` rejected when enforcement is on. |
+| 58 | `DisputeNotFound` | The dispute ID does not correspond to an existing dispute record. |
+| 59 | `DisputeAlreadyOpen` | A dispute with the same (offering_id, holder, meta_hash) already exists. |
+| 60 | `MaxDisputesReached` | The holder has reached the maximum number of open disputes (`MAX_OPEN_DISPUTES_PER_HOLDER` = 5). |
+| 61 | `DisputeZeroShare` | The caller holds zero shares in the offering and cannot open a dispute. |
+| 62 | `DisputeFreezeActive` | Claims are halted for this offering due to an active critical dispute. |
+| 63 | `NotDisputeIssuer` | The dispute resolution caller is not the issuer of the disputed offering. |
+| 64 | `DisputeAlreadyResolved` | The dispute is already resolved or rejected and cannot be resolved again. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -109,6 +122,10 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `iss_acc` | `(token), (old_issuer, new_issuer)` | When `accept_issuer_transfer` completes the transfer. |
 | `iss_canc` | `(token), (current_issuer, proposed_new_issuer)` | When `cancel_issuer_transfer` revokes a pending transfer. |
 | `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
+| `downgrade_reject` | `(compiled_version, stored_version)` | When a state-mutating entrypoint is invoked but the loaded WASM's `CONTRACT_VERSION` is lower than the persisted `DeployedVersion` (lossy downgrade detected). Blocked with `MigrationDowngradeNotAllowed`. |
+| `dispute_open` | `(dispute_id, offering_id, holder, meta_hash, severity)` | When `open_dispute` successfully creates a new dispute record. |
+| `dsp_frzon` | `(offering_id, holder, dispute_id)` | When the first `Critical` dispute is opened for an offering, freezing claims. |
+| `dsp_frzoff` | `(offering_id, holder, dispute_id)` | When the last `Critical` dispute for an offering transitions out of `Open`; claims unfrozen. |
 | `ev_idx2` (V2) | `(version, event_type, issuer, namespace, token, period_id), (event_data...)` | Indexed V2 event — emitted by all state-changing entries for off-chain indexers. |
 | `ev_idx3` (V3) | `(version, event_type, issuer, namespace, token, period_id, _reserved), (event_data...)` | Indexed V3 event — dual-emitted alongside V2. Additive fields land here in future minor versions. |
 
@@ -135,6 +152,26 @@ unchanged at the `ev_idx2` topic. V3 subscribers consume the `ev_idx3` topic whi
 after the introduction of `ev_idx3`. V2-only subscribers are safe during this deprecation window.
 After the deprecation window, V2 emission may be removed. V3 subscribers should validate the `version`
 field and ignore events where `version != 3`.
+
+#### Deprecated-event sunset table
+
+A machine-readable table of all deprecated topics is maintained at
+[`docs/EVENT_SUNSET.yaml`](./docs/EVENT_SUNSET.yaml) (source of truth) and
+[`docs/EVENT_SUNSET.json`](./docs/EVENT_SUNSET.json) (generated, for indexer consumption).
+
+Each entry records the deprecated `topic`, its `replacement`, and the `sunset_epoch` – the Soroban
+ledger sequence after which the deprecated topic will stop being emitted. CI rejects any entry with
+a missing or null `sunset_epoch` and verifies that the JSON is always in sync with the YAML.
+
+Indexers can load `EVENT_SUNSET.json` at startup to:
+- Emit a warning when they receive a deprecated topic that has passed its `sunset_epoch`.
+- Automatically switch event routing to the `replacement` topic.
+- Generate observability alerts before a planned removal window.
+
+To regenerate the JSON after editing the YAML:
+```bash
+python3 scripts/generate_event_sunset_json.py
+```
 
 ### Call patterns and limits
 
@@ -359,7 +396,8 @@ Comprehensive tests verify these invariants:
      - Check `get_version()` on the new contract to confirm the upgrade.
      - Update event parsing and API handling logic if the new version introduces changes to event schemas or method signatures.
      - Treat the first successful transaction on the new contract as the migration cutover point.
-  4. The old contract remains deployed but should be considered inactive; consumers should not interact with it post-migration.
+   4. The old contract remains deployed but should be considered inactive; consumers should not interact with it post-migration.
+- **Downgrade guard:** On `initialize`, the current `CONTRACT_VERSION` is persisted as `DeployedVersion`. Every subsequent state-mutating entrypoint checks that the compiled `CONTRACT_VERSION` is not lower than the persisted `DeployedVersion`. If a WASM binary with a lower version is deployed (lossy downgrade), all state-mutating operations are blocked and a `downgrade_reject` event is emitted. The `migrate_storage` entrypoint remains accessible as an admin escape hatch.
 - **Migration milestones:** When a new version is deployed, integrators can treat the first transaction that succeeds on the new contract as a migration milestone; the contract does not currently emit a dedicated "migration" event, but event schemas may include a version field (e.g., v1 events) for consumers.
 
 ### Input parameter validation (#35)
