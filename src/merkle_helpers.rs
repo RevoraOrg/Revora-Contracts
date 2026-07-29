@@ -1,12 +1,14 @@
-//! # Deterministic Merkle-Tree Construction for Snapshot Finalization
+//! # Deterministic Merkle-Tree Construction and Proof Verification
 //!
-//! This module provides two pure helpers for building a tamper-evident, cross-
-//! implementation-reproducible Merkle root over a snapshot holder set:
+//! This module provides pure helpers for building and verifying a tamper-evident,
+//! cross-implementation-reproducible Merkle tree over a snapshot holder set:
 //!
 //! * [`canonical_leaves`] — validates and sorts `(Address, share_bps)` pairs into
 //!   a canonical, lexicographic order by holder-address XDR bytes.
 //! * [`build_merkle_root`] — constructs a standard binary Merkle tree from the sorted
 //!   leaves and returns the SHA-256 root as a `BytesN<32>`.
+//! * [`verify_merkle_proof`] — verifies a Merkle membership proof (path from a leaf
+//!   hash to the root), bounded by [`MAX_PROOF_DEPTH`].
 //!
 //! ## Ordering guarantee
 //!
@@ -32,6 +34,37 @@
 //! Combined with [`canonical_leaves`]'s duplicate-address rejection this gives a
 //! bijection between holder sets and Merkle roots.
 //!
+//! ## Merkle proof verification
+//!
+//! [`verify_merkle_proof`] accepts a pre-computed `leaf_hash`, a `root`, and an ordered
+//! `proof` slice of sibling hashes (one per tree level, bottom-up).  It recomputes the
+//! path from the leaf to the root applying the same sorted-pair rule at each step:
+//!
+//! ```text
+//! current = leaf_hash
+//! for sibling in proof:
+//!     current = SHA-256( 0x01 || min(current, sibling) || max(current, sibling) )
+//! return current == root
+//! ```
+//!
+//! ### Proof depth bound — `MAX_PROOF_DEPTH = 32`
+//!
+//! **`MAX_PROOF_DEPTH = 32`** caps the number of sibling hashes accepted per call.
+//! A standard binary Merkle tree over 2³² ≈ 4 billion leaves requires at most 32
+//! levels, so this bound covers every realistic snapshot while providing two critical
+//! security guarantees:
+//!
+//! 1. **Gas / memory safety** — each sibling hash triggers one SHA-256 call and two
+//!    `Bytes` allocations.  Without an upper bound an adversary could submit a proof
+//!    with millions of siblings, exhausting contract memory and gas.
+//! 2. **Fail-fast** — the length check runs *before* any hashing, so an oversized proof
+//!    is rejected in O(1) and the contract never touches the malicious payload.
+//!
+//! Proofs longer than `MAX_PROOF_DEPTH` are rejected with [`MerkleError::ProofTooDeep`].
+//! The contract entrypoint [`crate::RevoraRevenueShare::verify_merkle_proof`] additionally
+//! emits a `proof_reject_depth` event so off-chain indexers can detect and alert on
+//! oversized-proof attempts.
+//!
 //! ## Empty-tree convention
 //!
 //! When no leaves are supplied `build_merkle_root` returns `SHA-256(b"")` (the hash of
@@ -42,7 +75,7 @@
 //!
 //! 1. **Collision resistance** — relies on SHA-256 collision resistance.  No known
 //!    practical attack exists; this is consistent with the rest of the contract.
-//! 2. **No state mutation** — both helpers are pure: they read no storage and write no
+//! 2. **No state mutation** — all helpers are pure: they read no storage and write no
 //!    storage.  They cannot be used to alter contract state and require no auth.
 //! 3. **Duplicate rejection** — [`canonical_leaves`] returns [`MerkleError::DuplicateAddress`]
 //!    if the same `Address` appears more than once.  This prevents a tree with duplicate
@@ -52,10 +85,31 @@
 //! 5. **Input size** — callers are responsible for bounding the input length.  The
 //!    helpers do not enforce a maximum; the contract entry points that call them enforce
 //!    `MAX_SNAPSHOT_BATCH` (50) per call.
+//! 6. **Proof depth bound** — [`verify_merkle_proof`] asserts `proof.len() <=
+//!    [`MAX_PROOF_DEPTH`]` before performing any hashing, preventing gas exhaustion from
+//!    adversarially large proof vectors.
 
 #![allow(dead_code)]
 
 use soroban_sdk::{contracterror, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
+
+// ── Depth bound ─────────────────────────────────────────────────────────────
+
+/// Maximum number of sibling hashes accepted in a single Merkle membership proof.
+///
+/// A binary Merkle tree over 2³² leaves has depth 32, so this bound is sufficient
+/// for any realistic snapshot while capping the per-call gas cost and preventing
+/// memory exhaustion from adversarially crafted proof vectors.
+///
+/// # Developer notes
+///
+/// * The check is performed **before** any SHA-256 computation, making it O(1).
+/// * Off-chain clients should never need a proof longer than `ceil(log2(N))` where
+///   `N` is the number of leaves in the snapshot.  For the current `MAX_SNAPSHOT_BATCH`
+///   of 50 leaves the maximum valid proof depth is 6 — far below this ceiling.
+/// * Increasing this value is a backwards-compatible change (old proofs remain valid).
+///   Decreasing it is a breaking change and requires a new contract version.
+pub const MAX_PROOF_DEPTH: u32 = 32;
 
 // ── Error type ─────────────────────────────────────────────────────────────
 
@@ -71,6 +125,13 @@ pub enum MerkleError {
     DuplicateAddress = 1001,
     /// A `share_bps` value exceeded 10 000 (100 %).
     InvalidShareBps = 1002,
+    /// The `proof` vector supplied to [`verify_merkle_proof`] exceeds
+    /// [`MAX_PROOF_DEPTH`] (32) siblings.
+    ///
+    /// Very deep proofs risk exhausting contract memory and gas budgets.
+    /// The check is performed before any hashing so the contract incurs no
+    /// additional cost from the oversized payload.
+    ProofTooDeep = 1003,
 }
 
 // ── Public helpers ──────────────────────────────────────────────────────────
@@ -125,11 +186,7 @@ pub fn canonical_leaves(
             return Err(MerkleError::InvalidShareBps);
         }
         let holder_xdr = holder.to_xdr(env);
-        leaves.push_back(MerkleLeaf {
-            holder: holder.clone(),
-            share_bps: *share_bps,
-            holder_xdr,
-        });
+        leaves.push_back(MerkleLeaf { holder: holder.clone(), share_bps: *share_bps, holder_xdr });
     }
 
     // ── 2. Insertion sort by holder_xdr (ascending, lexicographic) ─────────
@@ -224,6 +281,77 @@ pub fn build_merkle_root(env: &Env, leaves: &Vec<MerkleLeaf>) -> BytesN<32> {
     }
 
     level.get(0).unwrap()
+}
+
+/// Verify a Merkle membership proof against a known root.
+///
+/// Given a `leaf_hash` (the SHA-256 hash of the leaf being proven), a `root`
+/// (the expected Merkle root), and an ordered `proof` vector of sibling hashes
+/// (bottom-up, one per tree level), this function recomputes the path from the
+/// leaf to the root and returns `true` if and only if the recomputed value equals
+/// `root`.
+///
+/// ## Depth bound
+///
+/// **`proof.len()` must be ≤ [`MAX_PROOF_DEPTH`] (32).**
+///
+/// This assertion is checked before any hashing.  If the proof is longer,
+/// [`MerkleError::ProofTooDeep`] is returned immediately.  This prevents
+/// adversarially crafted proofs from exhausting contract memory or gas budgets.
+///
+/// ## Algorithm
+///
+/// At each level the same sorted-pair rule used by [`build_merkle_root`] is applied:
+///
+/// ```text
+/// current = leaf_hash
+/// for sibling in proof:
+///     current = SHA-256( 0x01 || min(current, sibling) || max(current, sibling) )
+/// return current == root
+/// ```
+///
+/// ## Returns
+///
+/// * `Ok(true)`  — proof is valid; the leaf is a member of the tree with the given root.
+/// * `Ok(false)` — proof is structurally valid but the computed root does not match.
+/// * `Err(MerkleError::ProofTooDeep)` — `proof.len() > MAX_PROOF_DEPTH`.
+///
+/// ## Empty proof
+///
+/// A zero-length `proof` is valid (leaf *is* the root — single-leaf tree).
+/// `Ok(leaf_hash == root)` is returned.
+///
+/// ## Example (off-chain reference pseudo-code)
+/// ```ignore
+/// let leaf_hash = hash_leaf(&env, &leaf);
+/// let ok = verify_merkle_proof(&env, leaf_hash, root, &siblings)?;
+/// assert!(ok, "holder is not in the committed snapshot");
+/// ```
+pub fn verify_merkle_proof(
+    env: &Env,
+    leaf_hash: BytesN<32>,
+    root: BytesN<32>,
+    proof: &Vec<BytesN<32>>,
+) -> Result<bool, MerkleError> {
+    // ── Depth-bound assertion ───────────────────────────────────────────────
+    //
+    // SECURITY: This check MUST come first — before any iteration or allocation.
+    // An adversary that can submit an arbitrarily long `proof` vector would cause
+    // the contract to perform O(proof.len()) SHA-256 calls and byte copies, which
+    // can exhaust both the instruction and memory budgets.  By checking the length
+    // here we reject oversized proofs in O(1) with no hashing cost.
+    if proof.len() > MAX_PROOF_DEPTH {
+        return Err(MerkleError::ProofTooDeep);
+    }
+
+    // ── Walk the proof path ─────────────────────────────────────────────────
+    let mut current = leaf_hash;
+    for i in 0..proof.len() {
+        let sibling = proof.get(i).unwrap();
+        current = hash_node(env, &current, &sibling);
+    }
+
+    Ok(current == root)
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────

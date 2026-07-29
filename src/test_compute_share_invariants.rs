@@ -54,7 +54,7 @@ extern crate alloc;
 use super::*;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use alloc::format;
-use soroban_sdk::{Env, Address, Symbol};
+use soroban_sdk::{Address, Env, Symbol};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -640,47 +640,56 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
 fn test_per_class_supply_cap_edge_cases() {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     let contract_id = env.register_contract(None, crate::RevoraContract);
     let client = crate::RevoraContractClient::new(&env, &contract_id);
-    
+
     let admin = Address::generate(&env);
     client.initialize(&admin);
-    
+
     let issuer = Address::generate(&env);
     let namespace = Symbol::new(&env, "ns");
     let token = Address::generate(&env);
     let offering_sym = Symbol::new(&env, "offering");
     let payout_asset = Address::generate(&env);
-    
+
     // Setup offering
-    client.try_register_offering(
-        &issuer,
-        &namespace,
-        &token,
-        &10_000,
-        &offering_sym,
-        &18,
-        &payout_asset,
-        &0,
-    ).unwrap();
+    client
+        .try_register_offering(
+            &issuer,
+            &namespace,
+            &token,
+            &10_000,
+            &offering_sym,
+            &18,
+            &payout_asset,
+            &0,
+        )
+        .unwrap();
 
     let holder = Address::generate(&env);
     let share_class = Symbol::new(&env, "classA");
-    
+
     // Set aggregate cap to 10
     client.set_max_total_supply_shares(&issuer, &namespace, &token, &10);
-    
+
     // Set class cap to 1
     client.set_class_supply_cap(&issuer, &namespace, &token, &share_class, &1);
-    
+
     // Issuance 1: Should pass, cap of exactly 1
     client.set_holder_share(&issuer, &namespace, &token, &holder, &1, &Some(share_class.clone()));
-    
+
     // Issuance 2: Should fail, class exhausted but aggregate has room (1 < 10)
     let holder2 = Address::generate(&env);
-    let result = client.try_set_holder_share(&issuer, &namespace, &token, &holder2, &1, &Some(share_class.clone()));
-    
+    let result = client.try_set_holder_share(
+        &issuer,
+        &namespace,
+        &token,
+        &holder2,
+        &1,
+        &Some(share_class.clone()),
+    );
+
     assert!(result.is_err());
 }
 
@@ -827,10 +836,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             r_a.is_ok(),
             "cap=0: large deposit (near i128::MAX) must succeed; no cap to enforce"
         );
-        assert!(
-            r_b.is_ok(),
-            "cap=i128::MAX: large deposit at i128::MAX boundary must succeed"
-        );
+        assert!(r_b.is_ok(), "cap=i128::MAX: large deposit at i128::MAX boundary must succeed");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -842,11 +848,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
         let deposited_b = client.get_deposited_revenue(&issuer, &symbol_short!("b"), &token);
 
         // A: 100 + (i128::MAX - 1_000_000) = i128::MAX - 999_900
-        assert_eq!(
-            deposited_a,
-            100 + large_amount,
-            "cap=0: cumulative must reflect all deposits"
-        );
+        assert_eq!(deposited_a, 100 + large_amount, "cap=0: cumulative must reflect all deposits");
 
         // B: 100 + (i128::MAX - 1_000_000) = i128::MAX - 999_900
         assert_eq!(
@@ -881,10 +883,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &3,
         );
 
-        assert!(
-            r_a.is_ok(),
-            "cap=0: overflow-amount issuance must succeed; no cap enforced"
-        );
+        assert!(r_a.is_ok(), "cap=0: overflow-amount issuance must succeed; no cap enforced");
         assert!(
             r_b.is_err(),
             "cap=i128::MAX: deposit exceeding cap must fail with SupplyCapExceeded"
@@ -902,8 +901,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
         let all_events = env.events().all();
 
         // Convert "cap_reach" symbol once
-        let cap_reach_sym: soroban_sdk::Val =
-            symbol_short!("cap_reach").into_val(&env);
+        let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
 
         // Count "cap_reach" events for fixture A (should be 0)
         let cap_reach_count_a = all_events
@@ -928,10 +926,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             })
             .count();
 
-        assert_eq!(
-            cap_reach_count_a, 0,
-            "cap=0: must emit 0 cap-reach events (no cap enforced)"
-        );
+        assert_eq!(cap_reach_count_a, 0, "cap=0: must emit 0 cap-reach events (no cap enforced)");
         assert!(
             cap_reach_count_b > 0,
             "cap=i128::MAX: must emit at least 1 cap-reach event when deposit meets i128::MAX boundary"
@@ -1003,10 +998,7 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
     // Verify cumulative total
     let total: i128 = test_amounts.iter().sum();
     let deposited = client.get_deposited_revenue(&issuer, &symbol_short!("u"), &token);
-    assert_eq!(
-        deposited, total,
-        "cap=0: cumulative deposited must match sum of all deposits"
-    );
+    assert_eq!(deposited, total, "cap=0: cumulative deposited must match sum of all deposits");
 }
 
 #[test]
@@ -1073,7 +1065,8 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
 
         let deposited = client.get_deposited_revenue(&issuer, &symbol_short!("m"), &token);
         assert_eq!(
-            deposited, i128::MAX,
+            deposited,
+            i128::MAX,
             "cap=i128::MAX: cumulative must equal MAX after exact-boundary deposits"
         );
     }
@@ -1090,10 +1083,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
             &1,
             &3,
         );
-        assert!(
-            r.is_err(),
-            "cap=i128::MAX: deposit exceeding already-at-cap must fail"
-        );
+        assert!(r.is_err(), "cap=i128::MAX: deposit exceeding already-at-cap must fail");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1101,8 +1091,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
     // ─────────────────────────────────────────────────────────────────────────
     {
         let all_events = env.events().all();
-        let cap_reach_sym: soroban_sdk::Val =
-            symbol_short!("cap_reach").into_val(&env);
+        let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
         let fixture_m_sym: soroban_sdk::Val = symbol_short!("m").into_val(&env);
 
         let cap_reach_count = all_events
@@ -1198,10 +1187,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &overage,
             &3,
         );
-        assert!(
-            r_a.is_ok(),
-            "cap=0: any deposit must succeed, no SupplyCapExceeded error"
-        );
+        assert!(r_a.is_ok(), "cap=0: any deposit must succeed, no SupplyCapExceeded error");
 
         // Fixture B: should fail with SupplyCapExceeded
         let r_b = client.try_deposit_revenue(
@@ -1212,10 +1198,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &overage,
             &3,
         );
-        assert!(
-            r_b.is_err(),
-            "cap=i128::MAX at capacity: deposit must fail"
-        );
+        assert!(r_b.is_err(), "cap=i128::MAX at capacity: deposit must fail");
 
         // If the error is accessible, verify it's SupplyCapExceeded (error code 23)
         // In Soroban tests, errors are typically wrapped; this verifies the failure occurs
