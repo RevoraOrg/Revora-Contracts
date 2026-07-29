@@ -537,6 +537,8 @@ const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 /// Emitted when an admin rotation is logged to persistent history.
 const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
+/// Emitted when an in-progress admin rotation is revoked by the outgoing admin.
+const EVENT_ADMIN_ROTATION_REVOKED: Symbol = symbol_short!("adm_rvk");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -10222,6 +10224,41 @@ impl RevoraRevenueShare {
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
         env.events().publish((symbol_short!("adm_canc"), admin), pending.new_admin);
+
+        Ok(())
+    }
+
+    /// Revoke an in-progress admin rotation proposal, returning the contract to steady state.
+    ///
+    /// Allows the outgoing (current) admin to abort an in-progress rotation proposal.
+    ///
+    /// ### Auth
+    /// Current stored admin (`require_auth`).
+    ///
+    /// ### Errors
+    /// - `NoAdminRotationPending` — no rotation is pending.
+    /// - `NotInitialized` — contract admin is not initialized.
+    /// - `ContractFrozen` — contract is frozen.
+    ///
+    /// ### Events
+    /// Emits `EVENT_ADMIN_ROTATION_REVOKED` (`"adm_rvk"`): `(adm_rvk, current_admin)` → `proposed_new_admin`.
+    pub fn revoke_admin_rotation(env: Env) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+
+        admin.require_auth();
+
+        let pending: PendingAdminRotation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RevoraError::NoAdminRotationPending)?;
+
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+
+        env.events().publish((EVENT_ADMIN_ROTATION_REVOKED, admin), pending.new_admin);
 
         Ok(())
     }
