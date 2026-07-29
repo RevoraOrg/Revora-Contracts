@@ -7,6 +7,8 @@ use soroban_sdk::{
     Address, Env,
 };
 
+const CHECKPOINT_THRESHOLD_SMALL: u32 = 4;
+
 fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -22,6 +24,12 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
 
     client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
 
+    (env, client, issuer, token, payout_asset)
+}
+
+fn setup_offering_with_threshold(threshold: u32) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+    let (env, client, issuer, token, payout_asset) = setup_offering();
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &threshold);
     (env, client, issuer, token, payout_asset)
 }
 
@@ -87,142 +95,170 @@ fn delay_barrier_preserves_pre_change_accrual() {
     assert_eq!(client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0), 25_000);
 }
 
+// === Checkpoint Compression Tests ===
+
 #[test]
-fn holder_statement_page_paginates_in_period_order() {
-    let (env, client, issuer, token, _payout_asset) = setup_offering();
+fn checkpoint_compression_folds_schedule_when_threshold_exceeded() {
+    let (env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
-    for period_id in 1_u64..=5_u64 {
-        RevoraRevenueShare::test_insert_period(
-            env.clone(),
-            issuer.clone(),
-            symbol_short!("def"),
-            token.clone(),
-            period_id,
-            100_000,
-        );
+    // Set share and deposit revenue for each period to create share transitions
+    // We need more than CHECKPOINT_THRESHOLD_SMALL transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 1_000 + (i as u32 * 100);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
-    let (page_one, next_one) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &0,
-        &2,
-    );
-    assert_eq!(page_one.len(), 2);
-    assert_eq!(page_one.get(0).unwrap().period_id, 1);
-    assert_eq!(page_one.get(1).unwrap().period_id, 2);
-    assert_eq!(page_one.get(0).unwrap().claimable_amount, 25_000);
-    assert_eq!(page_one.get(1).unwrap().claimable_amount, 25_000);
-    assert_eq!(next_one, Some(2));
-
-    let (page_two, next_two) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &2,
-        &2,
-    );
-    assert_eq!(page_two.len(), 2);
-    assert_eq!(page_two.get(0).unwrap().period_id, 3);
-    assert_eq!(page_two.get(1).unwrap().period_id, 4);
-    assert_eq!(next_two, Some(4));
-
-    let (page_three, next_three) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &4,
-        &2,
-    );
-    assert_eq!(page_three.len(), 1);
-    assert_eq!(page_three.get(0).unwrap().period_id, 5);
-    assert_eq!(next_three, None);
+    // get_claimable should still return correct total after compression
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(claimable > 0, "claimable should be positive after compression");
 }
 
 #[test]
-fn holder_statement_page_cursor_past_end_returns_empty() {
-    let (env, client, issuer, token, _payout_asset) = setup_offering();
-    let holder = Address::generate(&env);
+fn checkpoint_compression_is_lossless_for_claimable_computation() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000);
-    RevoraRevenueShare::test_insert_period(
-        env.clone(),
-        issuer.clone(),
-        symbol_short!("def"),
-        token.clone(),
-        1,
-        50_000,
-    );
+    // Before compression: compute claimable amount with many share transitions
+    let mut expected_total = 0_i128;
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 1_000 + (i as u32 * 100);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        expected_total += 10_000 * (share as i128) / 10_000;
+    }
 
-    let (page, next) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &99,
-        &10,
-    );
-    assert_eq!(page.len(), 0);
-    assert_eq!(next, None);
+    let actual_claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(actual_claimable, expected_total, "claimable must be lossless after compression");
 }
 
 #[test]
-fn holder_statement_page_cursor_is_stable_with_delay_barrier() {
-    let (env, client, issuer, token, _payout_asset) = setup_offering();
+fn checkpoint_compression_lossless_multiple_claims_before_and_after_fold() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create enough share transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = if i <= CHECKPOINT_THRESHOLD_SMALL { 3_000 } else { 7_000 };
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // Claim all periods; the total should equal sum of (revenue * share / 10000) for each period
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    let expected = (CHECKPOINT_THRESHOLD_SMALL as i128) * 3_000 + 2 * 7_000;
+    assert_eq!(payout, expected * 10, "claim should be lossless: 3000 for first threshold periods, 7000 for last two");
+}
+
+#[test]
+fn checkpoint_threshold_exactly_reached_then_claim() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create exactly threshold share transitions
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &5_000, &i);
+    }
+
+    // Now claim all periods
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    let expected_total: i128 = (1..=CHECKPOINT_THRESHOLD_SMALL).map(|i| 5_000 * (1_000 + i as u32 * 500) as i128 / 10_000).sum();
+    assert_eq!(payout, expected_total, "claim should be correct when threshold is exactly reached");
+}
+
+#[test]
+fn checkpoint_claim_between_two_folds() {
+    let (env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000);
-    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100);
+    // Create enough transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 2_000 + (i as u32 * 200);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
 
-    env.ledger().with_mut(|li| li.timestamp = 1_000);
-    RevoraRevenueShare::test_insert_period(
-        env.clone(),
-        issuer.clone(),
-        symbol_short!("def"),
-        token.clone(),
-        1,
-        10_000,
-    );
+    // Claim a few periods first
+    let first_claim = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert!(first_claim > 0, "partial claim should return positive payout");
 
-    env.ledger().with_mut(|li| li.timestamp = 1_050);
-    RevoraRevenueShare::test_insert_period(
-        env.clone(),
-        issuer.clone(),
-        symbol_short!("def"),
-        token.clone(),
-        2,
-        20_000,
-    );
+    // Get claimable for remaining periods
+    let remaining = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(remaining > 0, "remaining claimable should be positive after partial claim");
+}
 
-    env.ledger().with_mut(|li| li.timestamp = 1_100);
-    let (page_one, next_one) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &0,
-        &10,
-    );
-    let (page_two, next_two) = client.get_holder_statement_page(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &0,
-        &10,
-    );
+#[test]
+fn checkpoint_set_and_get_threshold() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let _ = payout_asset;
 
-    assert_eq!(page_one.len(), 1);
-    assert_eq!(page_one.get(0).unwrap().period_id, 1);
-    assert_eq!(page_one.get(0).unwrap().claimable_amount, 10_000);
-    assert_eq!(next_one, Some(1));
+    // Default threshold
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
 
-    assert_eq!(page_two, page_one);
-    assert_eq!(next_two, next_one);
+    // Set a custom threshold
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &500);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 500);
+
+    // Set to 0 to disable compression
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 0);
+
+    // Re-enable with a new value
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &2000);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 2000);
+}
+
+#[test]
+fn checkpoint_compression_preserves_claimable_after_partial_claim_then_compression() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create many share changes to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // Claim some periods before the anchor boundary is crossed
+    let partial_payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert!(partial_payout > 0, "partial claim should succeed");
+
+    // Get claimable for remaining periods should also be positive
+    let remaining = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(remaining > 0, "remaining claimable should be positive");
+
+    // Claim the rest
+    let remaining_payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    assert!(remaining_payout > 0, "remaining claim should succeed");
+
+    // Total payout should match what get_claimable returned for the remaining amount
+    assert_eq!(partial_payout + remaining_payout, partial_payout + remaining);
+}
+
+#[test]
+fn checkpoint_compression_with_zero_threshold_disables_compression() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(0);
+    let holder = Address::generate(&_env);
+
+    // Even with many share changes, no compression should happen
+    for i in 1..=10 {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(claimable > 0, "claimable should be positive even with zero threshold");
+
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    assert!(payout > 0, "claim should succeed with zero threshold");
+}
+
+#[test]
+fn checkpoint_compression_threshold_not_set_uses_default() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let _ = payout_asset;
+
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
 }

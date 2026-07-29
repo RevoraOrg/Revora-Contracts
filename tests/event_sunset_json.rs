@@ -23,7 +23,6 @@
 /// * All string comparisons are exact to prevent topic-name spoofing.
 /// * Tests are deterministic: no network calls, no timestamps from system
 ///   clock, no random state.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -54,9 +53,7 @@ fn event_sunset_json_is_valid_json() {
 #[test]
 fn event_sunset_json_schema_version_is_positive_integer() {
     let v = load_sunset_json();
-    let sv = v["schema_version"]
-        .as_u64()
-        .expect("schema_version must be a non-negative integer");
+    let sv = v["schema_version"].as_u64().expect("schema_version must be a non-negative integer");
     assert!(sv >= 1, "schema_version must be >= 1, got {sv}");
 }
 
@@ -84,10 +81,7 @@ fn event_sunset_json_description_is_non_empty() {
 fn event_sunset_json_entries_is_non_empty_array() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().expect("entries must be a JSON array");
-    assert!(
-        !entries.is_empty(),
-        "entries array must not be empty"
-    );
+    assert!(!entries.is_empty(), "entries array must not be empty");
 }
 
 // ── Per-entry field validation ────────────────────────────────────────────────
@@ -105,10 +99,7 @@ fn every_entry_has_required_string_fields() {
             let val = entry[field]
                 .as_str()
                 .unwrap_or_else(|| panic!("{loc}: field '{field}' must be a string"));
-            assert!(
-                !val.trim().is_empty(),
-                "{loc}: field '{field}' must not be empty"
-            );
+            assert!(!val.trim().is_empty(), "{loc}: field '{field}' must not be empty");
         }
     }
 }
@@ -122,9 +113,9 @@ fn every_entry_has_positive_sunset_epoch() {
 
     for (idx, entry) in entries.iter().enumerate() {
         let topic = entry["topic"].as_str().unwrap_or("(unknown)");
-        let epoch = entry["sunset_epoch"]
-            .as_u64()
-            .unwrap_or_else(|| panic!("Entry #{} (topic={topic:?}): sunset_epoch must be an integer", idx + 1));
+        let epoch = entry["sunset_epoch"].as_u64().unwrap_or_else(|| {
+            panic!("Entry #{} (topic={topic:?}): sunset_epoch must be an integer", idx + 1)
+        });
         assert!(
             epoch > 0,
             "Entry #{} (topic={topic:?}): sunset_epoch must be > 0 (got {epoch})",
@@ -141,9 +132,9 @@ fn every_entry_has_sunset_iso() {
 
     for (idx, entry) in entries.iter().enumerate() {
         let topic = entry["topic"].as_str().unwrap_or("(unknown)");
-        let iso = entry["sunset_iso"]
-            .as_str()
-            .unwrap_or_else(|| panic!("Entry #{} (topic={topic:?}): sunset_iso must be a string", idx + 1));
+        let iso = entry["sunset_iso"].as_str().unwrap_or_else(|| {
+            panic!("Entry #{} (topic={topic:?}): sunset_iso must be a string", idx + 1)
+        });
         assert!(
             !iso.trim().is_empty(),
             "Entry #{} (topic={topic:?}): sunset_iso must not be empty",
@@ -169,10 +160,7 @@ fn no_duplicate_topics() {
     let mut seen: HashSet<&str> = HashSet::new();
     for entry in entries {
         let topic = entry["topic"].as_str().expect("topic must be a string");
-        assert!(
-            seen.insert(topic),
-            "Duplicate topic found in event_sunset.json: {topic:?}"
-        );
+        assert!(seen.insert(topic), "Duplicate topic found in event_sunset.json: {topic:?}");
     }
 }
 
@@ -183,10 +171,8 @@ fn no_chained_deprecations() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().unwrap();
 
-    let deprecated: HashSet<&str> = entries
-        .iter()
-        .map(|e| e["topic"].as_str().expect("topic must be a string"))
-        .collect();
+    let deprecated: HashSet<&str> =
+        entries.iter().map(|e| e["topic"].as_str().expect("topic must be a string")).collect();
 
     for entry in entries {
         let replacement = entry["replacement"].as_str().expect("replacement must be a string");
@@ -230,15 +216,10 @@ fn v1_topics_have_distinct_v2_replacements() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().unwrap();
 
-    let v1_entries: Vec<_> = entries
-        .iter()
-        .filter(|e| e["topic"].as_str().unwrap_or("").ends_with('1'))
-        .collect();
+    let v1_entries: Vec<_> =
+        entries.iter().filter(|e| e["topic"].as_str().unwrap_or("").ends_with('1')).collect();
 
-    assert!(
-        !v1_entries.is_empty(),
-        "Expected V1 topic entries ending in '1'"
-    );
+    assert!(!v1_entries.is_empty(), "Expected V1 topic entries ending in '1'");
 
     let replacements: Vec<&str> = v1_entries
         .iter()
@@ -255,10 +236,7 @@ fn v1_topics_have_distinct_v2_replacements() {
 
     // All replacements must end in '2' (V2 naming convention)
     for r in &replacements {
-        assert!(
-            r.ends_with('2'),
-            "V1 replacement {r:?} expected to end in '2' (V2 naming)"
-        );
+        assert!(r.ends_with('2'), "V1 replacement {r:?} expected to end in '2' (V2 naming)");
     }
 }
 
@@ -270,9 +248,7 @@ fn ev_idx2_is_deprecated_in_table() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().unwrap();
 
-    let found = entries
-        .iter()
-        .any(|e| e["topic"].as_str() == Some("ev_idx2"));
+    let found = entries.iter().any(|e| e["topic"].as_str() == Some("ev_idx2"));
 
     assert!(
         found,
@@ -291,14 +267,9 @@ fn ev_idx2_replacement_is_ev_idx3() {
         .find(|e| e["topic"].as_str() == Some("ev_idx2"))
         .expect("ev_idx2 entry must exist");
 
-    let replacement = entry["replacement"]
-        .as_str()
-        .expect("replacement must be a string");
+    let replacement = entry["replacement"].as_str().expect("replacement must be a string");
 
-    assert_eq!(
-        replacement, "ev_idx3",
-        "ev_idx2 replacement must be ev_idx3, got {replacement:?}"
-    );
+    assert_eq!(replacement, "ev_idx3", "ev_idx2 replacement must be ev_idx3, got {replacement:?}");
 }
 
 /// `ev_idx3` (the active topic) must NOT be in the deprecated list.
@@ -307,9 +278,7 @@ fn ev_idx3_is_not_deprecated() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().unwrap();
 
-    let found = entries
-        .iter()
-        .any(|e| e["topic"].as_str() == Some("ev_idx3"));
+    let found = entries.iter().any(|e| e["topic"].as_str() == Some("ev_idx3"));
 
     assert!(
         !found,
@@ -323,10 +292,8 @@ fn all_v1_direct_topics_are_in_table() {
     let v = load_sunset_json();
     let entries = v["entries"].as_array().unwrap();
 
-    let topics: HashSet<&str> = entries
-        .iter()
-        .map(|e| e["topic"].as_str().expect("topic must be a string"))
-        .collect();
+    let topics: HashSet<&str> =
+        entries.iter().map(|e| e["topic"].as_str().expect("topic must be a string")).collect();
 
     for expected in &["ofr_reg1", "rv_init1", "rv_inia1", "rv_rep1", "rv_repa1"] {
         assert!(
@@ -383,17 +350,15 @@ fn event_sunset_json_fields_are_structurally_complete() {
 
     // Required top-level fields
     for field in &["schema_version", "generated_at", "source", "description", "entries"] {
-        assert!(
-            !v[field].is_null(),
-            "Top-level field '{field}' must not be null"
-        );
+        assert!(!v[field].is_null(), "Top-level field '{field}' must not be null");
     }
 
     let entries = v["entries"].as_array().unwrap();
     assert!(!entries.is_empty(), "entries must not be empty");
 
     // Required per-entry fields
-    let required = ["topic", "replacement", "deprecated_in", "sunset_epoch", "sunset_iso", "reason"];
+    let required =
+        ["topic", "replacement", "deprecated_in", "sunset_epoch", "sunset_iso", "reason"];
     for (idx, entry) in entries.iter().enumerate() {
         for field in &required {
             assert!(
