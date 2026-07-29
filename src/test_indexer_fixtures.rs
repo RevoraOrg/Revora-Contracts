@@ -2,7 +2,10 @@
 
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, EVENT_SCHEMA_VERSION_V2};
+use crate::{
+    RevoraRevenueShare, RevoraRevenueShareClient, EVENT_SCHEMA_VERSION_V2,
+    tax_bucket::EVENT_TAX_LOT_V1,
+};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -520,4 +523,241 @@ fn fixture_fct_mtr1_window_id_formula() {
         ts / crate::FAUCET_METRICS_WINDOW_SECS,
         "window_id must equal ts / FAUCET_METRICS_WINDOW_SECS"
     );
+}
+
+// ── tax_lot_v1 indexer fixture ───────────────────────────────────────────────
+
+/// Fixture: `tax_lt1` topic has the correct symbol.
+///
+/// Off-chain indexers should subscribe to events where `topics[0] == "tax_lt1"`.
+/// This test pins the symbol string so any accidental rename is caught immediately.
+#[test]
+fn fixture_tax_lot_v1_topic_symbol_is_stable() {
+    let env = Env::default();
+    let expected: soroban_sdk::Symbol = symbol_short!("tax_lt1");
+    assert_eq!(EVENT_TAX_LOT_V1, expected, "EVENT_TAX_LOT_V1 must be tax_lt1");
+}
+
+/// Fixture: `tax_lt1` data tuple shape is validated on a successful claim.
+///
+/// Field order (for indexer deserialization):
+/// 0. `holder`            — Address of the holder.
+/// 1. `return_of_capital` — i128, non-taxable portion.
+/// 2. `capital_gains`     — i128, taxable portion.
+/// 3. `amount`            — i128, total payout (roc + cg).
+/// 4. `period_id`         — u64, the period claimed.
+/// 5. `timestamp`         — u64, ledger timestamp at claim time.
+#[test]
+fn fixture_tax_lot_v1_data_tuple_shape() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Register a Stellar asset for the payout token so claim can transfer.
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&admin, &1_000_000);
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let issuer = admin.clone();
+    let ns = symbol_short!("tx");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+
+    // Track cost basis so we get a return_of_capital component.
+    let offering_id = crate::OfferingId {
+        issuer: issuer.clone(),
+        namespace: ns.clone(),
+        token: token.clone(),
+    };
+    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 100_000);
+
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+
+    let before = env.events().all().len();
+    client.claim(&holder, &issuer, &ns, &token, &10);
+
+    // Find the tax_lt1 event among the new events.
+    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let mut found = false;
+    for (_, topics, data) in env.events().all().slice(before as u32..).iter() {
+        if topics.len() >= 4
+            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+        {
+            let (holder_addr, return_of_capital, capital_gains, amount, period_id, timestamp):
+                (Address, i128, i128, i128, u64, u64) = data.into_val(&env);
+
+            assert_eq!(holder_addr, holder);
+            assert!(return_of_capital > 0, "return_of_capital must be positive");
+            assert_eq!(capital_gains, 0i128, "capital_gains must be zero when basis is sufficient");
+            assert_eq!(amount, return_of_capital + capital_gains,
+                "decomposition invariant: return_of_capital + capital_gains must equal amount");
+            assert_eq!(amount, 5_000i128); // 50% of 100_000 = 50_000 normalized
+            assert_eq!(period_id, 1u64);
+            assert!(timestamp > 0, "timestamp must be positive");
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "tax_lt1 event must be emitted on successful claim");
+}
+
+/// `tax_lt1` event correctly reports capital_gains when remaining basis is exhausted.
+#[test]
+fn fixture_tax_lot_v1_capital_gains_when_basis_exhausted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&admin, &1_000_000);
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let issuer = admin.clone();
+    let ns = symbol_short!("txcg");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000); // 100%
+
+    let offering_id = crate::OfferingId {
+        issuer: issuer.clone(),
+        namespace: ns.clone(),
+        token: token.clone(),
+    };
+    // Track small cost basis so payout exceeds it → capital_gains > 0.
+    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000);
+
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+
+    let before = env.events().all().len();
+    client.claim(&holder, &issuer, &ns, &token, &10);
+
+    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let mut found = false;
+    for (_, topics, data) in env.events().all().slice(before as u32..).iter() {
+        if topics.len() >= 4
+            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+        {
+            let (holder_addr, return_of_capital, capital_gains, amount, _period_id, _timestamp):
+                (Address, i128, i128, i128, u64, u64) = data.into_val(&env);
+
+            assert_eq!(holder_addr, holder);
+            assert_eq!(return_of_capital, 1_000i128, "return_of_capital should equal remaining basis");
+            assert!(capital_gains > 0, "capital_gains must be positive when basis is exceeded");
+            assert_eq!(amount, return_of_capital + capital_gains,
+                "decomposition invariant: return_of_capital + capital_gains must equal amount");
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "tax_lt1 event must be emitted on claim with capital gains");
+}
+
+/// No `tax_lt1` event when claim returns zero (share_bps = 0).
+#[test]
+fn fixture_tax_lot_v1_zero_payout_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&admin, &1_000_000);
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let issuer = admin.clone();
+    let ns = symbol_short!("tz");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+
+    let holder = Address::generate(&env);
+    // No share set → share_bps = 0 → claim returns NoPendingClaims before any payout.
+
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+
+    let before = env.events().all().len();
+    let result = client.try_claim(&holder, &issuer, &ns, &token, &10);
+    assert_eq!(
+        result,
+        Err(Ok(crate::RevoraError::NoPendingClaims)),
+        "claim with zero share must fail with NoPendingClaims"
+    );
+
+    // Scan for any tax_lt1 event — must be absent.
+    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    for (_, topics, _) in env.events().all().slice(before as u32..).iter() {
+        if topics.len() >= 4
+            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+        {
+            panic!("tax_lt1 must NOT be emitted when claim fails (share_bps = 0)");
+        }
+    }
+}
+
+/// Burst: claiming N separate payout batches emits exactly N `tax_lt1` events.
+#[test]
+fn fixture_tax_lot_v1_burst_emits_n_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&admin, &1_000_000);
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let issuer = admin.clone();
+    let ns = symbol_short!("txb");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+
+    let offering_id = crate::OfferingId {
+        issuer: issuer.clone(),
+        namespace: ns.clone(),
+        token: token.clone(),
+    };
+    // Track sufficient cost basis so all claims get return_of_capital.
+    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000_000);
+
+    // Deposit revenue for 3 periods.
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &300_000, &3);
+
+    let before = env.events().all().len();
+
+    // First claim: periods 1 & 2
+    client.claim(&holder, &issuer, &ns, &token, &2);
+
+    // Second claim: period 3
+    client.claim(&holder, &issuer, &ns, &token, &10);
+
+    let new_events = env.events().all().slice(before as u32..);
+    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let mut tax_lot_count = 0u32;
+    for (_, topics, _) in new_events.iter() {
+        if topics.len() >= 4
+            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+        {
+            tax_lot_count += 1;
+        }
+    }
+    assert_eq!(tax_lot_count, 2, "2 `tax_lt1` events expected for 2 claim calls");
 }

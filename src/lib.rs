@@ -8902,7 +8902,15 @@ impl RevoraRevenueShare {
         }
 
         if total_payout > 0 {
-            crate::tax_bucket::rollover_distribution(&env, &offering_id, &holder, total_payout);
+            crate::tax_bucket::rollover_distribution(
+                &env,
+                &offering_id,
+                &holder,
+                total_payout,
+                previous_period_id
+                    .expect("rollover_distribution called with zero claimed periods; total_payout > 0 invariant broken"),
+                now,
+            );
         }
 
         // Transfer only if there is a positive payout
