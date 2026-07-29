@@ -643,3 +643,90 @@ fn test_fulfill_redemption_max_fee_5000_bps() {
     assert_eq!(payout_token.balance(&treasury), 500_000);
     assert_eq!(payout_token.balance(&holder), 500_000);
 }
+
+#[test]
+fn test_cliff_taper_lockup_schedule_success_and_getters() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Default when unset is 10,000 BPS (100% unlocked)
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 10_000);
+    assert_eq!(client.get_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token), None);
+
+    // Set CliffTaper: 20% (2000 BPS) bulk unlock at ts=1000, linear taper until ts=2000
+    let sched = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 1000,
+        cliff_bps: 2000,
+        taper_end_ts: 2000,
+    };
+    client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
+
+    assert_eq!(
+        client.get_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token),
+        Some(sched)
+    );
+
+    // Before cliff (ts = 500): 0% unlocked
+    set_timestamp(&env, 500);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 0);
+
+    // At cliff (ts = 1000): 20% (2000 BPS) unlocked
+    set_timestamp(&env, 1000);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 2_000);
+
+    // Midpoint between cliff and taper_end (ts = 1500): 20% + (50% of 80%) = 60% (6000 BPS)
+    set_timestamp(&env, 1500);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 6_000);
+
+    // At taper_end (ts = 2000): 100% (10000 BPS) unlocked
+    set_timestamp(&env, 2000);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 10_000);
+
+    // After taper_end (ts = 3000): 100% (10000 BPS) unlocked
+    set_timestamp(&env, 3000);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 10_000);
+}
+
+#[test]
+fn test_cliff_taper_edge_case_10000_bps_and_taper_equal_cliff() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Edge case: cliff_bps = 10,000 and taper_end_ts == cliff_ts
+    let sched = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 1000,
+        cliff_bps: 10_000,
+        taper_end_ts: 1000,
+    };
+    client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
+
+    set_timestamp(&env, 999);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 0);
+
+    set_timestamp(&env, 1000);
+    assert_eq!(client.get_unlocked_bps(&issuer, &symbol_short!("def"), &offering_token), 10_000);
+}
+
+#[test]
+fn test_cliff_taper_invalid_params_rejected() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Invalid cliff_bps > 10,000
+    let invalid_bps = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 1000,
+        cliff_bps: 10_001,
+        taper_end_ts: 2000,
+    };
+    let res1 = client.try_set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &invalid_bps);
+    assert_eq!(res1, Err(Ok(RevoraError::InvalidRevenueShareBps)));
+
+    // Invalid taper_end_ts < cliff_ts
+    let invalid_end = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 2000,
+        cliff_bps: 2000,
+        taper_end_ts: 1000,
+    };
+    let res2 = client.try_set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &invalid_end);
+    assert_eq!(res2, Err(Ok(RevoraError::InvalidAmount)));
+}

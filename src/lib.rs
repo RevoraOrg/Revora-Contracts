@@ -539,6 +539,8 @@ const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
 /// Emitted when an in-progress admin rotation is revoked by the outgoing admin.
 const EVENT_ADMIN_ROTATION_REVOKED: Symbol = symbol_short!("adm_rvk");
+/// Emitted when a lockup schedule is configured for an offering.
+const EVENT_LOCKUP_SET: Symbol = symbol_short!("lock_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -1031,6 +1033,87 @@ pub struct EventVersionInfo {
     pub version: u32,
 }
 
+/// Lockup schedule specification for token balance unlocking.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum LockupSchedule {
+    /// Full unlock at or after `unlock_ts`.
+    Cliff { unlock_ts: u64 },
+    /// Linear unlock from `start_ts` to `end_ts`.
+    Linear { start_ts: u64, end_ts: u64 },
+    /// Bulk unlock of `cliff_bps` at `cliff_ts`, followed by linear taper of remainder until `taper_end_ts`.
+    CliffTaper { cliff_ts: u64, cliff_bps: u32, taper_end_ts: u64 },
+}
+
+impl LockupSchedule {
+    /// Compute the unlocked BPS (0 to 10 000) at a given timestamp `now`.
+    pub fn calculate_unlocked_bps(&self, now: u64) -> u32 {
+        match self {
+            LockupSchedule::Cliff { unlock_ts } => {
+                if now >= *unlock_ts {
+                    10_000
+                } else {
+                    0
+                }
+            }
+            LockupSchedule::Linear { start_ts, end_ts } => {
+                if now < *start_ts {
+                    0
+                } else if now >= *end_ts {
+                    10_000
+                } else {
+                    let duration = end_ts.saturating_sub(*start_ts);
+                    if duration == 0 {
+                        return 10_000;
+                    }
+                    let elapsed = now.saturating_sub(*start_ts);
+                    ((elapsed as u128 * 10_000i128) / duration as u128) as u32
+                }
+            }
+            LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } => {
+                if now < *cliff_ts {
+                    0
+                } else if now >= *taper_end_ts {
+                    10_000
+                } else {
+                    let duration = taper_end_ts.saturating_sub(*cliff_ts);
+                    if duration == 0 {
+                        return core::cmp::min(*cliff_bps, 10_000);
+                    }
+                    let elapsed = now.saturating_sub(*cliff_ts);
+                    let rem_bps = 10_000u32.saturating_sub(*cliff_bps);
+                    let tapered_bps = ((elapsed as u128 * rem_bps as i128) / duration as u128) as u32;
+                    let total = cliff_bps.saturating_add(tapered_bps);
+                    core::cmp::min(total, 10_000)
+                }
+            }
+        }
+    }
+
+    /// Validate schedule parameters.
+    pub fn validate(&self) -> Result<(), RevoraError> {
+        match self {
+            LockupSchedule::Cliff { .. } => Ok(()),
+            LockupSchedule::Linear { start_ts, end_ts } => {
+                if end_ts < start_ts {
+                    Err(RevoraError::InvalidAmount)
+                } else {
+                    Ok(())
+                }
+            }
+            LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } => {
+                if *cliff_bps > 10_000 {
+                    return Err(RevoraError::InvalidRevenueShareBps);
+                }
+                if taper_end_ts < cliff_ts {
+                    return Err(RevoraError::InvalidAmount);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowDataKey {
@@ -1327,6 +1410,8 @@ pub enum DataKey2 {
     RedemptionRequest(OfferingId, Address),
     /// Per-offering redemption fee configuration (fee_bps and treasury address).
     RedemptionFeeConfig(OfferingId),
+    /// Per-offering lockup schedule specification.
+    LockupSchedule(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -9758,6 +9843,69 @@ impl RevoraRevenueShare {
         Self::get_redemption_fee_config(env, issuer, namespace, token)
             .map(|cfg| cfg.fee_bps)
             .unwrap_or(0)
+    }
+
+    /// Configure the lockup schedule for an offering.
+    ///
+    /// Auth: Issuer only. Must be current issuer of a registered offering.
+    pub fn set_lockup_schedule(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        schedule: LockupSchedule,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        schedule.validate()?;
+
+        let key = DataKey2::LockupSchedule(offering_id);
+        env.storage().persistent().set(&key, &schedule);
+
+        env.events()
+            .publish((EVENT_LOCKUP_SET, issuer, namespace, token), schedule);
+        Ok(())
+    }
+
+    /// Return the stored lockup schedule for an offering.
+    pub fn get_lockup_schedule(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<LockupSchedule> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::LockupSchedule(offering_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Return the unlocked BPS (0 to 10 000) for an offering at the current ledger timestamp.
+    ///
+    /// Returns 10 000 (100% unlocked) if no lockup schedule is configured.
+    pub fn get_unlocked_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        let schedule = Self::get_lockup_schedule(env.clone(), issuer, namespace, token);
+        let now = env.ledger().timestamp();
+        schedule.map(|s| s.calculate_unlocked_bps(now)).unwrap_or(10_000)
     }
 
     /// Preview the total claimable amount for a holder without mutating state.
