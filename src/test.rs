@@ -11166,6 +11166,47 @@ mod regression {
         assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 1_000);
     }
 
+    #[test]
+    fn atomic_swap_royalty_at_max_and_successful() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        client.set_secondary_market_royalty_bps(&issuer, &symbol_short!("fee"), &token, &payment_asset, &5_000);
+
+        client.atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &100,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1000,
+        );
+
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &issuer), 500);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &seller), 500);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 0);
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &seller), 4_900);
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &buyer), 100);
+    }
+
     // ── Platform-level per-asset fee ─────────────────────────────────────────
 
     #[test]
@@ -11878,6 +11919,37 @@ mod admin_rotation {
 
         assert_eq!(client.get_admin(), Some(admin));
         assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn revoke_clears_pending_and_preserves_admin() {
+        let (env, client, admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.revoke_admin_rotation();
+
+        assert_eq!(client.get_admin(), Some(admin));
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn revoke_emits_adm_rvk_event() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        let before = env.events().all().len();
+        client.revoke_admin_rotation();
+
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn revoke_without_pending_returns_no_admin_rotation_pending() {
+        let (_env, client, _admin) = rotation_setup();
+        let result = client.try_revoke_admin_rotation();
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
     }
 
     #[test]

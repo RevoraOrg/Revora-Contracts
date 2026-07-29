@@ -11,16 +11,9 @@
     },
     {
       "module": "revora_revenue_share",
-      "key": "DataKey2::AdminRotationCount",
-      "value_type": "u64",
-      "ownership": "contract",
-      "version": 2
-    },
-    {
-      "module": "revora_revenue_share",
-      "key": "DataKey2::AdminRotationLog(u64)",
-      "value_type": "AdminRotationEntry",
-      "ownership": "contract",
+      "key": "DataKey2::AccrualIndex(OfferingId)",
+      "value_type": "u32",
+      "ownership": "offering",
       "version": 2
     },
     {
@@ -39,9 +32,16 @@
     },
     {
       "module": "revora_revenue_share",
+      "key": "DataKey2::CategoryHolderCount(OfferingId, Symbol)",
+      "value_type": "u32",
+      "ownership": "offering+category",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
       "key": "DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)",
       "value_type": "u32",
-      "ownership": "offering+class+class",
+      "ownership": "offering+class",
       "version": 2
     },
     {
@@ -56,6 +56,13 @@
       "key": "DataKey2::ContractFlags",
       "value_type": "u32",
       "ownership": "contract",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::DeferredQueue(OfferingId)",
+      "value_type": "Vec<DeferredQueueEntry>",
+      "ownership": "offering",
       "version": 2
     },
     {
@@ -88,9 +95,9 @@
     },
     {
       "module": "revora_revenue_share",
-      "key": "DataKey2::EmitV2Compat",
+      "key": "DataKey2::EmergencyFreeze(OfferingId, Address)",
       "value_type": "bool",
-      "ownership": "contract",
+      "ownership": "offering+holder",
       "version": 2
     },
     {
@@ -130,23 +137,23 @@
     },
     {
       "module": "revora_revenue_share",
-      "key": "DataKey2::GovernanceProposal(OfferingId, u32)",
-      "value_type": "GovernanceProposal",
+      "key": "DataKey2::GlobalFreezeReason",
+      "value_type": "Symbol",
+      "ownership": "contract",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::GovProposal(OfferingId, u32)",
+      "value_type": "GovProposal",
       "ownership": "offering+proposal",
       "version": 2
     },
     {
       "module": "revora_revenue_share",
-      "key": "DataKey2::GovernanceProposalCount(OfferingId)",
+      "key": "DataKey2::GovProposalCount(OfferingId)",
       "value_type": "u32",
       "ownership": "offering",
-      "version": 2
-    },
-    {
-      "module": "revora_revenue_share",
-      "key": "DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)",
-      "value_type": "bool",
-      "ownership": "offering+meta",
       "version": 2
     },
     {
@@ -222,7 +229,7 @@
     {
       "module": "revora_revenue_share",
       "key": "DataKey2::MaxTotalSupplyShares(OfferingId)",
-      "value_type": "i128",
+      "value_type": "u32",
       "ownership": "offering",
       "version": 2
     },
@@ -231,6 +238,41 @@
       "key": "DataKey2::MinRevenueThreshold(OfferingId)",
       "value_type": "i128",
       "ownership": "offering",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::MultisigOwners",
+      "value_type": "Vec<Address>",
+      "ownership": "contract",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::MultisigProposal(u32)",
+      "value_type": "GovernanceProposal",
+      "ownership": "proposal",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::MultisigProposalCount",
+      "value_type": "u32",
+      "ownership": "contract",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::MultisigProposalDuration",
+      "value_type": "u64",
+      "ownership": "contract",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::MultisigThreshold",
+      "value_type": "u32",
+      "ownership": "contract",
       "version": 2
     },
     {
@@ -257,7 +299,7 @@
     {
       "module": "revora_revenue_share",
       "key": "DataKey2::OfferingPlatformFee(OfferingId)",
-      "value_type": "PlatformFeeModel",
+      "value_type": "PlatformFeeConfig",
       "ownership": "offering",
       "version": 2
     },
@@ -272,7 +314,7 @@
       "module": "revora_revenue_share",
       "key": "DataKey2::OraclePubKey(Address)",
       "value_type": "BytesN<32>",
-      "ownership": "address",
+      "ownership": "oracle",
       "version": 2
     },
     {
@@ -308,6 +350,27 @@
       "key": "DataKey2::SupplyCap(OfferingId)",
       "value_type": "i128",
       "ownership": "offering",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::TotalSharesIssued(OfferingId)",
+      "value_type": "u32",
+      "ownership": "offering",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::TransferRestrictions(OfferingId, Symbol)",
+      "value_type": "TransferRestrictionConfig",
+      "ownership": "offering+category",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::VoteRecord(OfferingId, u32, Address)",
+      "value_type": "bool",
+      "ownership": "offering+proposal+voter",
       "version": 2
     },
     {
@@ -795,3 +858,4 @@
     }
   ]
 }
+
