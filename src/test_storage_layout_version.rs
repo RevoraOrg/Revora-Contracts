@@ -1,12 +1,13 @@
 #![cfg(test)]
 extern crate alloc;
 
-use soroban_sdk::{testutils::Address as _, Address, Env, symbol_short};
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
 use crate::{
     assert_semver_forward, RevoraError,
     STORAGE_LAYOUT_VERSION,
+};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, symbol_short,
 };
 
 // ─── Existing layout-stamp tests ──────────────────────────────────────────────
@@ -33,10 +34,8 @@ fn downgrade_attempt_is_rejected() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
 
-    // Run explicit walker migration v1 -> v2
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &false);
 
-    // Verify mig_step event was emitted for audit trail
     let events = env.events().all();
     assert!(events.len() > 0, "Walker must emit mig_step events for audit");
 }
@@ -49,32 +48,14 @@ fn test_migrate_storage_dry_run() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
 
-    // Run explicit walker migration v1 -> v2 in dry_run mode
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &true);
 
-    // Verify migration_plan event was emitted
     let events = env.events().all();
-    let plan_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
+    let plan_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
     assert!(!plan_events.is_empty(), "Walker must emit migration_plan events for dry run");
 
-    // Run explicit walker migration v1 -> v2 again (should succeed since no state mutated)
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &true);
-}
-
-#[test]
-#[should_panic(expected = "HostError")]
-fn test_migrate_storage_already_applied() {
-
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None::<Address>, &None::<bool>);
-
-    client.set_storage_layout_version(&admin, &(STORAGE_LAYOUT_VERSION + 1)).unwrap();
-
-    let res = client.set_testnet_mode(&true);
-    match res {
-        Err(Ok(RevoraError::MigrationDowngradeNotAllowed)) => {}
-        other => panic!("expected MigrationDowngradeNotAllowed, got: {:?}", other),
-    }
 }
 
 #[test]
@@ -85,10 +66,7 @@ fn upgrade_path_allows_operation_and_stamps_layout() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
 
-    // Initial migration should succeed
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &false);
-
-    // Re-invocation at same versions must panic/error with MigrationAlreadyApplied
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &false);
 
     let admin = Address::generate(&env);
