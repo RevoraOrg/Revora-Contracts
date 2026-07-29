@@ -23,7 +23,7 @@
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, BytesN, Env, IntoVal, Val, Vec,
 };
 
@@ -39,8 +39,16 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     RevoraRevenueShareClient::new(env, &id)
 }
 
-fn attest(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[0xabu8; 32])
+fn test_network_id(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0x01u8; 32])
+}
+
+fn test_nonce() -> u64 {
+    1
+}
+
+fn test_expires_at() -> u64 {
+    u64::MAX
 }
 
 /// Write share classes directly to storage (no dedicated setter API yet).
@@ -94,6 +102,7 @@ fn setup_with_classes(
     env: &Env,
 ) -> (RevoraRevenueShareClient<'_>, Address, Address, Address) {
     env.mock_all_auths();
+    env.ledger().set_network_id([0x01u8; 32]);
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(env, &contract_id);
     let issuer = Address::generate(env);
@@ -164,7 +173,8 @@ fn same_class_a_to_a_succeeds() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -181,7 +191,8 @@ fn same_class_b_to_b_succeeds() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -199,7 +210,8 @@ fn same_class_a_to_a_partial_transfer() {
     set_share(&client, &issuer, &token, &from, 5_000);
     set_share(&client, &issuer, &token, &to, 2_000);
 
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &attest(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at());
 
     // Total shares preserved
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 3_500);
@@ -222,7 +234,8 @@ fn cross_class_a_to_b_blocked() {
     set_share(&client, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 
@@ -245,7 +258,8 @@ fn cross_class_b_to_a_blocked() {
     set_share(&client, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -264,7 +278,8 @@ fn cross_class_full_transfer_blocked() {
     set_share(&client, &issuer, &token, &from, 5_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &5_000u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &5_000u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 
@@ -288,7 +303,8 @@ fn unassigned_to_class_a_succeeds() {
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 0);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -306,7 +322,8 @@ fn class_a_to_unassigned_succeeds() {
     // to is unassigned (no class shares)
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -323,7 +340,8 @@ fn both_unassigned_succeeds() {
     // both holders are unassigned
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -342,10 +360,13 @@ fn self_transfer_bypasses_class_check() {
     set_share(&client, &issuer, &token, &holder, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &holder, &holder, &500u32, &attest(&env),
+        &issuer, &ns, &token, &holder, &holder, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
-    // Guard 3 (self-transfer) fires before Guard 11 (class check)
-    assert_eq!(result, Err(Ok(RevoraError::InvalidTransferParticipants)));
+    // Self-transfer is a no-op (auth and nonce checked, but no state change)
+    assert_eq!(result, Ok(Ok(())));
+    // Share unchanged after self-transfer
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 1_000);
 }
 
 /// Zero-value transfer bypasses class check (Guard 10 fires first).
@@ -363,7 +384,8 @@ fn zero_value_transfer_bypasses_class_check() {
     set_share(&client, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &0u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &0u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     // Guard 10 fires first — zero shares is already invalid
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
@@ -387,7 +409,8 @@ fn class_xfer_block_event_emitted_on_cross_class() {
     let before = env.events().all().len();
 
     let _ = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
 
     let events = env.events().all();
@@ -432,7 +455,8 @@ fn no_class_xfer_block_event_on_same_class_transfer() {
     let before = env.events().all().len();
 
     client.transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
 
     let events = env.events().all();
@@ -488,7 +512,8 @@ fn custom_class_cross_transfer_blocked() {
     set_share(&client, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -519,7 +544,8 @@ fn custom_class_same_class_transfer_succeeds() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -544,7 +570,8 @@ fn receiver_with_both_classes_receives_same_class() {
     set_share(&client, &issuer, &token, &to, 700);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     // Both have primary Class A → allowed
     assert_eq!(result, Ok(Ok(())));
@@ -568,7 +595,8 @@ fn receiver_primary_class_b_blocks_a_transfer() {
 
     // Primary class is B (Class A has zero balance, skip to Class B)
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -579,6 +607,7 @@ fn receiver_primary_class_b_blocks_a_transfer() {
 fn no_classes_configured_still_allows_transfers() {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().set_network_id([0x01u8; 32]);
     let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -604,7 +633,8 @@ fn no_classes_configured_still_allows_transfers() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
+        &test_network_id(&env), &test_nonce(), &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }

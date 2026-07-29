@@ -19,17 +19,13 @@ use soroban_sdk::{
 /// offering actually references. Registering with a random admin would produce
 /// a different asset-contract address under Soroban's deterministic admin ->
 /// address mapping, silently breaking balance checks downstream.
-fn setup_offering()
-    -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address)
-{
+fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(issuer.clone())
-        .address();
+    let payment_token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
     let token = Address::generate(&env);
     client.register_offering(
         &issuer,
@@ -59,7 +55,8 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-fn setup_offering_with_contract_id() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+fn setup_offering_with_contract_id(
+) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -70,7 +67,14 @@ fn setup_offering_with_contract_id() -> (Env, RevoraRevenueShareClient<'static>,
     let offering_token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &symbol_short!("ns"), &offering_token, &10_000, &payment_token, &0);
+    client.register_offering(
+        &issuer,
+        &symbol_short!("ns"),
+        &offering_token,
+        &10_000,
+        &payment_token,
+        &0,
+    );
 
     (env, client, issuer, offering_token, payment_token, contract_id)
 }
@@ -92,7 +96,8 @@ fn close_period_happy_path() {
 
 #[test]
 fn close_period_aborts_when_share_ledger_is_inconsistent() {
-    let (env, client, issuer, token, payment_token, contract_id) = setup_offering_with_contract_id();
+    let (env, client, issuer, token, payment_token, contract_id) =
+        setup_offering_with_contract_id();
     let ns = symbol_short!("ns");
     let holder = Address::generate(&env);
 
@@ -100,18 +105,19 @@ fn close_period_aborts_when_share_ledger_is_inconsistent() {
 
     let before_events = env.events().all().len();
     env.as_contract(&contract_id, || {
-        let offering_id = OfferingId {
-            issuer: issuer.clone(),
-            namespace: ns.clone(),
-            token: token.clone(),
-        };
+        let offering_id =
+            OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
         env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id), &7_000u32);
     });
 
     let result = client.try_close_period(&issuer, &ns, &token, &1);
     assert_eq!(result, Err(Ok(RevoraError::CloseAbortInvariantsViolated)));
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
-    assert_eq!(env.events().all().len(), before_events, "abort path must not emit close_period events");
+    assert_eq!(
+        env.events().all().len(),
+        before_events,
+        "abort path must not emit close_period events"
+    );
 }
 
 #[test]
@@ -326,9 +332,7 @@ fn r_squared(points: &[(f64, f64)]) -> f64 {
     let slope = slope_numerator / slope_denominator;
     let intercept = (sum_y - slope * sum_x) / n;
 
-    let ss_residual: f64 = points.iter()
-        .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
-        .sum();
+    let ss_residual: f64 = points.iter().map(|(x, y)| (y - (slope * x + intercept)).powi(2)).sum();
 
     1.0 - (ss_residual / ss_total)
 }
@@ -422,9 +426,7 @@ fn close_period_dual_sig_happy_path() {
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
     assert!(result.is_ok(), "dual-sig close should succeed: {:?}", result);
     assert!(client.is_period_closed(&issuer, &ns, &token, &1));
 }
@@ -436,9 +438,7 @@ fn close_period_dual_sig_same_signer_rejected() {
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Both sig_a and sig_b are the issuer — must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &issuer);
     assert_eq!(result, Err(Ok(RevoraError::DualSigSameSigner)));
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
 }
@@ -469,9 +469,7 @@ fn close_period_dual_sig_not_configured() {
     );
 
     // Dual-sig close must fail with DualSigNotConfigured.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
     assert_eq!(result, Err(Ok(RevoraError::DualSigNotConfigured)));
 }
 
@@ -485,9 +483,7 @@ fn close_period_dual_sig_unauthorized_signer_rejected() {
     let attacker = Address::generate(&env);
 
     // Unauthorized signer must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &attacker,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &attacker);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
@@ -515,9 +511,7 @@ fn close_period_dual_sig_double_close_rejected() {
     client.close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
 
     // Second close must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -527,9 +521,7 @@ fn close_period_dual_sig_zero_period_id_rejected() {
     let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &0, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &0, &issuer, &co_issuer);
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
@@ -543,7 +535,12 @@ fn close_period_dual_sig_unknown_offering_returns_not_found() {
     let token = Address::generate(&env);
 
     let result = client.try_close_period_dual_sig(
-        &issuer, &symbol_short!("ns"), &token, &1, &issuer, &co_issuer,
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &1,
+        &issuer,
+        &co_issuer,
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
@@ -582,8 +579,7 @@ const DEFERRED_FLUSH_PER_CALL_CPU_BUDGET: u64 = 350_000;
 /// Cumulative CPU budget for flushing 1000 deferred entries sequentially.
 /// = 1000 × DEFERRED_FLUSH_PER_CALL_CPU_BUDGET, intentionally generous to
 /// account for test-harness overhead while still catching O(n²) regressions.
-const DEFERRED_FLUSH_1000_ENTRIES_CPU_BUDGET: u64 =
-    1_000 * DEFERRED_FLUSH_PER_CALL_CPU_BUDGET;
+const DEFERRED_FLUSH_1000_ENTRIES_CPU_BUDGET: u64 = 1_000 * DEFERRED_FLUSH_PER_CALL_CPU_BUDGET;
 
 /// Populate the deferred-reports storage with `count` entries by writing
 /// directly into the contract's persistent store via `env.as_contract`.
@@ -593,9 +589,7 @@ const DEFERRED_FLUSH_1000_ENTRIES_CPU_BUDGET: u64 =
 fn populate_deferred_queue(env: &Env, contract_id: &Address, count: u32) {
     env.as_contract(contract_id, || {
         for i in 0..count {
-            env.storage()
-                .persistent()
-                .set(&DeferredDataKey::DeferredReports(i), &1_000_000_i128);
+            env.storage().persistent().set(&DeferredDataKey::DeferredReports(i), &1_000_000_i128);
         }
     });
 }
@@ -699,9 +693,7 @@ fn close_period_flush_absent_entry_is_noop_within_budget() {
     // Confirm no entry was created by the no-op call.
     env.as_contract(&contract_id, || {
         assert!(
-            !env.storage()
-                .persistent()
-                .has(&DeferredDataKey::DeferredReports(999)),
+            !env.storage().persistent().has(&DeferredDataKey::DeferredReports(999)),
             "No-op flush must not create a storage entry for absent period_id 999",
         );
     });
@@ -757,9 +749,7 @@ fn close_period_deferred_queue_flush_leaves_no_residue() {
     env.as_contract(&contract_id, || {
         for i in 0..N {
             assert!(
-                !env.storage()
-                    .persistent()
-                    .has(&DeferredDataKey::DeferredReports(i)),
+                !env.storage().persistent().has(&DeferredDataKey::DeferredReports(i)),
                 "Deferred entry {} was not removed after flush — stale entry present",
                 i,
             );

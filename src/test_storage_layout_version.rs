@@ -1,16 +1,19 @@
 #![cfg(test)]
 extern crate alloc;
 
-use soroban_sdk::{
-    testutils::{Address as _, Events},
-    Address, Env, symbol_short, Bytes, IntoVal, Vec,
+use crate::vesting::{
+    compute_claimable, compute_vested, VestingCurve, VestingKey, VestingSchedule,
 };
 use crate::{
-    RevoraRevenueShare, RevoraRevenueShareClient, MigrationError, assert_semver_forward,
-    RevoraError, STORAGE_LAYOUT_VERSION,
+    assert_semver_forward, MigrationError, RevoraError, RevoraRevenueShare,
+    RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
 };
-use crate::vesting::{VestingSchedule, VestingCurve, VestingKey, compute_vested, compute_claimable};
 use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, IntoVal, Vec,
+};
 
 // ─── Existing layout-stamp tests ──────────────────────────────────────────────
 
@@ -92,7 +95,7 @@ fn test_migration_resumes_from_cursor() {
     // Instead of halting the real execution midway, we will explicitly simulate it.
     // By setting the MigrationResumeCursor manually, we simulate a halted migration.
     // The cursor is 5, meaning keys 1..=5 have been processed.
-    use crate::{MigrationDataKey, MigrationCursor};
+    use crate::{MigrationCursor, MigrationDataKey};
     env.as_contract(&contract_id, || {
         let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
         let cursor = MigrationCursor { last_key: 5 };
@@ -104,15 +107,17 @@ fn test_migration_resumes_from_cursor() {
 
     // Verify mig_resume event was emitted
     let events = env.events().all();
-    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    let resume_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
     assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
     let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
     assert_eq!(resume_val, 5, "Resume cursor should be 5");
 
     // Verify mig_step was emitted for keys 6 through 10, meaning it resumed at 6.
-    let step_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+    let step_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
     assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
-    
+
     // Assert the exact keys processed in the steps
     let start_key: u32 = step_events[0].2.clone().into_val(&env);
     assert_eq!(start_key, 6, "First processed key after resume must be 6");
@@ -189,17 +194,12 @@ fn register_hook_identity_succeeds() {
     let (env, client, admin) = setup_migration_test();
     let legacy_key = symbol_short!("legacy");
 
-    client.register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Identity,
-    );
+    client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Identity);
 
     // Verify the hook was registered via events
     let events = env.events().all();
-    let hook_events: Vec<_> = events.iter()
-        .filter(|e| e.0.to_string().contains("mig_hook"))
-        .collect();
+    let hook_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_hook")).collect();
     assert!(!hook_events.is_empty(), "must emit mig_hook event on registration");
 
     // Verify get_registered_hooks returns the hook
@@ -215,11 +215,7 @@ fn register_hook_rename_succeeds() {
     let legacy_key = symbol_short!("old_key");
     let new_key = symbol_short!("new_key");
 
-    client.register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Rename(new_key),
-    );
+    client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Rename(new_key));
 
     let hooks = client.get_registered_hooks();
     assert_eq!(hooks.len(), 1);
@@ -234,11 +230,7 @@ fn register_hook_custom_succeeds() {
     let legacy_key = symbol_short!("custom_legacy");
     let selector = symbol_short!("wrap_v2");
 
-    client.register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Custom(selector),
-    );
+    client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Custom(selector));
 
     let hooks = client.get_registered_hooks();
     assert_eq!(hooks.len(), 1);
@@ -275,11 +267,7 @@ fn register_duplicate_hook_overwrites() {
     client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Identity);
     // Register same key with different transform
     let new_key = symbol_short!("renamed");
-    client.register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Rename(new_key),
-    );
+    client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Rename(new_key));
 
     // Should still have only 1 hook, with the latest transform
     let hooks = client.get_registered_hooks();
@@ -342,11 +330,8 @@ fn register_hook_uninitialized_rejected() {
     let legacy_key = symbol_short!("test");
 
     // Contract not initialized — admin check will fail
-    let res = client.try_register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Identity,
-    );
+    let res =
+        client.try_register_migration_hook(&admin, &legacy_key, &MigrationTransform::Identity);
     match res {
         Err(Ok(RevoraError::NotInitialized)) => {}
         other => panic!("expected NotInitialized, got: {:?}", other),
@@ -365,11 +350,8 @@ fn register_hook_non_admin_rejected() {
     let non_admin = Address::generate(&env);
     let legacy_key = symbol_short!("test");
 
-    let res = client.try_register_migration_hook(
-        &non_admin,
-        &legacy_key,
-        &MigrationTransform::Identity,
-    );
+    let res =
+        client.try_register_migration_hook(&non_admin, &legacy_key, &MigrationTransform::Identity);
     match res {
         Err(Ok(RevoraError::NotAuthorized)) => {}
         other => panic!("expected NotAuthorized, got: {:?}", other),
@@ -397,14 +379,12 @@ fn migrate_storage_walker_applies_hooks() {
 
     // Verify both mig_step and mig_hook events were emitted
     let events = env.events().all();
-    let step_events: Vec<_> = events.iter()
-        .filter(|e| e.0.to_string().contains("mig_step"))
-        .collect();
+    let step_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
     assert!(!step_events.is_empty(), "must emit mig_step event");
 
-    let hook_events: Vec<_> = events.iter()
-        .filter(|e| e.0.to_string().contains("mig_hook"))
-        .collect();
+    let hook_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_hook")).collect();
     assert!(!hook_events.is_empty(), "must emit mig_hook event for each registered hook");
 }
 
@@ -416,24 +396,20 @@ fn migrate_storage_walker_dry_run_applies_hooks_as_plan() {
 
     // Register a rename hook
     let new_key = symbol_short!("new_key_v2");
-    client.register_migration_hook(
-        &admin,
-        &legacy_key,
-        &MigrationTransform::Rename(new_key),
-    );
+    client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Rename(new_key));
 
     // Run the walker in dry_run mode
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &true);
 
     // Verify migration_plan events were emitted for hooks
     let events = env.events().all();
-    let plan_events: Vec<_> = events.iter()
-        .filter(|e| e.0.to_string().contains("migration_plan"))
-        .collect();
+    let plan_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
     assert!(!plan_events.is_empty(), "must emit migration_plan events for hooks in dry run");
 
     // Verify no mig_hook events in dry_run mode
-    let hook_events: Vec<_> = events.iter()
+    let hook_events: Vec<_> = events
+        .iter()
         .filter(|e| e.0.to_string().contains("mig_hook"))
         .filter(|e| !e.0.to_string().contains("register")) // registration events still fire
         .collect();
@@ -458,7 +434,8 @@ fn multiple_hooks_applied_during_walker() {
 
     // Both hooks should produce mig_hook events
     let events = env.events().all();
-    let apply_events: Vec<_> = events.iter()
+    let apply_events: Vec<_> = events
+        .iter()
         .filter(|e| {
             let topic_str = e.0.to_string();
             topic_str.contains("mig_hook") && !topic_str.contains("register")
@@ -898,12 +875,12 @@ fn test_vesting_xdr_roundtrip_linear() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        1_000,       // cliff_ts
-        5_000,       // start_ts
-        100_000,     // end_ts
+        1_000,   // cliff_ts
+        5_000,   // start_ts
+        100_000, // end_ts
         VestingCurve::Linear,
-        1_000_000,   // total_amount
-        0,           // accelerated_amount
+        1_000_000, // total_amount
+        0,         // accelerated_amount
     );
     assert_xdr_roundtrip(&env, &schedule);
 }
@@ -911,15 +888,8 @@ fn test_vesting_xdr_roundtrip_linear() {
 #[test]
 fn test_vesting_xdr_roundtrip_cliff() {
     let env = Env::default();
-    let schedule = build_vesting_schedule(
-        &env,
-        10_000,
-        10_000,
-        100_000,
-        VestingCurve::Cliff,
-        500_000,
-        0,
-    );
+    let schedule =
+        build_vesting_schedule(&env, 10_000, 10_000, 100_000, VestingCurve::Cliff, 500_000, 0);
     assert_xdr_roundtrip(&env, &schedule);
 }
 
@@ -943,9 +913,9 @@ fn test_vesting_xdr_roundtrip_step() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        86_400,        // 1 day cliff
-        86_400,        // start = cliff
-        2_592_000,     // 30 day end
+        86_400,    // 1 day cliff
+        86_400,    // start = cliff
+        2_592_000, // 30 day end
         VestingCurve::Step { steps: 12 },
         10_000_000,
         500_000,
@@ -958,8 +928,8 @@ fn test_vesting_xdr_roundtrip_zero_cliff() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        0,       // zero cliff
-        0,       // start = cliff
+        0, // zero cliff
+        0, // start = cliff
         1_000,
         VestingCurve::Linear,
         1_000,
@@ -973,9 +943,9 @@ fn test_vesting_xdr_roundtrip_cliff_equals_end() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        100_000,   // cliff = end
+        100_000, // cliff = end
         50_000,
-        100_000,   // cliff == end_ts
+        100_000, // cliff == end_ts
         VestingCurve::Cliff,
         1_000,
         0,
@@ -988,9 +958,9 @@ fn test_vesting_xdr_roundtrip_boundary_timestamps() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        0,                     // cliff = min
+        0, // cliff = min
         1,
-        u64::MAX,              // end = max
+        u64::MAX, // end = max
         VestingCurve::Linear,
         i128::MAX,
         i128::MAX,
@@ -1003,15 +973,8 @@ fn test_vesting_storage_roundtrip_linear() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
-    let schedule = build_vesting_schedule(
-        &env,
-        1_000,
-        5_000,
-        100_000,
-        VestingCurve::Linear,
-        1_000_000,
-        0,
-    );
+    let schedule =
+        build_vesting_schedule(&env, 1_000, 5_000, 100_000, VestingCurve::Linear, 1_000_000, 0);
     assert_storage_roundtrip(&env, &contract_id, &schedule);
 }
 
@@ -1027,7 +990,7 @@ fn test_vesting_storage_roundtrip_with_acceleration() {
         10_000,
         VestingCurve::Graded { step_secs: 7_200 },
         5_000_000,
-        250_000,   // pre-accelerated
+        250_000, // pre-accelerated
     );
     assert_storage_roundtrip(&env, &contract_id, &schedule);
 }
@@ -1046,15 +1009,8 @@ fn test_vesting_legacy_bytes_migration_all_curves() {
     ];
 
     for curve in curves {
-        let schedule = build_vesting_schedule(
-            &env,
-            1_000,
-            5_000,
-            100_000,
-            curve,
-            1_000_000,
-            50_000,
-        );
+        let schedule =
+            build_vesting_schedule(&env, 1_000, 5_000, 100_000, curve, 1_000_000, 50_000);
         assert_legacy_storage_migration(&env, &contract_id, &schedule);
     }
 }
@@ -1074,7 +1030,8 @@ fn test_vesting_legacy_bytes_migration_edge_cases() {
     assert_legacy_storage_migration(&env, &contract_id, &s2);
 
     // Boundary timestamps
-    let s3 = build_vesting_schedule(&env, 0, 1, u64::MAX, VestingCurve::Linear, i128::MAX, i128::MAX);
+    let s3 =
+        build_vesting_schedule(&env, 0, 1, u64::MAX, VestingCurve::Linear, i128::MAX, i128::MAX);
     assert_legacy_storage_migration(&env, &contract_id, &s3);
 
     // Zero total amount (edge case for compute functions)
@@ -1087,11 +1044,11 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        1_000,       // cliff at t=1000
-        5_000,       // start at t=5000
-        10_000,      // end at t=10000
+        1_000,  // cliff at t=1000
+        5_000,  // start at t=5000
+        10_000, // end at t=10000
         VestingCurve::Linear,
-        10_000,      // total = 10000
+        10_000, // total = 10000
         0,
     );
 
@@ -1104,9 +1061,11 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
     for &now in &test_times {
         let original_vested = compute_vested(&schedule, now);
         let decoded_vested = compute_vested(&decoded, now);
-        assert_eq!(original_vested, decoded_vested,
+        assert_eq!(
+            original_vested, decoded_vested,
             "compute_vested mismatch at now={}: original={}, decoded={}",
-            now, original_vested, decoded_vested);
+            now, original_vested, decoded_vested
+        );
     }
 
     // Verify compute_claimable with a non-zero already_claimed
@@ -1114,9 +1073,11 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
     for &now in &test_times {
         let original_claimable = compute_claimable(&schedule, already_claimed, now);
         let decoded_claimable = compute_claimable(&decoded, already_claimed, now);
-        assert_eq!(original_claimable, decoded_claimable,
+        assert_eq!(
+            original_claimable, decoded_claimable,
             "compute_claimable mismatch at now={}: original={}, decoded={}",
-            now, original_claimable, decoded_claimable);
+            now, original_claimable, decoded_claimable
+        );
     }
 }
 
@@ -1124,10 +1085,22 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
 fn test_vesting_byte_level_determinism() {
     let env = Env::default();
     let s1 = build_vesting_schedule(
-        &env, 1_000, 5_000, 100_000, VestingCurve::Graded { step_secs: 3600 }, 1_000_000, 0,
+        &env,
+        1_000,
+        5_000,
+        100_000,
+        VestingCurve::Graded { step_secs: 3600 },
+        1_000_000,
+        0,
     );
     let s2 = build_vesting_schedule(
-        &env, 1_000, 5_000, 100_000, VestingCurve::Graded { step_secs: 3600 }, 1_000_000, 0,
+        &env,
+        1_000,
+        5_000,
+        100_000,
+        VestingCurve::Graded { step_secs: 3600 },
+        1_000_000,
+        0,
     );
 
     let b1: Bytes = s1.to_xdr(&env);
@@ -1140,12 +1113,12 @@ fn test_vesting_compute_with_accelerated_after_roundtrip() {
     let env = Env::default();
     let schedule = build_vesting_schedule(
         &env,
-        100,         // cliff
-        200,         // start
-        1_200,       // end
+        100,   // cliff
+        200,   // start
+        1_200, // end
         VestingCurve::Linear,
-        1_000,       // total
-        200,         // 20% pre-accelerated
+        1_000, // total
+        200,   // 20% pre-accelerated
     );
 
     let bytes: Bytes = schedule.to_xdr(&env);
@@ -1173,11 +1146,11 @@ fn test_vesting_migration_preserves_all_fields_integration() {
     // 90-day cliff (in seconds), realistic offering timestamps
     let schedule = build_vesting_schedule(
         &env,
-        7_776_000,       // 90-day cliff
-        17_064_000,      // start approx 90+ days out
-        51_278_400,      // end ~2 years from start
+        7_776_000,  // 90-day cliff
+        17_064_000, // start approx 90+ days out
+        51_278_400, // end ~2 years from start
         VestingCurve::Linear,
-        1_000_000_000,   // 1B tokens
+        1_000_000_000, // 1B tokens
         0,
     );
 
@@ -1201,6 +1174,9 @@ fn test_vesting_migration_preserves_all_fields_integration() {
         assert_eq!(retrieved.start_ts, schedule.start_ts, "start_ts mutated");
         assert_eq!(retrieved.end_ts, schedule.end_ts, "end_ts mutated");
         assert_eq!(retrieved.curve, schedule.curve, "curve shape corrupted");
-        assert_eq!(retrieved.accelerated_amount, schedule.accelerated_amount, "accelerated_amount corrupted");
+        assert_eq!(
+            retrieved.accelerated_amount, schedule.accelerated_amount,
+            "accelerated_amount corrupted"
+        );
     });
 }

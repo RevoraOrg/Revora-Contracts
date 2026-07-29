@@ -111,6 +111,81 @@ fn get_redemption_window_returns_none_when_unset() {
     assert_eq!(window, None);
 }
 
+// ── Window overlap rejection ──────────────────────────────────────────────────
+
+#[test]
+fn set_redemption_window_rejects_overlap() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Set first window [500, 2000)
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+
+    // Overlap from the left: [100, 1000) collides with [500, 2000)
+    let result = client.try_set_redemption_window(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &100,
+        &1000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::RedemptionWindowOverlap)));
+
+    // Overlap from the right: [1500, 3000) collides with [500, 2000)
+    let result = client.try_set_redemption_window(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &1500,
+        &3000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::RedemptionWindowOverlap)));
+
+    // Full containment: [600, 1800) inside [500, 2000)
+    let result = client.try_set_redemption_window(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &600,
+        &1800,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::RedemptionWindowOverlap)));
+
+    // Surrounding: [100, 3000) fully contains [500, 2000)
+    let result = client.try_set_redemption_window(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &100,
+        &3000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::RedemptionWindowOverlap)));
+}
+
+#[test]
+fn set_redemption_window_allows_contiguous_non_overlapping() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Set first window [500, 2000)
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+
+    // Non-overlapping: [2000, 3000) -- exactly adjacent (end == start)
+    let result = client.try_set_redemption_window(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &2000,
+        &3000,
+    );
+    assert_eq!(result, Ok(Ok(())));
+
+    // Existing window unchanged
+    let window = client.get_redemption_window(&issuer, &symbol_short!("def"), &offering_token).unwrap();
+    assert_eq!(window.start_timestamp, 2000);
+    assert_eq!(window.end_timestamp, 3000);
+}
+
 // ── request_redemption ────────────────────────────────────────────────────────
 
 #[test]
