@@ -330,6 +330,9 @@ pub enum RevoraError {
     /// until the holder relocates to an allowed jurisdiction or the issuer
     /// updates the allowlist.
     JurisdictionMigrationDeadlineExceeded = 76,
+    /// Setting a redemption window that overlaps with an existing unconsumed
+    /// redemption window is rejected.
+    RedemptionWindowOverlap = 77,
 }
 
 pub mod vesting;
@@ -1522,6 +1525,28 @@ pub enum DataKey2 {
     /// Priority-ordered deferred-distribution queue for an offering.
     /// Value: `Vec<DeferredQueueEntry>` stored in `(release_ts, priority, queue_id)` sorted order.
     DeferredQueue(OfferingId),
+
+    // ── Redemption keys ──
+    /// Pending redemption request for (offering_id, holder).
+    RedemptionRequest(OfferingId, Address),
+    /// Redemption fee configuration for an offering.
+    RedemptionFeeConfig(OfferingId),
+    /// Lockup schedule (cliff/taper) for an offering.
+    LockupSchedule(OfferingId),
+
+    // ── Global / admin keys ──
+    /// Emit v2 compat flag.
+    EmitV2Compat,
+    /// Global freeze reason for the contract.
+    GlobalFreezeReason,
+    /// Admin rotation delay in seconds.
+    AdminRotationDelay,
+
+    // ── Jurisdiction keys ──
+    /// Grace period (seconds) for jurisdiction migration.
+    JurisdictionGracePeriod(OfferingId),
+    /// Jurisdiction migration state for (offering_id, holder).
+    JurisdictionMigration(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -8773,6 +8798,61 @@ impl RevoraRevenueShare {
     ) -> Option<AccessWindow> {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&WindowDataKey::Claim(offering_id))
+    }
+
+    /// Configure the redemption window for an offering. If unset, always open.
+    /// Rejects the request if a stored redemption window overlaps with the new one.
+    pub fn set_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        start_timestamp: u64,
+        end_timestamp: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        issuer.require_auth();
+        let new_window = AccessWindow { start_timestamp, end_timestamp };
+        Self::validate_window(&new_window)?;
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Reject if the new window overlaps with the stored window
+        let existing: Option<AccessWindow> =
+            env.storage().persistent().get(&WindowDataKey::Redemption(offering_id.clone()));
+        if let Some(existing) = existing {
+            if start_timestamp < existing.end_timestamp && existing.start_timestamp < end_timestamp
+            {
+                return Err(RevoraError::RedemptionWindowOverlap);
+            }
+        }
+
+        env.storage().persistent().set(&WindowDataKey::Redemption(offering_id), &new_window);
+        env.events().publish(
+            (EVENT_REDEMPTION_WINDOW_SET, issuer, namespace, token),
+            (start_timestamp, end_timestamp),
+        );
+        Ok(())
+    }
+
+    /// Read configured redemption window (if any) for an offering.
+    pub fn get_redemption_window(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<AccessWindow> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&WindowDataKey::Redemption(offering_id))
     }
     pub fn claim(
         env: Env,
