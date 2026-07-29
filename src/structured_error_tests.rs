@@ -90,6 +90,7 @@ mod tests {
             ("ContractPaused", RevoraError::ContractPaused as u32),
             ("BlacklistSizeLimitExceeded", RevoraError::BlacklistSizeLimitExceeded as u32),
             ("AlreadyApproved", RevoraError::AlreadyApproved as u32),
+            ("TestnetOnly", RevoraError::TestnetOnly as u32),
             ("FaucetCooldownActive", RevoraError::FaucetCooldownActive as u32),
             ("MissingReportForOverride", RevoraError::MissingReportForOverride as u32),
             ("PeriodAlreadyClosed", RevoraError::PeriodAlreadyClosed as u32),
@@ -198,7 +199,10 @@ mod tests {
         assert_eq!(RevoraError::ContractPaused as u32, 44);
         assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
         assert_eq!(RevoraError::AlreadyApproved as u32, 46);
-        assert_eq!(RevoraError::FaucetCooldownActive as u32, 56);
+        // 62: TestnetOnly — added in v0.3.0 (faucet reset, issue #615)
+        assert_eq!(RevoraError::TestnetOnly as u32, 62);
+        // 63: FaucetCooldownActive — renumbered from 59 to avoid collision with DisputeAlreadyOpen
+        assert_eq!(RevoraError::FaucetCooldownActive as u32, 63);
         assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
         assert_eq!(RevoraError::JurisdictionMigrationDeadlineExceeded as u32, 76);
     }
@@ -234,8 +238,8 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_discriminants_within_valid_range_1_to_76() {
-        // All discriminants must be within 1..=46. Gaps are preserved for wire
+    fn test_discriminants_within_valid_range_1_to_56() {
+        // All discriminants must be within 1..=63. Gaps are preserved for wire
         // compatibility — do not renumber existing variants. New variants should
         // use the next available number or fill gaps intentionally.
         let all = [
@@ -282,11 +286,12 @@ mod tests {
             RevoraError::ContractPaused as u32,
             RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::AlreadyApproved as u32,
+            RevoraError::TestnetOnly as u32,
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
         ];
         for v in all.iter() {
-            assert!(*v >= 1 && *v <= 76, "discriminant {v} out of expected range 1..=76");
+            assert!(*v >= 1 && *v <= 63, "discriminant {v} out of expected range 1..=63");
         }
     }
 
@@ -357,6 +362,7 @@ mod tests {
             RevoraError::ContractPaused as u32,
             RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::AlreadyApproved as u32,
+            RevoraError::TestnetOnly as u32,
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
         ];

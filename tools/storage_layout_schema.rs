@@ -138,6 +138,15 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::CategoryHolderCount(OfferingId, Symbol)", "u32", "offering+category"),
     ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
     ("DataKey2::EmergencyFreeze(OfferingId, Address)", "bool", "offering+holder"),
+    ("DataKey2::HolderFreezeMask(OfferingId, Address)", "u32", "offering+holder"),
+    ("DataKey2::EmitV2Compat", "bool", "contract"),
+    ("DataKey2::GlobalFreezeReason", "FreezeReason", "contract"),
+    ("DataKey2::AdminRotationDelay", "u64", "contract"),
+    ("DataKey2::JurisdictionGracePeriod(OfferingId)", "u64", "offering"),
+    ("DataKey2::JurisdictionMigration(OfferingId, Address)", "JurisdictionMigrationState", "offering+holder"),
+    ("DataKey2::RedemptionRequest(OfferingId, Address)", "PendingRedemption", "offering+holder"),
+    ("DataKey2::RedemptionFeeConfig(OfferingId)", "RedemptionFeeConfig", "offering"),
+    ("DataKey2::LockupSchedule(OfferingId)", "LockupSchedule", "offering"),
     ("DataKey2::TotalSharesIssued(OfferingId)", "u32", "offering"),
     ("DataKey2::MaxTotalSupplyShares(OfferingId)", "u32", "offering"),
     ("DataKey2::FaucetSeedEntry(OfferingId, u32)", "Address", "offering+index"),
@@ -149,14 +158,23 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::VoteRecord(OfferingId, u32, Address)", "bool", "offering+proposal+voter"),
     ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
     ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
-    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
-    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
-    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+meta_hash"),
-    ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey2::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
+    // ── Accrual-checkpoint keys ──
+    ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
+    ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
+    // ── Governance keys (issue #557) ──
+    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposalPayload", "offering+proposal"),
+    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
+    // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
+    ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
+    ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
-    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer")
+    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer"),
+    ("MigrationDataKey::MigrationHook(Symbol)", "MigrationTransform", "legacy_key"),
+    ("MigrationDataKey::MigrationHookIndex(u32)", "Symbol", "index"),
+    ("MigrationDataKey::MigrationHookCount", "u32", "contract"),
 ]);
 
 const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revenue_deposit_contract", [

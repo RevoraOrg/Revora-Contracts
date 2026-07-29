@@ -36,8 +36,8 @@ fn fixture_topics_have_stable_order_and_shape() {
     let ns = symbol_short!("def");
 
     let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &7u64);
-    assert_eq!(v2_fixtures.len(), 15);
-    assert_eq!(v3_fixtures.len(), 15);
+    assert_eq!(v2_fixtures.len(), 16);
+    assert_eq!(v3_fixtures.len(), 16);
 
     let f0 = v2_fixtures.get(0).unwrap();
     assert_eq!(f0.version, 2);
@@ -91,7 +91,11 @@ fn fixture_topics_have_stable_order_and_shape() {
     let f14 = v2_fixtures.get(14).unwrap();
     assert_eq!(f14.event_type, symbol_short!("ms_init"));
 
-    for i in 0..15 {
+    let f15 = v2_fixtures.get(15).unwrap();
+    assert_eq!(f15.event_type, symbol_short!("rg_lim_d"));
+    assert_eq!(f15.period_id, 0);
+
+    for i in 0..16 {
         let v3 = v3_fixtures.get(i).unwrap();
         assert_eq!(v3.version, 3);
         assert_eq!(v3.event_type, v2_fixtures.get(i).unwrap().event_type);
