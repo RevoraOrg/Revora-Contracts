@@ -8,6 +8,7 @@
 //! - Unauthorized freeze/unfreeze attempts
 //! - is_holder_frozen correctness
 //! - Event emission (frz_set, frz_clr)
+//! - OFAC attestation auto-freeze with idempotency (auto_frz event)
 
 #![cfg(test)]
 
@@ -15,7 +16,7 @@ use crate::{FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _},
-    Address, Env, Symbol,
+    Address, BytesN, Env, Symbol, Val, Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -783,6 +784,16 @@ fn set_freeze_records_reason_and_emits_event() {
         }
     });
     assert!(found, "expected frz_set event after set_freeze");
+
+    // A frz_rsn (freeze_reason_v1) event must have been emitted with reason and target.
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event after set_freeze");
 }
 
 /// Sequential `set_freeze` calls with different reasons overwrite the stored reason.
@@ -812,4 +823,196 @@ fn default_freeze_sets_compliance_reason() {
         Some(FreezeReason::Compliance),
         "freeze() must record Compliance as the default reason"
     );
+
+    // freeze() via set_freeze must also emit frz_rsn
+    let events = env.events().all();
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event from freeze() (default set_freeze)");
+}
+
+// ─── OFAC Attestation Auto-Freeze Tests ─────────────────────────────────────────
+
+/// Helper to set up an offering with a holder for OFAC attestation tests.
+fn ofac_setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Address) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let issuer = Address::generate(env);
+    let token = Address::generate(env);
+    let ns = symbol_short!("ofac");
+    let payout = Address::generate(env);
+    
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    client.register_offering(&issuer, &Vec::new(env), &1u32, &ns, &token, &1_000, &payout, &0);
+    
+    (client, admin, issuer, token)
+}
+
+/// OFAC attestation should auto-freeze the targeted holder.
+#[test]
+fn ofac_attestation_auto_freezes_holder() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    // Set up holder with shares
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    
+    // Submit OFAC attestation
+    let attestation_hash = BytesN::from_array(&env, &[0x01u8; 32]);
+    client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    
+    // Verify holder is frozen
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+/// OFAC attestation replay should be idempotent - same hash should not re-freeze.
+#[test]
+fn ofac_attestation_replay_is_idempotent() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    
+    let attestation_hash = BytesN::from_array(&env, &[0x02u8; 32]);
+    
+    // First attestation should freeze
+    client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+    
+    // Replay with same hash should succeed (idempotent) but not change state
+    let result = client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    assert!(result.is_ok());
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder)); // Still frozen
+}
+
+/// OFAC attestation should emit auto_frz event with correct payload.
+#[test]
+fn ofac_attestation_emits_auto_frz_event() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    
+    let attestation_hash = BytesN::from_array(&env, &[0x03u8; 32]);
+    let before = env.events().all().len();
+    
+    client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    
+    // Find and verify auto_frz event
+    let events = env.events().all();
+    let auto_frz_sym = symbol_short!("auto_frz");
+    let mut found = false;
+    
+    for i in before..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
+        let topic_sym: soroban_sdk::Symbol = topics_vec.get(0).unwrap().into_val(&env);
+        
+        if topic_sym == auto_frz_sym {
+            // Verify topic contains issuer, namespace, token
+            let ev_issuer: Address = topics_vec.get(1).unwrap().into_val(&env);
+            let ev_ns: soroban_sdk::Symbol = topics_vec.get(2).unwrap().into_val(&env);
+            let ev_token: Address = topics_vec.get(3).unwrap().into_val(&env);
+            assert_eq!(ev_issuer, issuer);
+            assert_eq!(ev_ns, ns);
+            assert_eq!(ev_token, token);
+            
+            // Verify data: (holder, attestation_hash)
+            let data_vec: soroban_sdk::Vec<Val> = data.clone().into_val(&env);
+            let ev_holder: Address = data_vec.get(0).unwrap().into_val(&env);
+            let ev_hash: BytesN<32> = data_vec.get(1).unwrap().into_val(&env);
+            assert_eq!(ev_holder, holder);
+            assert_eq!(ev_hash, attestation_hash);
+            
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "auto_frz event must be emitted with correct payload");
+}
+
+/// OFAC attestation should fail when contract is globally frozen.
+#[test]
+fn ofac_attestation_blocked_when_contract_frozen() {
+    let env = Env::default();
+    let (client, admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    
+    // Freeze the contract globally
+    client.freeze();
+    
+    let attestation_hash = BytesN::from_array(&env, &[0x04u8; 32]);
+    let result = client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    
+    assert!(result.is_err());
+    // Holder should NOT be frozen (operation failed)
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+/// Multiple different OFAC attestations should each freeze independently.
+#[test]
+fn multiple_ofac_attestations_freeze_independently() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &500);
+    client.set_holder_share(&issuer, &ns, &token, &holder2, &500);
+    
+    let hash1 = BytesN::from_array(&env, &[0x05u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[0x06u8; 32]);
+    
+    // Freeze holder1 with first attestation
+    client.process_ofac_attestation(&hash1, &issuer, &ns, &token, &holder1);
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder1));
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder2));
+    
+    // Freeze holder2 with second attestation
+    client.process_ofac_attestation(&hash2, &issuer, &ns, &token, &holder2);
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder1));
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder2));
+}
+
+/// OFAC attestation should use SanctionsMatch as freeze reason.
+#[test]
+fn ofac_attestation_uses_sanctions_match_reason() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+    
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    
+    let attestation_hash = BytesN::from_array(&env, &[0x07u8; 32]);
+    client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    
+    // Verify frozen with correct reason by checking unfreeze requires matching reason
+    let result = client.try_emergency_unfreeze_holder(
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &FreezeReason::SanctionsMatch,
+    );
+    assert!(result.is_ok());
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
