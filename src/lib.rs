@@ -6814,7 +6814,7 @@ impl RevoraRevenueShare {
             if unlocked_bps < 10_000 {
                 env.events().publish(
                     (EVENT_LOCKUP_VIOLATION, from.clone()),
-                    (to.clone(), amount_bps, schedule.unlock_ts),
+                    (to.clone(), amount_bps, schedule.clone()),
                 );
                 return Err(RevoraError::LockupViolation);
             }
