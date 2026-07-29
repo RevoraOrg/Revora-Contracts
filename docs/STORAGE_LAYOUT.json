@@ -579,7 +579,7 @@
     {
       "module": "revora_revenue_share",
       "key": "DataKey::PendingAdmin",
-      "value_type": "Address",
+      "value_type": "PendingAdminRotation",
       "ownership": "contract",
       "version": 2
     },
