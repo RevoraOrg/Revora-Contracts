@@ -3195,6 +3195,63 @@ impl RevoraRevenueShare {
         Ok(royalty_amount)
     }
 
+    /// Atomic swap for secondary market transfers. Transfers shares from seller to buyer
+    /// and settlement asset from buyer to seller, routing a royalty fee to the issuer.
+    ///
+    /// ### Errors
+    /// - `TransferFailed` — token transfer for settlement failed.
+    /// - Inherits errors from `transfer_with_attestation` and `pay_secondary_market_royalty`.
+    pub fn atomic_swap(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        seller: Address,
+        buyer: Address,
+        amount_bps: u32,
+        category: Symbol,
+        payment_asset: Address,
+        payment_amount: i128,
+    ) -> Result<(), RevoraError> {
+        issuer.require_auth();
+        buyer.require_auth();
+
+        let royalty_amount = Self::pay_secondary_market_royalty(
+            env.clone(),
+            buyer.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            payment_asset.clone(),
+            payment_amount,
+            seller.clone(),
+            buyer.clone(),
+        )?;
+
+        let seller_amount = payment_amount.checked_sub(royalty_amount).unwrap_or(0);
+        if seller_amount > 0 {
+            if token::Client::new(&env, &payment_asset)
+                .try_transfer(&buyer, &seller, &seller_amount)
+                .is_err()
+            {
+                return Err(RevoraError::TransferFailed);
+            }
+        }
+
+        Self::transfer_with_attestation(
+            env,
+            issuer,
+            namespace,
+            token,
+            seller,
+            buyer,
+            amount_bps,
+            category,
+        )?;
+
+        Ok(())
+    }
+
     /// Set a platform-level per-asset fee in basis points. Admin-only. (#98)
     ///
     /// Emits `EVENT_FEE_CONFIG` with `(asset, fee_bps)`.
