@@ -380,6 +380,8 @@ mod test_faucet_seed;
 mod test_faucet_metrics;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
+#[cfg(test)]
+mod test_reg_limit_delta;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -605,6 +607,24 @@ const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
 /// Emitted when an OFAC attestation triggers automatic holder freeze.
 const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
+
+/// ── Regulatory-limit delta event (reg_limit_delta event stream) ──
+///
+/// Emitted on every holding change (issuance or transfer) that affects a
+/// jurisdiction-tagged holder. Off-chain indexers replay these events to
+/// rebuild the aggregate cap usage per jurisdiction over the offering
+/// lifecycle without scanning every `HolderShare` entry.
+///
+/// Topic:  `(rg_lim_d, issuer, namespace, token)`
+/// Data:   `(holder: Address, jurisdiction: Symbol, delta_bps: i128, new_aggregate_bps: i128)`
+///
+/// Field ordering (for indexer deserialization):
+///   0. `holder`          — Address whose share change triggered the event
+///   1. `jurisdiction`    — Jurisdiction tag of the holder (e.g. "us", "sg")
+///   2. `delta_bps`       — Signed change to the jurisdiction aggregate (bps)
+///   3. `new_aggregate_bps` — Updated cumulative aggregate for this jurisdiction
+const EVENT_REG_LIMIT_DELTA: Symbol = symbol_short!("rg_lim_d");
+
 const BPS_DENOMINATOR: i128 = 10_000;
 const ACCRUAL_SCALE_E18: i128 = 1_000_000_000_000_000_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
@@ -654,6 +674,12 @@ const EVENT_JUR_MIGRATION: Symbol = symbol_short!("jur_mig");
 /// Data: `(grace_secs,)`
 const EVENT_JUR_GRACE_SET: Symbol = symbol_short!("jur_grace");
 
+/// Sentinel symbol used when a holder has no jurisdiction tag assigned.
+/// Used as a fallback in jurisdiction allowlist checks and regulatory-limit
+/// delta computations so that holders without a jurisdiction are skipped
+/// rather than triggering a spurious event.
+const EVENT_JUR_UNSET: Symbol = symbol_short!("jur_none");
+
 /// Default jurisdiction migration grace period: 7 days.
 const DEFAULT_JURISDICTION_GRACE_SECS: u64 = 7 * 24 * 60 * 60;
 /// Minimum configurable jurisdiction grace period: 1 hour.
@@ -693,7 +719,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 4;
+pub const STORAGE_LAYOUT_VERSION: u32 = 5;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -1522,6 +1548,13 @@ pub enum DataKey2 {
     /// Priority-ordered deferred-distribution queue for an offering.
     /// Value: `Vec<DeferredQueueEntry>` stored in `(release_ts, priority, queue_id)` sorted order.
     DeferredQueue(OfferingId),
+
+    // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
+    /// Cumulative aggregate share (BPS) held by all holders in a given jurisdiction
+    /// for (offering_id, jurisdiction). Updated atomically on every issuance and
+    /// transfer so indexers can reconstruct the per-jurisdiction cap-usage history
+    /// from `reg_limit_delta` events without an additional RPC scan.
+    JurisdictionAggregateShare(OfferingId, Symbol),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2029,6 +2062,54 @@ impl RevoraRevenueShare {
     /// Helper to emit deterministic v2 versioned events for core event versioning.
     /// Emits: topic -> (EVENT_SCHEMA_VERSION_V2, data...)
     /// All core events MUST use this for schema compliance and indexer compatibility.
+    /// Emit a `reg_limit_delta` event and update the jurisdiction-aggregate storage.
+    ///
+    /// Called whenever a holder's share changes. If the holder has no jurisdiction
+    /// tag (or the jurisdiction is the unset sentinel), this is a no-op.
+    ///
+    /// # Arguments
+    /// * `env` — Contract environment
+    /// * `offering_id` — The offering the holder belongs to
+    /// * `holder` — The holder whose share changed
+    /// * `delta_bps` — Signed change to the holder's share (new - old) in basis points.
+    ///   An `i128` so that both positive (issuance, receive) and negative
+    ///   (transfer out, reduction) deltas are supported.
+    fn update_and_emit_reg_limit_delta(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        delta_bps: i128,
+    ) {
+        // Retrieve the holder's jurisdiction; skip if none is set.
+        let jurisdiction = Self::get_holder_jurisdiction_internal(env, offering_id, holder);
+        let Some(jur) = jurisdiction else {
+            return;
+        };
+
+        // Skip the unset sentinel (holders without a real jurisdiction tag).
+        if jur == EVENT_JUR_UNSET {
+            return;
+        }
+
+        let agg_key = DataKey2::JurisdictionAggregateShare(offering_id.clone(), jur.clone());
+        let old_aggregate: i128 = env.storage().persistent().get(&agg_key).unwrap_or(0);
+
+        // Compute new aggregate with saturating arithmetic.
+        let new_aggregate = old_aggregate.saturating_add(delta_bps);
+        env.storage().persistent().set(&agg_key, &new_aggregate);
+
+        // Emit the regulatory-limit delta event.
+        env.events().publish(
+            (
+                EVENT_REG_LIMIT_DELTA,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (holder.clone(), jur, delta_bps, new_aggregate),
+        );
+    }
+
     fn emit_v2_event<Topics, T>(env: &Env, topic_tuple: Topics, data: T)
     where
         Topics: IntoVal<Env, soroban_sdk::Val> + soroban_sdk::events::Topics,
@@ -2332,6 +2413,10 @@ impl RevoraRevenueShare {
             .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
         env.storage().persistent().set(&total_key, &new_total);
         Self::record_holder_share_transition(env, &offering_id, &holder, old_share, share_bps);
+
+        // Emit regulatory-limit delta for the jurisdiction aggregate.
+        let delta_bps = (share_bps as i128).saturating_sub(old_share as i128);
+        Self::update_and_emit_reg_limit_delta(env, &offering_id, &holder, delta_bps);
 
         env.events().publish(
             (EVENT_SHARE_SET, issuer.clone(), namespace.clone(), token.clone()),
@@ -3248,7 +3333,7 @@ impl RevoraRevenueShare {
         Self::emit_v2_event(
             &env,
             (EVENT_ROYALTY_PAID, issuer.clone(), namespace.clone(), token.clone()),
-            (payer.clone(), seller, buyer, payment_asset, amount, royalty_amount),
+            (payer.clone(), seller.clone(), buyer.clone(), payment_asset.clone(), amount, royalty_amount),
         );
         env.events().publish(
             (EVENT_ROYALTY_PAID, issuer, namespace, token),
@@ -14193,6 +14278,313 @@ impl RevoraRevenueShare {
         }
         Ok(())
     }
+}
+
+impl RevoraRevenueShare {
+
+// ── Indexer fixture topics ────────────────────────────────────────────────────
+
+/// Returns canonical fixture topics for indexer schema bootstrapping.
+///
+/// Returns a pair `(v2_fixtures, v3_fixtures)` where each Vec has the same
+/// length and stable ordering. Off-chain indexers can subscribe to these
+/// known topic symbols to ensure their parser correctly deserializes every
+/// event type the contract emits.
+///
+/// The `period_id` parameter is used for period-scoped event types (e.g.
+/// `rv_init`, `rv_rep`). Non-period-scoped events (e.g. `offer`, `claim`,
+/// `ms_init`, `rg_lim_d`) always carry `period_id = 0`.
+pub fn get_indexer_fixture_topics(
+    env: Env,
+    issuer: Address,
+    namespace: Symbol,
+    token: Address,
+    period_id: u64,
+) -> (Vec<EventIndexTopicV2>, Vec<EventIndexTopicV3>) {
+    let v2_fixtures: Vec<EventIndexTopicV2> = soroban_sdk::vec![
+        &env,
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("offer"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rv_init"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rv_ovr"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rv_rej"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rv_rep"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("claim"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("admin_set"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("fee_set"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("fee_ast"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("fee_off"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("conc_lim"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rnd_mode"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("meta_key"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("meta_del"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("ms_init"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+        // ── Regulatory-limit delta (reg_limit_delta event stream) ──
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rg_lim_d"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
+    ];
+
+    let v3_fixtures: Vec<EventIndexTopicV3> = soroban_sdk::vec![
+        &env,
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("offer"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rv_init"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rv_ovr"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rv_rej"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rv_rep"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("claim"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("admin_set"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("fee_set"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("fee_ast"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("fee_off"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("conc_lim"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rnd_mode"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("meta_key"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("meta_del"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("ms_init"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        // ── Regulatory-limit delta (reg_limit_delta event stream) ──
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rg_lim_d"),
+            issuer: issuer.clone(),
+            namespace,
+            token,
+            period_id: 0,
+            _reserved: 0,
+        },
+    ];
+
+    (v2_fixtures, v3_fixtures)
+}
 }
 
 #[cfg(test)]

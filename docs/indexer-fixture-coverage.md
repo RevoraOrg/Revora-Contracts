@@ -25,6 +25,7 @@ Returns canonical v2 topics in stable order:
 4. `rv_rej` (period `period_id`)
 5. `rv_rep` (period `period_id`)
 6. `claim` (period `0`)
+7. `rg_lim_d` (period `0`)
 
 All fixtures are versioned with `version = 2`.
 
