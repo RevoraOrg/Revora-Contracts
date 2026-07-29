@@ -412,3 +412,61 @@ fn vote_choice_roundtrip_in_event_payload() {
     let (_, _, c2, _): (u32, Address, VoteChoice, u32) = d2.into_val(&env);
     assert_eq!(c2, VoteChoice::No);
 }
+
+/// supported_event_versions returns both V3 (ev_idx3) and V2 (ev_idx2) by default.
+#[test]
+fn supported_event_versions_default_includes_v2_and_v3() {
+    let (env, client, _admin, _issuer, _token, _payout_asset) = setup_with_admin();
+
+    let versions = client.supported_event_versions();
+    assert_eq!(versions.len(), 2);
+
+    let v3_info = versions.get(0).unwrap();
+    assert_eq!(v3_info.topic, symbol_short!("ev_idx3"));
+    assert_eq!(v3_info.version, 3);
+
+    let v2_info = versions.get(1).unwrap();
+    assert_eq!(v2_info.topic, symbol_short!("ev_idx2"));
+    assert_eq!(v2_info.version, 2);
+}
+
+/// supported_event_versions excludes V2 (ev_idx2) when V2 compat mode is disabled.
+#[test]
+fn supported_event_versions_reflects_disabled_v2_compat() {
+    let (env, client, admin, _issuer, _token, _payout_asset) = setup_with_admin();
+
+    // Disable V2 compat mode
+    client.set_emit_v2_compat(&admin, &false);
+
+    let versions = client.supported_event_versions();
+    assert_eq!(versions.len(), 1);
+
+    let v3_info = versions.get(0).unwrap();
+    assert_eq!(v3_info.topic, symbol_short!("ev_idx3"));
+    assert_eq!(v3_info.version, 3);
+}
+
+/// Indexer pre-subscription topic negotiation fixture.
+/// Simulates how an off-chain indexer queries supported_event_versions()
+/// to determine the appropriate event topic before subscribing.
+#[test]
+fn indexer_version_negotiation_fixture() {
+    let (env, client, _admin, _issuer, _token, _payout_asset) = setup_with_admin();
+
+    // Indexer queries contract before setting up subscription pipeline
+    let supported = client.supported_event_versions();
+
+    // Negotiation logic: prefer highest supported version (V3 over V2)
+    let mut selected_topic = None;
+    let mut selected_version = 0;
+
+    for info in supported.iter() {
+        if info.version > selected_version {
+            selected_topic = Some(info.topic.clone());
+            selected_version = info.version;
+        }
+    }
+
+    assert_eq!(selected_topic, Some(symbol_short!("ev_idx3")));
+    assert_eq!(selected_version, 3);
+}

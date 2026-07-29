@@ -567,6 +567,10 @@ const EVENT_ROUNDING_MODE_SET: Symbol = symbol_short!("rnd_mode");
 const EVENT_ADMIN_SET: Symbol = symbol_short!("admin_set");
 /// Emitted when an admin rotation is logged to persistent history.
 const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
+/// Emitted when an in-progress admin rotation is revoked by the outgoing admin.
+const EVENT_ADMIN_ROTATION_REVOKED: Symbol = symbol_short!("adm_rvk");
+/// Emitted when a lockup schedule is configured for an offering.
+const EVENT_LOCKUP_SET: Symbol = symbol_short!("lock_set");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -1157,6 +1161,103 @@ pub struct PendingRedemption {
     pub timestamp: u64,
 }
 
+/// Per-offering redemption fee configuration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RedemptionFeeConfig {
+    pub fee_bps: u32,
+    pub treasury: Address,
+}
+
+/// Supported event version entry returned by `supported_event_versions()`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventVersionInfo {
+    pub topic: Symbol,
+    pub version: u32,
+}
+
+/// Lockup schedule specification for token balance unlocking.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum LockupSchedule {
+    /// Full unlock at or after `unlock_ts`.
+    Cliff { unlock_ts: u64 },
+    /// Linear unlock from `start_ts` to `end_ts`.
+    Linear { start_ts: u64, end_ts: u64 },
+    /// Bulk unlock of `cliff_bps` at `cliff_ts`, followed by linear taper of remainder until `taper_end_ts`.
+    CliffTaper { cliff_ts: u64, cliff_bps: u32, taper_end_ts: u64 },
+}
+
+impl LockupSchedule {
+    /// Compute the unlocked BPS (0 to 10 000) at a given timestamp `now`.
+    pub fn calculate_unlocked_bps(&self, now: u64) -> u32 {
+        match self {
+            LockupSchedule::Cliff { unlock_ts } => {
+                if now >= *unlock_ts {
+                    10_000
+                } else {
+                    0
+                }
+            }
+            LockupSchedule::Linear { start_ts, end_ts } => {
+                if now < *start_ts {
+                    0
+                } else if now >= *end_ts {
+                    10_000
+                } else {
+                    let duration = end_ts.saturating_sub(*start_ts);
+                    if duration == 0 {
+                        return 10_000;
+                    }
+                    let elapsed = now.saturating_sub(*start_ts);
+                    ((elapsed as u128 * 10_000i128) / duration as u128) as u32
+                }
+            }
+            LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } => {
+                if now < *cliff_ts {
+                    0
+                } else if now >= *taper_end_ts {
+                    10_000
+                } else {
+                    let duration = taper_end_ts.saturating_sub(*cliff_ts);
+                    if duration == 0 {
+                        return core::cmp::min(*cliff_bps, 10_000);
+                    }
+                    let elapsed = now.saturating_sub(*cliff_ts);
+                    let rem_bps = 10_000u32.saturating_sub(*cliff_bps);
+                    let tapered_bps = ((elapsed as u128 * rem_bps as i128) / duration as u128) as u32;
+                    let total = cliff_bps.saturating_add(tapered_bps);
+                    core::cmp::min(total, 10_000)
+                }
+            }
+        }
+    }
+
+    /// Validate schedule parameters.
+    pub fn validate(&self) -> Result<(), RevoraError> {
+        match self {
+            LockupSchedule::Cliff { .. } => Ok(()),
+            LockupSchedule::Linear { start_ts, end_ts } => {
+                if end_ts < start_ts {
+                    Err(RevoraError::InvalidAmount)
+                } else {
+                    Ok(())
+                }
+            }
+            LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } => {
+                if *cliff_bps > 10_000 {
+                    return Err(RevoraError::InvalidRevenueShareBps);
+                }
+                if taper_end_ts < cliff_ts {
+                    return Err(RevoraError::InvalidAmount);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowDataKey {
@@ -1456,6 +1557,12 @@ pub enum DataKey2 {
     /// Monotonically increasing counter for admin rotation entries.
     AdminRotationCount,
 
+    /// Per-holder pending redemption request.
+    RedemptionRequest(OfferingId, Address),
+    /// Per-offering redemption fee configuration (fee_bps and treasury address).
+    RedemptionFeeConfig(OfferingId),
+    /// Per-offering lockup schedule specification.
+    LockupSchedule(OfferingId),
     /// Per-offering jurisdiction migration grace period in seconds.
     /// When unset, defaults to [`DEFAULT_JURISDICTION_GRACE_SECS`] (7 days).
     JurisdictionGracePeriod(OfferingId),
@@ -4145,6 +4252,30 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey2::EmitV2Compat, &enabled);
         env.events().publish((EVENT_V2_COMPAT_SET, caller), enabled);
         Ok(())
+    }
+
+    /// Return the list of currently supported event index topics and their schema versions.
+    ///
+    /// Non-authorized, read-only query intended for indexers to negotiate topic
+    /// versions before subscribing.
+    ///
+    /// V3 topic (`ev_idx3`, version 3) is always present.
+    /// V2 topic (`ev_idx2`, version 2) is included when `EmitV2Compat` is enabled.
+    pub fn supported_event_versions(env: Env) -> Vec<EventVersionInfo> {
+        let mut list = Vec::new(&env);
+        // V3 topic is canonical and always active
+        list.push_back(EventVersionInfo {
+            topic: symbol_short!("ev_idx3"),
+            version: 3,
+        });
+        // V2 topic is active if v2 compat shim is enabled
+        if Self::is_emit_v2_compat(&env) {
+            list.push_back(EventVersionInfo {
+                topic: symbol_short!("ev_idx2"),
+                version: 2,
+            });
+        }
+        list
     }
 
     /// Query the paused state of the contract.
@@ -10935,6 +11066,69 @@ impl RevoraRevenueShare {
             .unwrap_or(0)
     }
 
+    /// Configure the lockup schedule for an offering.
+    ///
+    /// Auth: Issuer only. Must be current issuer of a registered offering.
+    pub fn set_lockup_schedule(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        schedule: LockupSchedule,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        schedule.validate()?;
+
+        let key = DataKey2::LockupSchedule(offering_id);
+        env.storage().persistent().set(&key, &schedule);
+
+        env.events()
+            .publish((EVENT_LOCKUP_SET, issuer, namespace, token), schedule);
+        Ok(())
+    }
+
+    /// Return the stored lockup schedule for an offering.
+    pub fn get_lockup_schedule(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<LockupSchedule> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::LockupSchedule(offering_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Return the unlocked BPS (0 to 10 000) for an offering at the current ledger timestamp.
+    ///
+    /// Returns 10 000 (100% unlocked) if no lockup schedule is configured.
+    pub fn get_unlocked_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        let schedule = Self::get_lockup_schedule(env.clone(), issuer, namespace, token);
+        let now = env.ledger().timestamp();
+        schedule.map(|s| s.calculate_unlocked_bps(now)).unwrap_or(10_000)
+    }
+
     /// Preview the total claimable amount for a holder without mutating state.
     ///
     /// This method respects the same blacklist, claim-window, and claim-delay gates that can block
@@ -11399,6 +11593,41 @@ impl RevoraRevenueShare {
         env.storage().persistent().remove(&DataKey::PendingAdmin);
 
         env.events().publish((symbol_short!("adm_canc"), admin), pending.new_admin);
+
+        Ok(())
+    }
+
+    /// Revoke an in-progress admin rotation proposal, returning the contract to steady state.
+    ///
+    /// Allows the outgoing (current) admin to abort an in-progress rotation proposal.
+    ///
+    /// ### Auth
+    /// Current stored admin (`require_auth`).
+    ///
+    /// ### Errors
+    /// - `NoAdminRotationPending` — no rotation is pending.
+    /// - `NotInitialized` — contract admin is not initialized.
+    /// - `ContractFrozen` — contract is frozen.
+    ///
+    /// ### Events
+    /// Emits `EVENT_ADMIN_ROTATION_REVOKED` (`"adm_rvk"`): `(adm_rvk, current_admin)` → `proposed_new_admin`.
+    pub fn revoke_admin_rotation(env: Env) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+
+        admin.require_auth();
+
+        let pending: PendingAdminRotation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RevoraError::NoAdminRotationPending)?;
+
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+
+        env.events().publish((EVENT_ADMIN_ROTATION_REVOKED, admin), pending.new_admin);
 
         Ok(())
     }
