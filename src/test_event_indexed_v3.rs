@@ -431,9 +431,14 @@ fn report_revenue_event_emission_gas_budget() {
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
         std::println!("CPU cost without v2 compat: {}", cost);
-        assert!(cost <= EVENT_EMISSION_GAS_BUDGET, "Gas budget exceeded: {} > {}", cost, EVENT_EMISSION_GAS_BUDGET);
+        assert!(
+            cost <= EVENT_EMISSION_GAS_BUDGET,
+            "Gas budget exceeded: {} > {}",
+            cost,
+            EVENT_EMISSION_GAS_BUDGET
+        );
     }
-    
+
     // 2. With v2 compat shim active
     {
         let (env, client, issuer, ns, token, payout) = setup();
@@ -442,7 +447,11 @@ fn report_revenue_event_emission_gas_budget() {
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
         std::println!("CPU cost with v2 compat: {}", cost);
-        assert!(cost <= EVENT_EMISSION_GAS_BUDGET, "Gas budget exceeded: {} > {}", cost, EVENT_EMISSION_GAS_BUDGET);
+        assert!(
+            cost <= EVENT_EMISSION_GAS_BUDGET,
+            "Gas budget exceeded: {} > {}",
+            cost,
+            EVENT_EMISSION_GAS_BUDGET
+        );
     }
 }
-

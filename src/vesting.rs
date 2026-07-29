@@ -408,7 +408,11 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
                     if duration == 0 {
                         schedule.total_amount
                     } else {
-                        schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+                        schedule
+                            .total_amount
+                            .checked_mul(elapsed)
+                            .map(|m| m / duration)
+                            .unwrap_or(0)
                     }
                 } else {
                     0

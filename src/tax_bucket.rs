@@ -1,5 +1,5 @@
-use soroban_sdk::{contracttype, Address, Env, symbol_short, Symbol};
 use crate::{DataKey2, OfferingId};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 pub const EVENT_TAX_ROLLOVER: Symbol = symbol_short!("tax_roll");
 /// Emitted on each tax-bucket update to enable off-chain tax-lot reconstruction.
@@ -47,10 +47,15 @@ pub fn rollover_distribution(
     } else {
         let roc = remaining_basis;
         let cg = amount - remaining_basis;
-        
+
         env.events().publish(
-            (EVENT_TAX_ROLLOVER, offering_id.issuer.clone(), offering_id.namespace.clone(), offering_id.token.clone()),
-            (holder.clone(), remaining_basis, 0i128)
+            (
+                EVENT_TAX_ROLLOVER,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (holder.clone(), remaining_basis, 0i128),
         );
 
         env.storage().persistent().set(&key, &0i128);
@@ -59,12 +64,14 @@ pub fn rollover_distribution(
 
     // Emit tax_lot_v1 event for every tax-bucket update
     env.events().publish(
-        (EVENT_TAX_LOT_V1, offering_id.issuer.clone(), offering_id.namespace.clone(), offering_id.token.clone()),
+        (
+            EVENT_TAX_LOT_V1,
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+        ),
         (holder.clone(), return_of_capital, capital_gains, amount, period_id, timestamp),
     );
 
-    TaxBucketResult {
-        return_of_capital,
-        capital_gains,
-    }
+    TaxBucketResult { return_of_capital, capital_gains }
 }
