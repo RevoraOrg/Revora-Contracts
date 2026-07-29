@@ -1016,3 +1016,273 @@ fn ofac_attestation_uses_sanctions_match_reason() {
     assert!(result.is_ok());
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
+
+// ─── #607 Reason-scoped unfreeze tests ─────────────────────────────────────
+
+/// When two freeze reasons are active, clearing only one should leave the
+/// holder frozen.
+#[test]
+fn multi_reason_clear_one_leaves_holder_frozen() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze with two reasons
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Verify bitmask contains both reasons
+    let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    assert!(mask & FreezeReason::CourtOrder.to_bitmask() != 0);
+    assert!(mask & FreezeReason::Manual.to_bitmask() != 0);
+
+    // Clear only CourtOrder — holder must stay frozen
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Verify only Manual remains
+    let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    assert_eq!(mask, FreezeReason::Manual.to_bitmask());
+
+    // Clear Manual — now fully unfrozen
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+    let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    assert_eq!(mask, 0);
+
+    // Claim should now work
+    let payout = client.claim(&holder, &issuer, &ns, &token, &10);
+    assert!(payout > 0);
+}
+
+/// Clearing a reason that is not currently set must return
+/// `FreezeReasonMismatch` and leave the state unchanged.
+#[test]
+fn clear_unset_reason_returns_freeze_reason_mismatch() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze with only CourtOrder
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+    let mask_before = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+
+    // Try to clear Manual (not set)
+    let result = client.try_clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(result.is_err());
+
+    // State must be unchanged
+    assert_eq!(
+        client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder),
+        mask_before
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+/// `clear_freeze_reason` must emit `freeze_reason_cleared` (frz_rc) when
+/// clearing a reason that does NOT result in full unfreeze.
+#[test]
+fn clear_freeze_reason_emits_frz_rc_event_for_partial() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze with two reasons
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Sanctions,
+    );
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::IssuerDispute,
+    );
+
+    let before = env.events().all().len();
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Sanctions,
+    );
+
+    // frz_rc must be emitted (not frz_clr since IssuerDispute still active)
+    let events = env.events().all();
+    let frz_rc_sym = symbol_short!("frz_rc");
+    let mut found_rc = false;
+    let mut found_clr = false;
+    for i in before..events.len() {
+        let (_, topics, _) = events.get(i).unwrap();
+        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
+        let t0: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+        if t0 == frz_rc_sym {
+            found_rc = true;
+        }
+        if t0 == symbol_short!("frz_clr") {
+            found_clr = true;
+        }
+    }
+    assert!(found_rc, "expected frz_rc event for partial clear");
+    assert!(!found_clr, "frz_clr must not fire while other reasons remain");
+}
+
+/// When the LAST freeze reason is cleared, `frz_clr` must be emitted.
+#[test]
+fn clear_freeze_reason_emits_frz_clr_on_full_unfreeze() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+
+    let before = env.events().all().len();
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+
+    let events = env.events().all();
+    let frz_clr_sym = symbol_short!("frz_clr");
+    let found = events.iter().skip(before).any(|e| {
+        let (_, topics, _) = e;
+        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
+        topics_vec.len() >= 1 && {
+            let t0: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+            t0 == frz_clr_sym
+        }
+    });
+    assert!(found, "expected frz_clr event when last reason cleared");
+}
+
+/// Freezing with the same reason twice must be idempotent — no duplicate
+/// events and the mask unchanged.
+#[test]
+fn freeze_same_reason_twice_is_idempotent() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Compliance,
+    );
+    let mask_after_first = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    let events_after_first = env.events().all().len();
+
+    // Second call with same reason
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Compliance,
+    );
+    let mask_after_second = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+
+    assert_eq!(mask_after_first, mask_after_second, "mask must not change on duplicate");
+    assert_eq!(
+        env.events().all().len(),
+        events_after_first,
+        "no new events must be emitted for duplicate freeze"
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+/// OFAC attestation combined with a manual freeze should produce a bitmask
+/// with both reasons OR'd together.
+#[test]
+fn ofac_attestation_with_existing_freeze_combines_bitmask() {
+    let env = Env::default();
+    let (client, _admin, issuer, token) = ofac_setup(&env);
+    let holder = Address::generate(&env);
+    let ns = symbol_short!("ofac");
+
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+
+    // First, manual freeze with CourtOrder
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+
+    // Then OFAC attestation arrives
+    let attestation_hash = BytesN::from_array(&env, &[0x08u8; 32]);
+    client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+
+    // Both reasons must be present in the bitmask
+    let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    assert!(mask & FreezeReason::CourtOrder.to_bitmask() != 0, "CourtOrder missing");
+    assert!(mask & FreezeReason::SanctionsMatch.to_bitmask() != 0, "SanctionsMatch missing");
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Clearing ONLY CourtOrder leaves SanctionsMatch active
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    // Clearing SanctionsMatch fully unfreezes
+    client.clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::SanctionsMatch,
+    );
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+}
+
+/// Calling `clear_freeze_reason` on a holder with no freeze record must return
+/// `HolderFrozen` (the same error as trying to unfreeze an unfrozen holder).
+#[test]
+fn clear_freeze_reason_on_unfrozen_holder_returns_holder_frozen() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Holder is not frozen
+    assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
+
+    let result = client.try_clear_freeze_reason(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+    assert!(result.is_err());
+}
+
+/// `get_holder_freeze_reasons` returns 0 when no freeze is active.
+#[test]
+fn get_holder_freeze_reasons_returns_zero_when_not_frozen() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+    assert_eq!(client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder), 0);
+}
+
+/// `emergency_unfreeze_holder` (deprecated) delegates to `clear_freeze_reason`
+/// and works correctly for backward compatibility.
+#[test]
+fn emergency_unfreeze_holder_delegates_to_clear_freeze_reason() {
+    let (env, client, _, ns, token, issuer, holder) = setup();
+
+    // Freeze with two reasons
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+    client.emergency_freeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::Manual,
+    );
+
+    // emergency_unfreeze_holder clears only one reason
+    client.emergency_unfreeze_holder(
+        &issuer, &issuer, &ns, &token, &holder,
+        &FreezeReason::CourtOrder,
+    );
+
+    // Holder still frozen because Manual remains
+    assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
+    let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
+    assert_eq!(mask, FreezeReason::Manual.to_bitmask());
+}

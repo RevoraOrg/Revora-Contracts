@@ -145,7 +145,11 @@ fn reference_decomposition(amount: i128, bps: u32, mode: RoundingMode) -> i128 {
     // final add (checked, sign-aware saturation)
     let share = base.checked_add(remainder_share).unwrap_or_else(|| {
         if (base >= 0 && remainder_share >= 0) || (base < 0 && remainder_share < 0) {
-            if base >= 0 { i128::MAX } else { i128::MIN }
+            if base >= 0 {
+                i128::MAX
+            } else {
+                i128::MIN
+            }
         } else {
             0
         }
@@ -160,8 +164,8 @@ fn reference_decomposition(amount: i128, bps: u32, mode: RoundingMode) -> i128 {
 /// Compute rounding dust: `dust = amount * bps - result * 10_000`.
 ///
 /// This is only valid when `amount * bps` fits in i128 without overflow.    /// For the subset of the fuzz space where `amount * bps` fits in i128,
-    /// the dust invariant always holds. When the product overflows, the
-    /// invariant is skipped (this occurs for large `|amount|` with high `bps`).
+/// the dust invariant always holds. When the product overflows, the
+/// invariant is skipped (this occurs for large `|amount|` with high `bps`).
 ///
 /// Returns `None` when the product would overflow i128 (which occurs for large
 /// `|amount|` with non-trivial `bps`; the dust invariant is only checked for the
@@ -200,10 +204,7 @@ fn arb_fuzz_bps() -> impl Strategy<Value = u32> {
 
 /// Fuzz strategy for rounding mode: uniform choice between both variants.
 fn arb_rounding_mode() -> impl Strategy<Value = RoundingMode> {
-    prop_oneof![
-        Just(RoundingMode::Truncation),
-        Just(RoundingMode::RoundHalfUp),
-    ]
+    prop_oneof![Just(RoundingMode::Truncation), Just(RoundingMode::RoundHalfUp),]
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -454,8 +455,8 @@ fn boundary_seeds_decomposition_identity() {
         // RHU: (-5000-5000)/10000 = -1, trunc = 0
         (-2, 2_500),
         // Large amount with half remainder
-        (10_005_000, 1),   // q=1000, r=5000, r*bps=5000. RHU: (5000+5000)/10000 = 1
-        (-10_005_000, 1),  // q=-1000, r=-5000, r*bps=-5000. RHU: (-5000-5000)/10000 = -1
+        (10_005_000, 1),  // q=1000, r=5000, r*bps=5000. RHU: (5000+5000)/10000 = 1
+        (-10_005_000, 1), // q=-1000, r=-5000, r*bps=-5000. RHU: (-5000-5000)/10000 = -1
         // amount=5000, bps=5000: q=0, r=5000, r*bps=25_000_000.
         // RHU: (25000000+5000)/10000 = 2500, trunc = 2500 (no half here, exact division)
         (5_000, 5_000),
@@ -466,7 +467,7 @@ fn boundary_seeds_decomposition_identity() {
 
     for &(amount, bps) in seeds {
         for mode in [RoundingMode::Truncation, RoundingMode::RoundHalfUp] {
-            let actual   = client.compute_share(&amount, &bps, &mode);
+            let actual = client.compute_share(&amount, &bps, &mode);
             let expected = reference_decomposition(amount, bps, mode);
 
             assert_eq!(
@@ -474,8 +475,11 @@ fn boundary_seeds_decomposition_identity() {
                 "boundary seed failed: amount={amount}, bps={bps}, mode={mode:?} \
                  → actual={actual}, expected={expected}"
             );
-            assert_bounds(actual, amount,
-                &format!("boundary seed amount={amount} bps={bps} mode={mode:?}"));
+            assert_bounds(
+                actual,
+                amount,
+                &format!("boundary seed amount={amount} bps={bps} mode={mode:?}"),
+            );
         }
     }
 }
@@ -485,14 +489,7 @@ fn boundary_seeds_decomposition_identity() {
 fn boundary_seeds_over_bps_guard() {
     let (_env, client) = make_client();
 
-    let amounts = [
-        1_i128,
-        -1,
-        10_000,
-        -10_000,
-        i128::MAX / 2,
-        i128::MIN / 2,
-    ];
+    let amounts = [1_i128, -1, 10_000, -10_000, i128::MAX / 2, i128::MIN / 2];
     let over_bps = [10_001u32, 20_000, u32::MAX];
 
     for &amount in &amounts {
@@ -514,16 +511,8 @@ fn boundary_seeds_over_bps_guard() {
 fn boundary_seeds_full_share_identity() {
     let (_env, client) = make_client();
 
-    let amounts = [
-        1_i128,
-        -1,
-        10_000,
-        -10_000,
-        100_000_000,
-        -100_000_000,
-        i128::MAX / 2,
-        i128::MIN / 2,
-    ];
+    let amounts =
+        [1_i128, -1, 10_000, -10_000, 100_000_000, -100_000_000, i128::MAX / 2, i128::MIN / 2];
 
     for &amount in &amounts {
         for mode in [RoundingMode::Truncation, RoundingMode::RoundHalfUp] {
@@ -605,7 +594,7 @@ fn boundary_seeds_exact_half_remainders() {
 
     for &(amount, bps, expected_trunc, expected_rhu, desc) in cases {
         let trunc = client.compute_share(&amount, &bps, &RoundingMode::Truncation);
-        let rhu   = client.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
+        let rhu = client.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
 
         assert_eq!(
             trunc, expected_trunc,

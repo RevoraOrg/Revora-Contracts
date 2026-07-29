@@ -33,14 +33,7 @@ use soroban_sdk::{
 /// Returns `(env, client, admin, issuer, namespace, token)`.
 /// The contract is initialized with `admin`, and a single offering is registered
 /// under `(issuer, namespace, token)`.
-fn setup() -> (
-    Env,
-    RevoraRevenueShareClient<'static>,
-    Address,
-    Address,
-    Symbol,
-    Address,
-) {
+fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().with_mut(|l| l.timestamp = 1_000);
@@ -66,8 +59,7 @@ fn setup() -> (
 fn set_twap_window_at_min_boundary_is_accepted() {
     let (env, client, _admin, issuer, ns, token) = setup();
 
-    let result =
-        client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
+    let result = client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
     assert!(result.is_ok(), "window == MIN_TWAP_WINDOW_SECS must be accepted");
 
     let cfg = client.get_twap_window(&issuer, &ns, &token).unwrap();
@@ -80,8 +72,7 @@ fn set_twap_window_at_min_boundary_is_accepted() {
 fn set_twap_window_at_max_boundary_is_accepted() {
     let (env, client, _admin, issuer, ns, token) = setup();
 
-    let result =
-        client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MAX_TWAP_WINDOW_SECS);
+    let result = client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MAX_TWAP_WINDOW_SECS);
     assert!(result.is_ok(), "window == MAX_TWAP_WINDOW_SECS must be accepted");
 
     let cfg = client.get_twap_window(&issuer, &ns, &token).unwrap();
@@ -170,8 +161,7 @@ fn set_twap_window_unauthorized_caller_rejected() {
     let (env, client, _admin, issuer, ns, token) = setup();
     let rando = Address::generate(&env);
 
-    let result =
-        client.try_set_twap_window(&rando, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
+    let result = client.try_set_twap_window(&rando, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
     assert_eq!(
         result,
         Err(Ok(RevoraError::NotAuthorized)),
@@ -224,7 +214,10 @@ fn set_twap_window_emits_event() {
     let found = events.iter().any(|(topics, _data)| {
         // topics is a Vec<Val> — check that the first topic encodes the right symbol.
         // We rely on the fact that symbol_short!("twap_win") matches EVENT_TWAP_WINDOW_SET.
-        if let Some(first) = soroban_sdk::Vec::<soroban_sdk::Val>::try_from(topics).ok().and_then(|v| v.first_unchecked_ref().map(|_| true).ok_or(()).ok()) {
+        if let Some(first) = soroban_sdk::Vec::<soroban_sdk::Val>::try_from(topics)
+            .ok()
+            .and_then(|v| v.first_unchecked_ref().map(|_| true).ok_or(()).ok())
+        {
             first
         } else {
             false
@@ -253,8 +246,7 @@ fn set_twap_window_blocked_when_contract_frozen() {
     // Freeze the contract.
     client.set_frozen(&admin, &true);
 
-    let result =
-        client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
+    let result = client.try_set_twap_window(&issuer, &issuer, &ns, &token, &MIN_TWAP_WINDOW_SECS);
     assert_eq!(
         result,
         Err(Ok(RevoraError::ContractFrozen)),

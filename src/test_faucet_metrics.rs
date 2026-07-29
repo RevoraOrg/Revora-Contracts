@@ -67,9 +67,7 @@ fn set_ts(env: &Env, ts: u64) {
 /// Find the latest `fct_mtr1` event payload among all contract events.
 /// Returns `(window_id, total_dispensed, unique_addresses, cooldown_rejects,
 ///            window_start, window_end)`.
-fn find_metrics_event(
-    env: &Env,
-) -> Option<(u64, u32, u32, u32, u64, u64)> {
+fn find_metrics_event(env: &Env) -> Option<(u64, u32, u32, u32, u64, u64)> {
     let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(env);
     let mut found: Option<(u64, u32, u32, u32, u64, u64)> = None;
     for (_, topics, data) in env.events().all().iter() {
@@ -94,8 +92,7 @@ fn count_metrics_events(env: &Env) -> usize {
         .all()
         .iter()
         .filter(|(_, topics, _)| {
-            topics.len() >= 1
-                && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
+            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
         })
         .count()
 }
