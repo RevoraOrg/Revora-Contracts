@@ -84,6 +84,7 @@ mod tests {
             ("AdminRotationPending", RevoraError::AdminRotationPending as u32),
             ("NoAdminRotationPending", RevoraError::NoAdminRotationPending as u32),
             ("UnauthorizedRotationAccept", RevoraError::UnauthorizedRotationAccept as u32),
+            ("CloseAbortInvariantsViolated", RevoraError::CloseAbortInvariantsViolated as u32),
             ("OfferingFrozen", RevoraError::OfferingFrozen as u32),
             ("IssuerTransferExpired", RevoraError::IssuerTransferExpired as u32),
             ("ContractPaused", RevoraError::ContractPaused as u32),
@@ -156,6 +157,7 @@ mod tests {
         // 34: gap (reserved for future use)
         assert_eq!(RevoraError::NoAdminRotationPending as u32, 35);
         assert_eq!(RevoraError::UnauthorizedRotationAccept as u32, 36);
+        assert_eq!(RevoraError::CloseAbortInvariantsViolated as u32, 34);
         // 37–38: gaps (reserved for future use)
         // 39: TransferFailed — renumbered from 30 in v5 (was duplicate of ProposalExpired)
         assert_eq!(RevoraError::TransferFailed as u32, 39);

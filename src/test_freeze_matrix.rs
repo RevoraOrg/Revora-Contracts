@@ -783,6 +783,16 @@ fn set_freeze_records_reason_and_emits_event() {
         }
     });
     assert!(found, "expected frz_set event after set_freeze");
+
+    // A frz_rsn (freeze_reason_v1) event must have been emitted with reason and target.
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event after set_freeze");
 }
 
 /// Sequential `set_freeze` calls with different reasons overwrite the stored reason.
@@ -812,4 +822,15 @@ fn default_freeze_sets_compliance_reason() {
         Some(FreezeReason::Compliance),
         "freeze() must record Compliance as the default reason"
     );
+
+    // freeze() via set_freeze must also emit frz_rsn
+    let events = env.events().all();
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event from freeze() (default set_freeze)");
 }
