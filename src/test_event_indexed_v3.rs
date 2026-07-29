@@ -412,3 +412,37 @@ fn vote_choice_roundtrip_in_event_payload() {
     let (_, _, c2, _): (u32, Address, VoteChoice, u32) = d2.into_val(&env);
     assert_eq!(c2, VoteChoice::No);
 }
+
+// ── Event Emission Gas Budget ─────────────────────────────────────────────────
+
+/// Change-review requirement: any increase to this budget must be justified in a
+/// security review. Emitting events grows per-call gas cost; `report_revenue`
+/// emits multiple topics (V2, V3, standard). We bound the aggregate cost to catch
+/// drifts before deployment.
+const EVENT_EMISSION_GAS_BUDGET: u64 = 5_000_000; // Will be adjusted after measurement
+
+#[test]
+fn report_revenue_event_emission_gas_budget() {
+    // 1. Without v2 compat shim
+    {
+        let (env, client, issuer, ns, token, payout) = setup();
+        let cpu_before = env.budget().cpu_instruction_cost();
+        let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &false);
+        let cpu_after = env.budget().cpu_instruction_cost();
+        let cost = cpu_after - cpu_before;
+        std::println!("CPU cost without v2 compat: {}", cost);
+        assert!(cost <= EVENT_EMISSION_GAS_BUDGET, "Gas budget exceeded: {} > {}", cost, EVENT_EMISSION_GAS_BUDGET);
+    }
+    
+    // 2. With v2 compat shim active
+    {
+        let (env, client, issuer, ns, token, payout) = setup();
+        let cpu_before = env.budget().cpu_instruction_cost();
+        let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &true);
+        let cpu_after = env.budget().cpu_instruction_cost();
+        let cost = cpu_after - cpu_before;
+        std::println!("CPU cost with v2 compat: {}", cost);
+        assert!(cost <= EVENT_EMISSION_GAS_BUDGET, "Gas budget exceeded: {} > {}", cost, EVENT_EMISSION_GAS_BUDGET);
+    }
+}
+

@@ -73,6 +73,21 @@ Removes `DataKey::PendingAdmin` and emits event `adm_canc`. The proposed candida
 
 ---
 
+### `revoke_admin_rotation()`
+
+**Auth:** Current admin must sign.
+
+Aborts an in-progress admin rotation proposal, returning the contract to steady state (idle). Removes `DataKey::PendingAdmin` and emits event `adm_rvk`. The proposed candidate loses the ability to finalize.
+
+**Preconditions:**
+- Current admin matches `DataKey::Admin`.
+- A rotation is pending.
+- Contract is not frozen.
+
+**Events:** `adm_rvk(current_admin) → revoked_pending_address`
+
+---
+
 ### `set_admin_rotation_delay(delay_secs: u64)`
 
 **Auth:** Current admin must sign.
@@ -176,6 +191,7 @@ All keys use **persistent storage** — state survives ledger close.
 | `adm_prop(current_admin)` | `new_admin: Address` | `propose_admin_rotation` succeeds |
 | `adm_fin(old_admin)` | `new_admin: Address` | `finalize_admin_rotation` completes |
 | `adm_canc(current_admin)` | `cancelled_pending: Address` | `cancel_admin_rotation` completes |
+| `adm_rvk(current_admin)` | `revoked_pending: Address` | `revoke_admin_rotation` completes |
 | `adm_log` (v2) | `AdminRotationEntry` | `accept_admin_rotation` persists the history entry |
 
 ---
