@@ -118,6 +118,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::AdminRotationLog(u64)", "AdminRotationEntry", "contract"),
     ("DataKey2::AdminRotationCount", "u64", "contract"),
     ("DataKey2::AdminRotationDelay", "u64", "contract"),
+    ("DataKey2::JurisdictionGracePeriod(OfferingId)", "u64", "offering"),
+    ("DataKey2::JurisdictionMigration(OfferingId, Address)", "JurisdictionMigrationState", "offering+holder"),
     ("DataKey2::MultisigOwners", "Vec<Address>", "contract"),
     ("DataKey2::MultisigThreshold", "u32", "contract"),
     ("DataKey2::MultisigProposalCount", "u32", "contract"),

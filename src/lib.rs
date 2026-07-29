@@ -292,6 +292,11 @@ pub enum RevoraError {
     InsufficientClassBalance = 74,
     /// Current time is outside the configured redemption window.
     RedemptionWindowClosed = 75,
+    /// Holder's jurisdiction migration grace period has expired and the
+    /// new jurisdiction is disallowed for this offering. Claims are blocked
+    /// until the holder relocates to an allowed jurisdiction or the issuer
+    /// updates the allowlist.
+    JurisdictionMigrationDeadlineExceeded = 76,
 }
 
 pub mod vesting;
@@ -570,6 +575,23 @@ const EVENT_WEIGHT_PIN: Symbol = symbol_short!("wt_pin");
 /// Data: `(oracle_address, revenue_symbol, payout_symbol, chain_index)`.
 const EVENT_ORACLE_SOURCE_USED: Symbol = symbol_short!("orc_used");
 
+/// Emitted when a holder's jurisdiction change is scheduled with a grace period.
+/// Topic: `(jur_mig, issuer, namespace, token)`
+/// Data: `(holder, old_jur, new_jur, effective_ts, deadline)`
+const EVENT_JUR_MIGRATION: Symbol = symbol_short!("jur_mig");
+
+/// Emitted when per-offering jurisdiction grace period is configured.
+/// Topic: `(jur_grace, issuer, namespace, token)`
+/// Data: `(grace_secs,)`
+const EVENT_JUR_GRACE_SET: Symbol = symbol_short!("jur_grace");
+
+/// Default jurisdiction migration grace period: 7 days.
+const DEFAULT_JURISDICTION_GRACE_SECS: u64 = 7 * 24 * 60 * 60;
+/// Minimum configurable jurisdiction grace period: 1 hour.
+const MIN_JURISDICTION_GRACE_SECS: u64 = 60 * 60;
+/// Maximum configurable jurisdiction grace period: 90 days.
+const MAX_JURISDICTION_GRACE_SECS: u64 = 90 * 24 * 60 * 60;
+
 /// Issuer transfer expiry: 7 days in seconds (default).
 const ISSUER_TRANSFER_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 /// Minimum configurable issuer transfer expiry: 1 hour.
@@ -589,7 +611,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 3;
+pub const STORAGE_LAYOUT_VERSION: u32 = 4;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -720,6 +742,27 @@ pub struct SanctionsAttestation {
     pub source: Source,
     pub ref_id: Symbol,
     pub attested_at: u64,
+}
+
+/// Pending jurisdiction migration for a holder.
+///
+/// Created when a holder's jurisdiction is changed with a future effective
+/// timestamp.  During the grace period the holder can divest; once the
+/// deadline passes, claims are blocked if the new jurisdiction is not in
+/// the offering's allowlist.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct JurisdictionMigrationState {
+    /// The jurisdiction the holder is migrating from.
+    pub old_jurisdiction: Symbol,
+    /// The target jurisdiction the holder is migrating into.
+    pub new_jurisdiction: Symbol,
+    /// Ledger timestamp at which the jurisdiction change takes effect.
+    pub effective_ts: u64,
+    /// Ledger timestamp after which claims are blocked if the new
+    /// jurisdiction is disallowed.  Computed as
+    /// `effective_ts + grace_period_secs`.
+    pub deadline: u64,
 }
 
 #[contracttype]
@@ -1300,6 +1343,12 @@ pub enum DataKey2 {
     AdminRotationLog(u64),
     /// Monotonically increasing counter for admin rotation entries.
     AdminRotationCount,
+
+    /// Per-offering jurisdiction migration grace period in seconds.
+    /// When unset, defaults to [`DEFAULT_JURISDICTION_GRACE_SECS`] (7 days).
+    JurisdictionGracePeriod(OfferingId),
+    /// Pending jurisdiction migration for (offering_id, holder).
+    JurisdictionMigration(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2399,6 +2448,75 @@ impl RevoraRevenueShare {
 
         Self::emit_jurisdiction_reject(env, offering_id, holder, jurisdiction, action);
         Err(RevoraError::JurisdictionDisallowed)
+    }
+
+    /// Return the per-offering jurisdiction migration grace period in seconds.
+    /// Defaults to [`DEFAULT_JURISDICTION_GRACE_SECS`] (7 days) when not configured.
+    fn get_jurisdiction_grace_secs(env: &Env, offering_id: &OfferingId) -> u64 {
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::JurisdictionGracePeriod(offering_id.clone()))
+            .unwrap_or(DEFAULT_JURISDICTION_GRACE_SECS)
+    }
+
+    /// Check whether a pending jurisdiction migration has passed its deadline.
+    ///
+    /// If the holder has a pending migration whose deadline has elapsed, this function
+    /// checks whether the *new* (target) jurisdiction is allowed.  If the new jurisdiction
+    /// is disallowed, returns `Err(JurisdictionMigrationDeadlineExceeded)`.
+    ///
+    /// When the new jurisdiction **is** allowed, the migration is finalized: the holder's
+    /// jurisdiction is updated and the pending migration entry is cleared.
+    ///
+    /// If there is no pending migration, or the deadline has not yet passed, returns `Ok(())`.
+    fn require_jurisdiction_migration_not_expired(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        action: Symbol,
+    ) -> Result<(), RevoraError> {
+        let mig_key = DataKey2::JurisdictionMigration(offering_id.clone(), holder.clone());
+        let migration = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, JurisdictionMigrationState>(&mig_key);
+
+        let Some(migration) = migration else {
+            return Ok(());
+        };
+
+        let now = env.ledger().timestamp();
+        if now < migration.deadline {
+            // Grace period still active
+            return Ok(());
+        }
+
+        // Deadline has passed — check if the new jurisdiction is allowed
+        let allowed = Self::get_allowed_jurisdictions_internal(env, offering_id);
+
+        let new_ok = allowed.is_empty()
+            || Self::vec_contains_symbol(&allowed, &migration.new_jurisdiction);
+
+        if new_ok {
+            // Migration is allowed — finalize it
+            env.storage()
+                .persistent()
+                .set(
+                    &DataKey2::HolderJurisdiction(offering_id.clone(), holder.clone()),
+                    &migration.new_jurisdiction,
+                );
+            env.storage().persistent().remove(&mig_key);
+            return Ok(());
+        }
+
+        Self::emit_jurisdiction_reject(
+            env,
+            offering_id,
+            holder,
+            migration.new_jurisdiction,
+            action,
+        );
+        Err(RevoraError::JurisdictionMigrationDeadlineExceeded)
     }
 
     /// Return the explicitly persisted payment token lock for an offering, if any.
@@ -7569,6 +7687,13 @@ impl RevoraRevenueShare {
     }
 
     /// Set or update a holder's jurisdiction tag for an offering.
+    ///
+    /// When `effective_ts` is `0` or in the past, the jurisdiction is applied
+    /// immediately.  When `effective_ts` is in the future, a migration event is
+    /// emitted and a compliance deadline is scheduled.  The holder retains full
+    /// claim access until the deadline (`effective_ts + grace_period_secs`) is
+    /// reached; after that, claims are blocked if the new jurisdiction is not
+    /// in the offering's allowlist.
     pub fn set_holder_jurisdiction(
         env: Env,
         issuer: Address,
@@ -7576,6 +7701,7 @@ impl RevoraRevenueShare {
         token: Address,
         holder: Address,
         jurisdiction: Symbol,
+        effective_ts: u64,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -7593,13 +7719,53 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey2::HolderJurisdiction(offering_id.clone(), holder.clone()), &jurisdiction);
-        env.events().publish(
-            (Self::jurisdiction_set_event(&env), issuer, namespace, token),
-            (EVENT_JUR_SCOPE_HOLDER, holder, jurisdiction),
-        );
+
+        let now = env.ledger().timestamp();
+        let old_jurisdiction = Self::get_holder_jurisdiction_internal(&env, &offering_id, &holder)
+            .unwrap_or(EVENT_JUR_UNSET);
+
+        if effective_ts == 0 || effective_ts <= now {
+            // Immediate jurisdiction change (no grace period)
+            env.storage()
+                .persistent()
+                .set(&DataKey2::HolderJurisdiction(offering_id.clone(), holder.clone()), &jurisdiction);
+            env.events().publish(
+                (Self::jurisdiction_set_event(&env), issuer, namespace, token),
+                (EVENT_JUR_SCOPE_HOLDER, holder, jurisdiction),
+            );
+        } else {
+            // Scheduled migration with grace period
+            let grace_secs = Self::get_jurisdiction_grace_secs(&env, &offering_id);
+            let deadline = effective_ts.saturating_add(grace_secs);
+
+            let migration_state = JurisdictionMigrationState {
+                old_jurisdiction: old_jurisdiction.clone(),
+                new_jurisdiction: jurisdiction.clone(),
+                effective_ts,
+                deadline,
+            };
+
+            env.storage()
+                .persistent()
+                .set(
+                    &DataKey2::JurisdictionMigration(offering_id.clone(), holder.clone()),
+                    &migration_state,
+                );
+
+            // Jurisdiction remains unchanged until effective_ts.
+            // The migration deadline is enforced in the claim path.
+            env.events().publish(
+                (EVENT_JUR_MIGRATION, issuer, namespace, token),
+                (
+                    holder,
+                    old_jurisdiction,
+                    jurisdiction,
+                    effective_ts,
+                    deadline,
+                ),
+            );
+        }
+
         Ok(())
     }
 
@@ -7689,6 +7855,82 @@ impl RevoraRevenueShare {
     pub fn get_claim_delay(env: Env, issuer: Address, namespace: Symbol, token: Address) -> u64 {
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().get(&DataKey::ClaimDelaySecs(offering_id)).unwrap_or(0)
+    }
+
+    // ── Jurisdiction migration grace period (per-offering) ──
+
+    /// Set the per-offering jurisdiction migration grace period in seconds.
+    ///
+    /// Must be between [`MIN_JURISDICTION_GRACE_SECS`] (1 hour) and
+    /// [`MAX_JURISDICTION_GRACE_SECS`] (90 days) inclusive.  The grace period
+    /// applies to all holders relocating into a potentially disallowed jurisdiction.
+    pub fn set_jurisdiction_grace_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        grace_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+            .ok_or(RevoraError::OfferingNotFound)?;
+        if offering.issuers.primary != issuer {
+            return Err(RevoraError::NotAuthorized);
+        }
+        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+
+        if grace_secs < MIN_JURISDICTION_GRACE_SECS || grace_secs > MAX_JURISDICTION_GRACE_SECS {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey2::JurisdictionGracePeriod(offering_id), &grace_secs);
+
+        env.events().publish(
+            (EVENT_JUR_GRACE_SET, issuer, namespace, token),
+            (grace_secs,),
+        );
+        Ok(())
+    }
+
+    /// Read the per-offering jurisdiction migration grace period.
+    /// Returns [`DEFAULT_JURISDICTION_GRACE_SECS`] (7 days) when not configured.
+    pub fn get_jurisdiction_grace_period(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u64 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, u64>(&DataKey2::JurisdictionGracePeriod(offering_id))
+            .unwrap_or(DEFAULT_JURISDICTION_GRACE_SECS)
+    }
+
+    /// Read a holder's pending jurisdiction migration state, if any.
+    pub fn get_jurisdiction_migration(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Option<JurisdictionMigrationState> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get::<DataKey2, JurisdictionMigrationState>(&DataKey2::JurisdictionMigration(
+                offering_id,
+                holder,
+            ))
     }
 
     /// Return the current contract version as a semver triple (MAJOR, MINOR, PATCH) (#23).
@@ -7848,6 +8090,14 @@ impl RevoraRevenueShare {
         ) {
             return Err(RevoraError::HolderBlacklisted);
         }
+
+        // Jurisdiction migration deadline enforcement
+        Self::require_jurisdiction_migration_not_expired(
+            &env,
+            &offering_id,
+            &holder,
+            symbol_short!("claim"),
+        )?;
 
         let share_bps = Self::get_holder_share(
             env.clone(),
@@ -8245,6 +8495,14 @@ impl RevoraRevenueShare {
             return Err(RevoraError::HolderBlacklisted);
         }
         Self::require_not_frozen(&env, &offering_id, &holder)?;
+
+        // Jurisdiction migration deadline enforcement
+        Self::require_jurisdiction_migration_not_expired(
+            &env,
+            &offering_id,
+            &holder,
+            symbol_short!("claim"),
+        )?;
 
         let share_bps = Self::get_holder_share(
             env.clone(),
