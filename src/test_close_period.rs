@@ -59,6 +59,27 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+fn setup_offering_with_contract_id() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("ns"), &offering_token, &10_000, &payment_token, &0);
+
+    (env, client, issuer, offering_token, payment_token, contract_id)
+}
+
+fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+    let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
+    (env, client, issuer, token, payment_token)
+}
+
 #[test]
 fn close_period_happy_path() {
     let (_env, client, issuer, token, _payment) = setup_offering();
@@ -67,6 +88,30 @@ fn close_period_happy_path() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
     client.close_period(&issuer, &ns, &token, &1);
     assert!(client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn close_period_aborts_when_share_ledger_is_inconsistent() {
+    let (env, client, issuer, token, payment_token, contract_id) = setup_offering_with_contract_id();
+    let ns = symbol_short!("ns");
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
+
+    let before_events = env.events().all().len();
+    env.as_contract(&contract_id, || {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: ns.clone(),
+            token: token.clone(),
+        };
+        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id), &7_000u32);
+    });
+
+    let result = client.try_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(result, Err(Ok(RevoraError::CloseAbortInvariantsViolated)));
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+    assert_eq!(env.events().all().len(), before_events, "abort path must not emit close_period events");
 }
 
 #[test]

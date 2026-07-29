@@ -547,3 +547,99 @@ fn redemption_inside_window_after_blacklisting_rejected() {
     );
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
 }
+
+#[test]
+fn test_set_redemption_fee_bps_success_and_getters() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+    let treasury = Address::generate(&env);
+
+    assert_eq!(client.get_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token), 0);
+    assert_eq!(client.get_redemption_fee_config(&issuer, &symbol_short!("def"), &offering_token), None);
+
+    client.set_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token, &500, &treasury);
+
+    assert_eq!(client.get_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token), 500);
+    let cfg = client.get_redemption_fee_config(&issuer, &symbol_short!("def"), &offering_token).unwrap();
+    assert_eq!(cfg.fee_bps, 500);
+    assert_eq!(cfg.treasury, treasury);
+}
+
+#[test]
+fn test_set_redemption_fee_bps_exceeds_max_cap() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+    let treasury = Address::generate(&env);
+
+    let res = client.try_set_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token, &5_001, &treasury);
+    assert_eq!(res, Err(Ok(RevoraError::InvalidRevenueShareBps)));
+}
+
+#[test]
+fn test_set_redemption_fee_bps_unauthorized_issuer() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+    let attacker = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let res = client.try_set_redemption_fee_bps(&attacker, &symbol_short!("def"), &offering_token, &500, &treasury);
+    assert_eq!(res, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+#[test]
+fn test_fulfill_redemption_routes_fee_to_treasury() {
+    let env = Env::default();
+    let (client, issuer, offering_token, payout_token_id, holder, ..) = setup_offering(&env);
+    let treasury = Address::generate(&env);
+
+    // Set 10% (1,000 BPS) redemption fee
+    client.set_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token, &1_000, &treasury);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+
+    let payout_token = soroban_sdk::token::Client::new(&env, &payout_token_id);
+
+    // Fulfill 1,000,000 token payout
+    let fulfilled_amount = client.fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1_000_000,
+    );
+    assert_eq!(fulfilled_amount, 1_000_000);
+
+    // 10% fee (100,000) to treasury, net (900,000) to holder
+    assert_eq!(payout_token.balance(&treasury), 100_000);
+    assert_eq!(payout_token.balance(&holder), 900_000);
+}
+
+#[test]
+fn test_fulfill_redemption_max_fee_5000_bps() {
+    let env = Env::default();
+    let (client, issuer, offering_token, payout_token_id, holder, ..) = setup_offering(&env);
+    let treasury = Address::generate(&env);
+
+    // Set max 50% (5,000 BPS) fee
+    client.set_redemption_fee_bps(&issuer, &symbol_short!("def"), &offering_token, &5_000, &treasury);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+
+    let payout_token = soroban_sdk::token::Client::new(&env, &payout_token_id);
+
+    client.fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1_000_000,
+    );
+
+    // 50% fee (500,000) to treasury, net (500,000) to holder
+    assert_eq!(payout_token.balance(&treasury), 500_000);
+    assert_eq!(payout_token.balance(&holder), 500_000);
+}

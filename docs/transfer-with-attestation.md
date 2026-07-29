@@ -20,7 +20,9 @@ pub fn transfer_with_attestation(
     from: Address,        // Current shareholder; must provide auth
     to: Address,          // Recipient; must provide auth
     shares_bps: u32,      // Basis points to transfer (1–10000, must be > 0)
+    category: Symbol,     // Transfer category used for category-cap enforcement
     attest_hash: BytesN<32>, // 32-byte attestation hash for compliance
+    network_id: BytesN<32>,  // Ledger network identifier the attestation is bound to
 ) -> Result<(), RevoraError>
 ```
 
@@ -41,6 +43,7 @@ Ten guards are applied in strict order before any state is mutated:
 | 7 | If whitelist active: both parties must be listed | `NotAuthorized` |
 | 8 | `from` holds ≥ `shares_bps` | `InvalidShareBps` |
 | 9 | `to`'s resulting share ≤ 10 000 bps | `InvalidShareBps` |
+| 10 | `network_id` matches `env.ledger().network_id()` | `NetworkIdMismatch` |
 
 **Dual-party authorization** (Guard 2) is the primary peer-to-peer security invariant.
 Neither the sender nor the recipient can unilaterally move shares.
@@ -61,6 +64,10 @@ and correctly enforce the per-offering 10 000 bps cap.
 
 The 32-byte `attest_hash` is emitted verbatim in the `xfer_att` event. The contract
 does not inspect its content — any 32-byte value is accepted (including all-zeros).
+
+The supplied `network_id` is checked against the active ledger network before any state
+changes occur. A mismatch returns `NetworkIdMismatch`, which prevents the same attestation
+from being replayed on a different chain even if the hash is otherwise valid.
 
 The intended usage is for off-chain compliance tooling to store the hash of an approval
 document (KYC confirmation, AML clearance, jurisdiction sign-off, etc.) so that the
@@ -87,7 +94,9 @@ client.transfer_with_attestation(
     &alice,         // must sign
     &bob,           // must sign
     &2_500u32,
+    &category,
     &approval_doc_hash,
+    &network_id,
 );
 ```
 
@@ -103,4 +112,5 @@ client.transfer_with_attestation(
 | `HolderBlacklisted` | `from` or `to` is blacklisted |
 | `NotAuthorized` | Whitelist active and `from` or `to` not listed |
 | `InvalidShareBps` | `shares_bps == 0`, `from` has insufficient shares, or `to` would exceed 10 000 bps |
+| `NetworkIdMismatch` | The supplied attestation network id does not match the active ledger network |
 | `LimitReached` | Arithmetic overflow in `to` share accumulation (edge case) |

@@ -57,7 +57,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 | `set_testnet_mode` | `enabled: bool` | `Result<(), RevoraError>` | admin | Enable or disable testnet mode. When enabled, certain validations are relaxed for testnet deployments. |
 | `is_testnet_mode` | — | `bool` | — | Return true if testnet mode is enabled. |
 | `get_version` | — | `u32` | — | Return the current contract version (#23). Used for upgrade compatibility. |
-| `open_dispute` | `holder: Address`, `issuer: Address`, `namespace: Symbol`, `token: Address`, `meta_hash: BytesN<32>` | `Result<BytesN<32>, RevoraError>` | holder | Open a formal on-chain dispute with off-chain evidence identified by `meta_hash`. Returns the deterministic dispute ID. |
+| `open_dispute` | `holder: Address`, `issuer: Address`, `namespace: Symbol`, `token: Address`, `severity: DisputeSeverity`, `meta_hash: BytesN<32>` | `Result<BytesN<32>, RevoraError>` | holder | Open a formal on-chain dispute with off-chain evidence identified by `meta_hash`. Returns the deterministic dispute ID. `severity=Critical` halts claims until resolved. |
+| `resolve_dispute` | `caller: Address`, `dispute_id: BytesN<32>`, `resolution: DisputeStatus` | `Result<(), RevoraError>` | caller (must be offering issuer) | Resolve (`Resolved`) or reject (`Rejected`) an open dispute. Lifts dispute freeze when the last Critical dispute transitions out of `Open`. |
 | `get_dispute` | `dispute_id: BytesN<32>` | `Option<Dispute>` | — | Retrieve a dispute record by its ID. |
 
 ### Types
@@ -67,16 +68,8 @@ Soroban contract for revenue-share offerings and blacklist management.
 - **AuditSummary:** `{ total_revenue: i128, report_count: u64 }` — per-offering audit log summary.
 - **RoundingMode:** `Truncation` (0) or `RoundHalfUp` (1) — used by `compute_share` and per-offering default.
 - **DisputeStatus:** `Open` | `Resolved` | `Rejected` — lifecycle status of an on-chain dispute.
-- **Dispute:** `{ id: BytesN<32>, holder: Address, offering_id: OfferingId, opened_at: u64, meta_hash: BytesN<32>, status: DisputeStatus }` — an on-chain dispute record. The `id` is `sha256(issuer \|\| namespace \|\| token \|\| holder \|\| meta_hash)`.
-
-### `estimate_transfer` Reason Codes
-
-The `estimate_transfer(from, to, amount, category)` preflight query returns `(eligible: bool, reason_code: u32)`. If `eligible` is false, `reason_code` corresponds to one of the following `RevoraError` wire values:
-- `7` (`HolderBlacklisted`): The sender or receiver is blacklisted.
-- `10` (`ContractFrozen`): The contract is globally frozen.
-- `17` (`InvalidAmount`): The sender does not have enough shares to transfer `amount_bps`.
-- `31` (`JurisdictionDisallowed`): The receiver's jurisdiction is not allowed for this offering.
-- `CategoryCapReached`: The transfer would exceed the max holders limit for the category.
+- **DisputeSeverity:** `Standard` | `Critical` — severity level of a dispute. Critical disputes halt claims for the affected offering until resolved.
+- **Dispute:** `{ id: BytesN<32>, holder: Address, offering_id: OfferingId, opened_at: u64, severity: DisputeSeverity, meta_hash: BytesN<32>, status: DisputeStatus }` — an on-chain dispute record. The `id` is `sha256(issuer \|\| namespace \|\| token \|\| holder \|\| meta_hash)`.
 
 ### Error codes (RevoraError)
 
@@ -99,6 +92,9 @@ The `estimate_transfer(from, to, amount, category)` preflight query returns `(el
 | 59 | `DisputeAlreadyOpen` | A dispute with the same (offering_id, holder, meta_hash) already exists. |
 | 60 | `MaxDisputesReached` | The holder has reached the maximum number of open disputes (`MAX_OPEN_DISPUTES_PER_HOLDER` = 5). |
 | 61 | `DisputeZeroShare` | The caller holds zero shares in the offering and cannot open a dispute. |
+| 62 | `DisputeFreezeActive` | Claims are halted for this offering due to an active critical dispute. |
+| 63 | `NotDisputeIssuer` | The dispute resolution caller is not the issuer of the disputed offering. |
+| 64 | `DisputeAlreadyResolved` | The dispute is already resolved or rejected and cannot be resolved again. |
 
 Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`. Use `try_register_offering`, `try_report_revenue`, and similar `try_*` client methods to receive contract errors as `Result`.
 
@@ -127,7 +123,9 @@ Auth failures (e.g. wrong signer) are signaled by host/panic, not `RevoraError`.
 | `iss_canc` | `(token), (current_issuer, proposed_new_issuer)` | When `cancel_issuer_transfer` revokes a pending transfer. |
 | `test_mode` | `(admin), enabled` | When `set_testnet_mode` is called to toggle testnet mode. |
 | `downgrade_reject` | `(compiled_version, stored_version)` | When a state-mutating entrypoint is invoked but the loaded WASM's `CONTRACT_VERSION` is lower than the persisted `DeployedVersion` (lossy downgrade detected). Blocked with `MigrationDowngradeNotAllowed`. |
-| `dispute_open` | `(dispute_id, offering_id, holder, meta_hash)` | When `open_dispute` successfully creates a new dispute record. |
+| `dispute_open` | `(dispute_id, offering_id, holder, meta_hash, severity)` | When `open_dispute` successfully creates a new dispute record. |
+| `dsp_frzon` | `(offering_id, holder, dispute_id)` | When the first `Critical` dispute is opened for an offering, freezing claims. |
+| `dsp_frzoff` | `(offering_id, holder, dispute_id)` | When the last `Critical` dispute for an offering transitions out of `Open`; claims unfrozen. |
 | `ev_idx2` (V2) | `(version, event_type, issuer, namespace, token, period_id), (event_data...)` | Indexed V2 event — emitted by all state-changing entries for off-chain indexers. |
 | `ev_idx3` (V3) | `(version, event_type, issuer, namespace, token, period_id, _reserved), (event_data...)` | Indexed V3 event — dual-emitted alongside V2. Additive fields land here in future minor versions. |
 
