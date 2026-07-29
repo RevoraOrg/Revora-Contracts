@@ -5,28 +5,80 @@ use soroban_sdk::{
     token, Address, Env,
 };
 
-#[test]
-#[should_panic(expected = "Error(Contract, #456)")]
-fn test_claim_on_deferred_fails() {
+// ── Test helpers ─────────────────────────────────────────────────────────────
+
+/// Register a single-issuer offering without co-issuers and return the
+/// `(env, client, issuer, token, payment_token)` tuple the close-period tests
+/// expect. `mock_all_auths()` is enabled so any issuer-signed call within the
+/// test body passes auth checks automatically; assertions about the
+/// `OfferingNotFound` error path still succeed because they come from the
+/// offering lookup itself.
+///
+/// The payment-token stellar asset is registered with `issuer` as admin so
+/// the `mint(..., &issuer, ...)` helper can mint on the same asset address the
+/// offering actually references. Registering with a random admin would produce
+/// a different asset-contract address under Soroban's deterministic admin ->
+/// address mapping, silently breaking balance checks downstream.
+fn setup_offering()
+    -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address)
+{
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, AmountValidationResult);
-    let client = AmountValidationResultClient::new(&env, &contract_id);
-
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(issuer.clone())
+        .address();
+    let token = Address::generate(&env);
     client.register_offering(
         &issuer,
+        &Vec::from_array(&env, []),
+        &1u32,
         &symbol_short!("ns"),
-        &offering_token,
-        &10_000,
+        &token,
+        &10_000u32,
         &payment_token,
-        &0,
+        &0i128,
         &symbol_short!(""),
-        &0);
+        &0u32,
+    );
+    (env, client, issuer, token, payment_token)
+}
 
-    (env, client, issuer, offering_token, payment_token)
+fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
+    // Re-registering with `to.clone()` as admin must produce the same address
+    // as the offering's `payment_token` was registered with, which was
+    // issuer-address derived. If `to != issuer`, the mint call will land on
+    // a different asset and the test that called `mint` was wrong about the
+    // admin. The contract under test asserts its own ledger reads, so we
+    // only intend the canonical pattern (issuer minting to itself).
+    let contract = env.register_stellar_asset_contract_v2(to.clone());
+    token::StellarAssetClient::new(env, &contract.address()).mint(to, &amount);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+fn setup_offering_with_contract_id() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("ns"), &offering_token, &10_000, &payment_token, &0);
+
+    (env, client, issuer, offering_token, payment_token, contract_id)
+}
+
+fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+    let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
+    (env, client, issuer, token, payment_token)
+}
 
 #[test]
 fn close_period_happy_path() {
@@ -36,6 +88,30 @@ fn close_period_happy_path() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
     client.close_period(&issuer, &ns, &token, &1);
     assert!(client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn close_period_aborts_when_share_ledger_is_inconsistent() {
+    let (env, client, issuer, token, payment_token, contract_id) = setup_offering_with_contract_id();
+    let ns = symbol_short!("ns");
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
+
+    let before_events = env.events().all().len();
+    env.as_contract(&contract_id, || {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: ns.clone(),
+            token: token.clone(),
+        };
+        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id), &7_000u32);
+    });
+
+    let result = client.try_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(result, Err(Ok(RevoraError::CloseAbortInvariantsViolated)));
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+    assert_eq!(env.events().all().len(), before_events, "abort path must not emit close_period events");
 }
 
 #[test]
