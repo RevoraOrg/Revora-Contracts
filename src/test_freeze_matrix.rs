@@ -382,12 +382,12 @@ fn frozen_propose_admin_rotation_returns_contract_frozen() {
 }
 
 #[test]
-fn frozen_accept_admin_rotation_returns_contract_frozen() {
+fn frozen_finalize_admin_rotation_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, _, _, _) = frozen_setup(&env);
     let new_admin = Address::generate(&env);
-    // accept_admin_rotation checks frozen before checking pending state
-    let result = client.try_accept_admin_rotation(&new_admin);
+    // finalize_admin_rotation checks frozen before checking pending state
+    let result = client.try_finalize_admin_rotation(&new_admin);
     assert_frozen_err(result);
 }
 
@@ -784,6 +784,16 @@ fn set_freeze_records_reason_and_emits_event() {
         }
     });
     assert!(found, "expected frz_set event after set_freeze");
+
+    // A frz_rsn (freeze_reason_v1) event must have been emitted with reason and target.
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event after set_freeze");
 }
 
 /// Sequential `set_freeze` calls with different reasons overwrite the stored reason.
@@ -813,6 +823,17 @@ fn default_freeze_sets_compliance_reason() {
         Some(FreezeReason::Compliance),
         "freeze() must record Compliance as the default reason"
     );
+
+    // freeze() via set_freeze must also emit frz_rsn
+    let events = env.events().all();
+    let found_rsn = events.iter().any(|e| {
+        let (_, topics, _) = e;
+        topics.len() >= 1 && {
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("frz_rsn")
+        }
+    });
+    assert!(found_rsn, "expected frz_rsn event from freeze() (default set_freeze)");
 }
 
 // ─── OFAC Attestation Auto-Freeze Tests ─────────────────────────────────────────
