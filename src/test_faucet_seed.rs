@@ -163,10 +163,7 @@ fn faucet_allows_request_after_cooldown_elapsed() {
     env.ledger().set_timestamp(DEFAULT_FAUCET_COOLDOWN_SECONDS);
 
     let second = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
-    assert!(
-        matches!(second, Ok(Ok(_))),
-        "request after cooldown elapsed should succeed"
-    );
+    assert!(matches!(second, Ok(Ok(_))), "request after cooldown elapsed should succeed");
 }
 
 // ── Edge-case: count == 0 ──────────────────────────────────────────────────────
@@ -227,11 +224,7 @@ fn faucet_slots_produce_distinct_seeds() {
     let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &5);
     for i in 0..seeds.len() {
         for j in (i + 1)..seeds.len() {
-            assert_ne!(
-                seeds.get(i),
-                seeds.get(j),
-                "slots {i} and {j} must have distinct seeds"
-            );
+            assert_ne!(seeds.get(i), seeds.get(j), "slots {i} and {j} must have distinct seeds");
         }
     }
 }
