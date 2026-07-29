@@ -66,7 +66,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::PeriodDepositTime(OfferingId, u64)", "u64", "offering+period"),
     ("DataKey::Admin", "Address", "contract"),
     ("DataKey::Frozen", "bool", "contract"),
-    ("DataKey::PendingAdmin", "Address", "contract"),
+    ("DataKey::PendingAdmin", "PendingAdminRotation", "contract"),
     ("DataKey::SnapshotConfig(OfferingId)", "bool", "offering"),
     ("DataKey::LastSnapshotRef(OfferingId)", "u64", "offering"),
     ("DataKey::SnapshotEntry(OfferingId, u64)", "SnapshotEntry", "offering+snapshot"),
