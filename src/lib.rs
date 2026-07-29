@@ -594,6 +594,10 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 /// Emitted when a share transfer with attestation occurs.
 const EVENT_XFER_ATT: Symbol = symbol_short!("xfer_att");
+/// Emitted when an atomic swap completes successfully.
+/// Topic: `(swap_v1, issuer, namespace, token)`
+/// Data: `(seller, buyer, amount_bps, payment_asset, payment_amount, royalty_amount)`.
+const EVENT_SWAP_V1: Symbol = symbol_short!("swap_v1");
 /// Emitted when a cross-class share transfer is blocked.
 /// Data: `(offering_id, from, to, from_class, to_class)`.
 const EVENT_CLASS_XFER_BLOCK: Symbol = symbol_short!("cls_block");
@@ -3388,7 +3392,27 @@ impl RevoraRevenueShare {
     /// Atomic swap for secondary market transfers. Transfers shares from seller to buyer
     /// and settlement asset from buyer to seller, routing a royalty fee to the issuer.
     ///
+    /// All three parties (issuer, seller, buyer) must authorize the swap via `require_auth`.
+    /// The swap executes both legs atomically:
+    /// 1. Royalty fee is routed from buyer to issuer (if configured).
+    /// 2. Remaining payment is transferred from buyer to seller.
+    /// 3. Shares (amount_bps) are transferred from seller to buyer via `transfer_with_attestation`.
+    ///
+    /// If any leg fails, all previous state changes are rolled back by the Soroban host
+    /// (transaction revert), guaranteeing atomicity.
+    ///
+    /// ### Auth
+    /// - `issuer` — offering issuer or co-issuer.
+    /// - `seller` — the address selling shares.
+    /// - `buyer` — the address purchasing shares and providing payment.
+    ///
+    /// ### Events
+    /// - `swap_v1` — emitted on successful completion.
+    /// - Inherits events from `pay_secondary_market_royalty` (roy_paid) and
+    ///   `transfer_with_attestation` (sh_set2, rg_lim_d, xfer_att).
+    ///
     /// ### Errors
+    /// - `InvalidAmount` — `payment_amount` is zero or negative.
     /// - `TransferFailed` — token transfer for settlement failed.
     /// - Inherits errors from `transfer_with_attestation` and `pay_secondary_market_royalty`.
     pub fn atomic_swap(
@@ -3404,7 +3428,12 @@ impl RevoraRevenueShare {
         payment_amount: i128,
     ) -> Result<(), RevoraError> {
         issuer.require_auth();
+        seller.require_auth();
         buyer.require_auth();
+
+        if payment_amount <= 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
 
         let royalty_amount = Self::pay_secondary_market_royalty(
             env.clone(),
@@ -3429,15 +3458,33 @@ impl RevoraRevenueShare {
         }
 
         Self::transfer_with_attestation(
-            env,
-            issuer,
-            namespace,
-            token,
-            seller,
-            buyer,
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            seller.clone(),
+            buyer.clone(),
             amount_bps,
             category,
         )?;
+
+        // ── Emit swap_v1 event ─────────────────────────────────────────────────
+        Self::emit_v2_event(
+            &env,
+            (EVENT_SWAP_V1, issuer.clone(), namespace.clone(), token.clone()),
+            (
+                seller.clone(),
+                buyer.clone(),
+                amount_bps,
+                payment_asset.clone(),
+                payment_amount,
+                royalty_amount,
+            ),
+        );
+        env.events().publish(
+            (EVENT_SWAP_V1, issuer, namespace, token),
+            (seller, buyer, amount_bps, payment_asset, payment_amount, royalty_amount),
+        );
 
         Ok(())
     }

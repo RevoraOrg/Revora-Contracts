@@ -11205,6 +11205,281 @@ mod regression {
         assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 0);
         assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &seller), 4_900);
         assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &buyer), 100);
+
+        // ── Verify swap_v1 event emitted ──
+        let events = env.events().all();
+        let swap_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                let sym: Symbol = e.topics.get(0).unwrap();
+                sym == symbol_short!("swap_v1")
+            })
+            .collect();
+        assert!(!swap_events.is_empty(), "swap_v1 event must be emitted");
+    }
+
+    #[test]
+    fn atomic_swap_no_royalty_successful() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 2_000);
+
+        // No royalty configured — buyer pays full amount to seller
+        client.atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &500,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1500,
+        );
+
+        // Issuer gets 0 (no royalty), seller gets full payment
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &issuer), 0);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &seller), 1_500);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 500);
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &seller), 4_500);
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &buyer), 500);
+    }
+
+    #[test]
+    fn atomic_swap_buyer_insufficient_balance_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        // Buyer only has 100 tokens but tries to pay 1000
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 100);
+
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &100,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1000,
+        );
+        assert!(result.is_err(), "buyer with insufficient balance must be rejected");
+
+        // State unchanged
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &seller), 5_000);
+        assert_eq!(client.get_holder_share(&issuer, &symbol_short!("fee"), &token, &buyer), 0);
+    }
+
+    #[test]
+    fn atomic_swap_seller_blacklisted_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        // Blacklist the seller
+        client.add_blacklist(&issuer, &symbol_short!("fee"), &token, &seller);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &100,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1000,
+        );
+        assert!(result.is_err(), "seller blacklisted must be rejected");
+    }
+
+    #[test]
+    fn atomic_swap_seller_insufficient_shares_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        // Seller has 100 bps but tries to sell 200
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &100);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &200,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1000,
+        );
+        assert!(result.is_err(), "seller with insufficient shares must be rejected");
+    }
+
+    #[test]
+    fn atomic_swap_zero_payment_amount_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &100,
+            &symbol_short!("A"),
+            &payment_asset,
+            &0,
+        );
+        assert!(result.is_err(), "zero payment amount must be rejected");
+    }
+
+    #[test]
+    fn atomic_swap_zero_share_amount_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        // Zero share amount is rejected by transfer_with_attestation (InvalidAmount)
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &0,
+            &symbol_short!("A"),
+            &payment_asset,
+            &100,
+        );
+        assert!(result.is_err(), "zero share amount must be rejected by transfer_with_attestation");
+    }
+
+    #[test]
+    fn atomic_swap_seller_frozen_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &10_000, &payout_asset, &0);
+        client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000);
+
+        // Freeze the seller's address for this offering
+        client.emergency_freeze_holder(&issuer,
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &crate::FreezeReason::Compliance,
+        );
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let result = client.try_atomic_swap(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &seller,
+            &buyer,
+            &100,
+            &symbol_short!("A"),
+            &payment_asset,
+            &1000,
+        );
+        assert!(result.is_err(), "seller frozen must be rejected");
     }
 
     // ── Platform-level per-asset fee ─────────────────────────────────────────
