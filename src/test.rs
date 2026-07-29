@@ -11881,6 +11881,37 @@ mod admin_rotation {
     }
 
     #[test]
+    fn revoke_clears_pending_and_preserves_admin() {
+        let (env, client, admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        client.revoke_admin_rotation();
+
+        assert_eq!(client.get_admin(), Some(admin));
+        assert_eq!(client.get_pending_admin_rotation(), None);
+    }
+
+    #[test]
+    fn revoke_emits_adm_rvk_event() {
+        let (env, client, _admin) = rotation_setup();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin_rotation(&new_admin);
+        let before = env.events().all().len();
+        client.revoke_admin_rotation();
+
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn revoke_without_pending_returns_no_admin_rotation_pending() {
+        let (_env, client, _admin) = rotation_setup();
+        let result = client.try_revoke_admin_rotation();
+        assert_eq!(result, Err(Ok(RevoraError::NoAdminRotationPending)));
+    }
+
+    #[test]
     fn get_pending_returns_none_before_propose() {
         let (_env, client, _admin) = rotation_setup();
         assert_eq!(client.get_pending_admin_rotation(), None);
