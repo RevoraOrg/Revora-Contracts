@@ -186,11 +186,7 @@ pub fn canonical_leaves(
             return Err(MerkleError::InvalidShareBps);
         }
         let holder_xdr = holder.to_xdr(env);
-        leaves.push_back(MerkleLeaf {
-            holder: holder.clone(),
-            share_bps: *share_bps,
-            holder_xdr,
-        });
+        leaves.push_back(MerkleLeaf { holder: holder.clone(), share_bps: *share_bps, holder_xdr });
     }
 
     // ── 2. Insertion sort by holder_xdr (ascending, lexicographic) ─────────
