@@ -44,6 +44,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::Blacklist(OfferingId)", "Vec<Address>", "offering"),
     ("DataKey::Whitelist(OfferingId)", "Vec<Address>", "offering"),
     ("DataKey::BlacklistOrder(OfferingId)", "Vec<Address>", "offering"),
+    ("DataKey::BlacklistMeta(OfferingId)", "Map<Address, BlacklistEntryMeta>", "offering"),
     ("DataKey::OfferCount(TenantId)", "u32", "tenant"),
     ("DataKey::OfferItem(TenantId, u32)", "OfferingId", "tenant+index"),
     ("DataKey::ConcentrationLimit(OfferingId)", "u32", "offering"),
@@ -71,6 +72,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::LastSnapshotRef(OfferingId)", "u64", "offering"),
     ("DataKey::SnapshotEntry(OfferingId, u64)", "SnapshotEntry", "offering+snapshot"),
     ("DataKey::SnapshotHolder(OfferingId, u64, u32)", "HolderSnapshotEntry", "offering+snapshot+index"),
+    ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("DataKey::SnapshotHolderCount(OfferingId, u64)", "u32", "offering+snapshot"),
     ("DataKey::PendingIssuerTransfer(OfferingId)", "PendingTransfer", "offering"),
     ("DataKey::OfferingIssuer(OfferingId)", "Address", "offering"),
@@ -117,15 +119,14 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::DualSigEnabled(OfferingId)", "bool", "offering"),
     ("DataKey2::AdminRotationLog(u64)", "AdminRotationEntry", "contract"),
     ("DataKey2::AdminRotationCount", "u64", "contract"),
-    ("DataKey2::AdminRotationDelay", "u64", "contract"),
-    ("DataKey2::MultisigOwners", "Vec<Address>", "contract"),
-    ("DataKey2::MultisigThreshold", "u32", "contract"),
-    ("DataKey2::MultisigProposalCount", "u32", "contract"),
-    ("DataKey2::MultisigProposalDuration", "u64", "contract"),
-    ("DataKey2::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
-    ("DataKey2::VoterWeight(Address)", "u32", "address"),
-    ("DataKey2::MultisigQuorumBps", "u32", "contract"),
-    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer")
+    ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering"),
+    ("DataKey2::EmitV2Compat", "bool", "contract"),
+    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
+    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
+    ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "address"),
+    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer"),
+    ("MigrationDataKey::MigrationResumeCursor(Address)", "u32", "issuer")
 ]);
 
 const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revenue_deposit_contract", [
