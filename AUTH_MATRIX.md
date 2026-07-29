@@ -10,6 +10,25 @@ This document outlines the authentication requirements for all externally callab
 - **Holder**: An investor holding the offering token, capable of claiming revenue.
 - **Any**: Any caller (public access), though logic may still restrict actions based on state.
 
+### Per-Action Role Matrix (Issue #544)
+
+When role grants exist for an offering, the following additional checks apply:
+
+| Role       | Permitted Actions |
+| :--------- | :---------------- |
+| `Compliance` | `blacklist_add`, `blacklist_remove`, jurisdiction management |
+| `Treasury`   | `report_revenue`, `deposit_revenue` |
+| `Operations`  | `freeze_offering`, `unfreeze_offering`, transfer management |
+
+Roles are granted/revoked via `grant_role` and `revoke_role` (issuer-only).
+When NO role grants exist for an offering, the role gate is skipped — existing auth checks continue to apply unchanged.
+
+### Transfer-Restriction Override (Issue #589)
+
+Issuers can sign an off-chain attestation (`transfer_with_override`) to authorize
+one-shot transfers that bypass transfer restrictions. Each override is consumed
+after first use (replay-protected via SHA-256 digest storage).
+
 ## Two-Tier Pause State
 
 The contract uses a three-value `PauseState` enum instead of a binary flag:
@@ -71,6 +90,9 @@ Every pause/unpause call emits two events:
 | `set_offering_metadata` | `issuer` | `current_issuer == issuer` | Issuer sets metadata. |
 | `close_period_dual_sig` | `sig_a` and `sig_b` | Both must be valid issuers (primary or co-issuer) and distinct | Dual-signature close-of-period for high-value periods. |
 | `set_dual_sig_config` | `issuer` | `current_issuer == issuer` | Enables or disables dual-sig mode for an offering. |
+| `grant_role` | `issuer` | `current_issuer == issuer` | Grants a role to an address for an offering (#544). |
+| `revoke_role` | `issuer` | `current_issuer == issuer` | Revokes a role from an address for an offering (#544). |
+| `transfer_with_override` | `from` + `to` | Issuer-signed ed25519 attestation | One-shot override of transfer restrictions (#589). |
 
 ## Identified Issues
 

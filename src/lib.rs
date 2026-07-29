@@ -354,6 +354,14 @@ pub enum RevoraError {
     /// [`set_transfer_cooldown`]) has elapsed since the holder's last transfer.
     /// Wire value: 89. Stable since v1.
     TransferCooldownActive = 89,
+    /// The issuer-signed transfer override has already been consumed.
+    ///
+    /// Wire value: 90. Stable since v1.
+    OverrideAlreadyUsed = 90,
+    /// The caller has not been granted the required role for this action.
+    ///
+    /// Wire value: 91. Stable since v1.
+    RoleNotGranted = 91,
 }
 
 pub mod tax_bucket;
@@ -635,6 +643,18 @@ const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
 /// Topic: `(tr_cool_set, issuer, namespace, token)`
 /// Data: `(jurisdiction: Symbol, cooldown_secs: u64)`
 const EVENT_TRANSFER_COOLDOWN_SET: Symbol = symbol_short!("tr_cool");
+/// Emitted when a transfer-restriction override is applied by the issuer.
+/// Topic: `(xfer_ovrd, issuer, namespace, token)`
+/// Data:  `(from, to, amount_bps)`
+const EVENT_TRANSFER_OVERRIDE_APPLIED: Symbol = symbol_short!("xfer_ovrd");
+/// Emitted when a role is granted to an address for an offering.
+/// Topic: `(role_grant, issuer, namespace, token)`
+/// Data:  `(role, addr)`
+const EVENT_ROLE_GRANTED: Symbol = symbol_short!("role_grt");
+/// Emitted when a role is revoked from an address for an offering.
+/// Topic: `(role_revoke, issuer, namespace, token)`
+/// Data:  `(role, addr)`
+const EVENT_ROLE_REVOKED: Symbol = symbol_short!("role_rvk");
 
 /// ── Regulatory-limit delta event (reg_limit_delta event stream) ──
 ///
@@ -1083,6 +1103,67 @@ pub struct AuditSummary {
     pub total_revenue: i128,
     /// Total number of revenue reports submitted.
     pub report_count: u64,
+}
+
+/// Role for the multi-issuer per-action permission matrix (#544).
+///
+/// # Bitmask contract (do not reorder or insert)
+///
+/// | Variant     | Bit | Mask Value |
+/// |-------------|-----|------------|
+/// | Compliance  | 0   | 1          |
+/// | Treasury    | 1   | 2          |
+/// | Operations  | 2   | 4          |
+///
+/// Do NOT exceed 32 variants; bitmask operations assume u32 width.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+#[repr(u32)]
+pub enum Role {
+    /// Compliance role: can manage blacklist/whitelist and jurisdiction controls.
+    Compliance = 0,
+    /// Treasury role: can report and deposit revenue.
+    Treasury = 1,
+    /// Operations role: can freeze/unfreeze offerings and manage transfers.
+    Operations = 2,
+}
+
+impl Role {
+    /// Convert this role to its single-bit mask.
+    pub fn to_bitmask(self) -> u32 {
+        1u32 << (self as u32)
+    }
+}
+
+/// A single role grant for the multi-issuer permission matrix (#544).
+///
+/// Each grant assigns a [`Role`] to an address for a specific offering.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleGrant {
+    /// The role being granted.
+    pub role: Role,
+    /// The address receiving the role.
+    pub addr: Address,
+}
+
+/// Transfer-restriction override attestation payload (#589).
+///
+/// The issuer signs this payload to authorize a one-shot override of
+/// transfer restrictions for a specific (from, to, amount) tuple.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferOverridePayload {
+    /// The offering this override applies to.
+    pub offering_id: OfferingId,
+    /// The sender address.
+    pub from: Address,
+    /// The recipient address.
+    pub to: Address,
+    /// The amount being transferred in basis points.
+    pub amount_bps: u32,
+    /// Monotonically-increasing nonce for replay protection.
+    pub nonce: u64,
 }
 
 #[contracttype]
@@ -1661,6 +1742,16 @@ pub enum DataKey2 {
     /// Ledger timestamp of the last transfer for (offering_id, holder).
     /// Used by the cooldown check to reject premature transfers.
     HolderLastTransferTime(OfferingId, Address),
+
+    // ── Transfer-restriction override (issue #589) ──
+    /// Consumed transfer override digest for (offering_id, digest).
+    /// When present, the issuer-signed override for this tuple has been used
+    /// and cannot be replayed.
+    TransferOverrideDigest(OfferingId, BytesN<32>),
+
+    // ── Multi-issuer permission matrix (issue #544) ──
+    /// Per-offering role grants: Vec<RoleGrant>.
+    RoleGrants(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -5258,6 +5349,15 @@ impl RevoraRevenueShare {
             let offering =
                 Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
                     .ok_or(RevoraError::OfferingNotFound)?;
+
+            // ── Role check (issue #544): caller must have Treasury role ──
+            let grants_key = DataKey2::RoleGrants(offering_id.clone());
+            if env.storage().persistent().has(&grants_key) {
+                if !Self::has_treasury_role(&env, &offering_id, &issuer) {
+                    return Err(RevoraError::RoleNotGranted);
+                }
+            }
+
             let converted = Self::convert_report_amount_if_needed(
                 &env,
                 &offering_id,
@@ -5937,6 +6037,15 @@ impl RevoraRevenueShare {
 
         if caller != current_issuer && caller != admin {
             return Err(RevoraError::NotAuthorized);
+        }
+
+        // ── Role check (issue #544): caller must have Compliance role ──
+        // If role grants exist for this offering, the caller must hold Compliance.
+        let grants_key = DataKey2::RoleGrants(offering_id.clone());
+        if env.storage().persistent().has(&grants_key) {
+            if !Self::has_compliance_role(&env, &offering_id, &caller) {
+                return Err(RevoraError::RoleNotGranted);
+            }
         }
 
         // Validate attestation timestamp: attested_at must not be in the future
@@ -8450,6 +8559,15 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
+
+        // ── Role check (issue #544): caller must have Treasury role ──
+        let grants_key = DataKey2::RoleGrants(offering_id.clone());
+        if env.storage().persistent().has(&grants_key) {
+            if !Self::has_treasury_role(&env, &offering_id, &issuer) {
+                return Err(RevoraError::RoleNotGranted);
+            }
+        }
+
         Self::require_not_frozen(&env)?;
 
         Self::do_deposit_revenue(&env, issuer, namespace, token, payment_token, amount, period_id)
@@ -15699,6 +15817,280 @@ pub fn get_indexer_fixture_topics(
 
     (v2_fixtures, v3_fixtures)
 }
+
+// ── Issue #589: Transfer-restriction override ────────────────────────────
+
+/// Apply an issuer-signed override to bypass transfer restrictions for a specific transfer.
+///
+/// The issuer pre-signs a [`TransferOverridePayload`] off-chain and the caller
+/// submits it on-chain. The override is **one-shot**: once consumed, any
+/// subsequent attempt to reuse the same digest is rejected with
+/// [`RevoraError::OverrideAlreadyUsed`].
+///
+/// # Security
+///
+/// - The issuer signature is verified via `env.crypto().ed25519_verify()`.
+/// - The override digest is stored on-chain to prevent replay.
+/// - The caller must be the `from` address in the override (dual-party auth).
+///
+/// # Parameters
+/// - `issuer`: The offering's primary issuer.
+/// - `namespace`: The offering namespace.
+/// - `token`: The offering token.
+/// - `payload`: The override payload signed by the issuer.
+/// - `issuer_pubkey`: The ed25519 public key of the issuer (32 bytes).
+/// - `signature`: The ed25519 signature over the XDR-encoded payload (64 bytes).
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_with_override(
+    env: Env,
+    issuer: Address,
+    namespace: Symbol,
+    token: Address,
+    payload: TransferOverridePayload,
+    issuer_pubkey: BytesN<32>,
+    signature: BytesN<64>,
+) -> Result<(), RevoraError> {
+    Self::require_not_frozen(&env)?;
+    Self::require_not_paused(&env)?;
+
+    // ── Gate 1: offering must exist ──
+    let offering_id = OfferingId {
+        issuer: issuer.clone(),
+        namespace: namespace.clone(),
+        token: token.clone(),
+    };
+    let _offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+        .ok_or(RevoraError::OfferingNotFound)?;
+
+    // ── Gate 2: payload offering must match ──
+    if payload.offering_id != offering_id {
+        return Err(RevoraError::OfferingNotFound);
+    }
+
+    // ── Gate 3: one-shot replay protection ──
+    let payload_bytes = payload.to_xdr(&env);
+    let digest = env.crypto().sha256(&payload_bytes);
+    let override_key = DataKey2::TransferOverrideDigest(offering_id.clone(), digest.clone());
+    if env.storage().persistent().has(&override_key) {
+        return Err(RevoraError::OverrideAlreadyUsed);
+    }
+
+    // ── Gate 4: verify issuer ed25519 signature over the payload ──
+    env.crypto().ed25519_verify(&issuer_pubkey, &payload_bytes, &signature);
+
+    // ── Gate 5: authorization ──
+    payload.from.require_auth();
+    payload.to.require_auth();
+
+    // ── Gate 6: self-transfer guard ──
+    if payload.from == payload.to {
+        return Ok(());
+    }
+
+    // ── Gate 7: amount validation ──
+    if payload.amount_bps == 0 {
+        return Err(RevoraError::InvalidShareBps);
+    }
+
+    // ── Gate 8: sender share check ──
+    let from_share: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderShare(offering_id.clone(), payload.from.clone()))
+        .unwrap_or(0);
+    if from_share < payload.amount_bps {
+        return Err(RevoraError::InvalidShareBps);
+    }
+
+    // ── Gate 9: recipient share cap ──
+    let to_share: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderShare(offering_id.clone(), payload.to.clone()))
+        .unwrap_or(0);
+    if to_share.checked_add(payload.amount_bps).unwrap_or(u32::MAX) > 10_000 {
+        return Err(RevoraError::InvalidShareBps);
+    }
+
+    // ── Mark override as consumed (one-shot) ──
+    env.storage().persistent().set(&override_key, &true);
+
+    // ── Apply the share transfer ──
+    Self::set_holder_share_internal(
+        &env,
+        issuer.clone(),
+        namespace.clone(),
+        token.clone(),
+        payload.from.clone(),
+        from_share - payload.amount_bps,
+        None,
+        None,
+    )?;
+    Self::set_holder_share_internal(
+        &env,
+        issuer,
+        namespace,
+        token,
+        payload.to,
+        to_share + payload.amount_bps,
+        None,
+        None,
+    )?;
+
+    // ── Emit override-applied event for audit trail ──
+    env.events().publish(
+        (
+            EVENT_TRANSFER_OVERRIDE_APPLIED,
+            offering_id.issuer,
+            offering_id.namespace,
+            offering_id.token,
+        ),
+        (payload.from, payload.to, payload.amount_bps),
+    );
+
+    Ok(())
+}
+
+// ── Issue #544: Multi-issuer permission matrix ───────────────────────────
+
+/// Grant a role to an address for a specific offering.
+///
+/// Only the offering's primary issuer can grant roles. Grants are stored
+/// per-offering and are additive (an address can hold multiple roles).
+///
+/// # Events
+/// - Emits [`EVENT_ROLE_GRANTED`] on success.
+pub fn grant_role(
+    env: Env,
+    issuer: Address,
+    namespace: Symbol,
+    token: Address,
+    role: Role,
+    addr: Address,
+) -> Result<(), RevoraError> {
+    Self::require_not_frozen(&env)?;
+    issuer.require_auth();
+
+    let offering_id = OfferingId {
+        issuer: issuer.clone(),
+        namespace: namespace.clone(),
+        token: token.clone(),
+    };
+
+    // Verify offering exists and caller is the primary issuer
+    let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+        .ok_or(RevoraError::OfferingNotFound)?;
+    if offering.issuers.primary != issuer {
+        return Err(RevoraError::NotAuthorized);
+    }
+
+    // Load existing grants
+    let grants_key = DataKey2::RoleGrants(offering_id.clone());
+    let mut grants: Vec<RoleGrant> = env.storage().persistent().get(&grants_key).unwrap_or_else(|| Vec::new(&env));
+
+    // Idempotent: skip if already granted
+    for g in grants.iter() {
+        if g.role == role && g.addr == addr {
+            return Ok(());
+        }
+    }
+
+    grants.push_back(RoleGrant { role, addr: addr.clone() });
+    env.storage().persistent().set(&grants_key, &grants);
+
+    env.events().publish(
+        (EVENT_ROLE_GRANTED, issuer, namespace, token),
+        (role, addr),
+    );
+
+    Ok(())
+}
+
+/// Revoke a previously granted role from an address for a specific offering.
+///
+/// Only the offering's primary issuer can revoke roles.
+///
+/// # Events
+/// - Emits [`EVENT_ROLE_REVOKED`] on success.
+pub fn revoke_role(
+    env: Env,
+    issuer: Address,
+    namespace: Symbol,
+    token: Address,
+    role: Role,
+    addr: Address,
+) -> Result<(), RevoraError> {
+    Self::require_not_frozen(&env)?;
+    issuer.require_auth();
+
+    let offering_id = OfferingId {
+        issuer: issuer.clone(),
+        namespace: namespace.clone(),
+        token: token.clone(),
+    };
+
+    // Verify offering exists and caller is the primary issuer
+    let offering = Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+        .ok_or(RevoraError::OfferingNotFound)?;
+    if offering.issuers.primary != issuer {
+        return Err(RevoraError::NotAuthorized);
+    }
+
+    let grants_key = DataKey2::RoleGrants(offering_id.clone());
+    let grants: Vec<RoleGrant> = env.storage().persistent().get(&grants_key).unwrap_or_else(|| Vec::new(&env));
+
+    let mut new_grants = Vec::new(&env);
+    for g in grants.iter() {
+        if g.role != role || g.addr != addr {
+            new_grants.push_back(g);
+        }
+    }
+
+    env.storage().persistent().set(&grants_key, &new_grants);
+
+    env.events().publish(
+        (EVENT_ROLE_REVOKED, issuer, namespace, token),
+        (role, addr),
+    );
+
+    Ok(())
+}
+
+/// Assert that an address holds a specific role for an offering.
+///
+/// Returns [`RevoraError::RoleNotGranted`] if the role is not found.
+fn assert_role(
+    env: &Env,
+    offering_id: &OfferingId,
+    addr: &Address,
+    role: Role,
+) -> Result<(), RevoraError> {
+    let grants_key = DataKey2::RoleGrants(offering_id.clone());
+    let grants: Vec<RoleGrant> = env.storage().persistent().get(&grants_key).unwrap_or_else(|| Vec::new(env));
+
+    for g in grants.iter() {
+        if g.role == role && g.addr == *addr {
+            return Ok(());
+        }
+    }
+
+    Err(RevoraError::RoleNotGranted)
+}
+
+/// Check if an address holds the Compliance role for an offering.
+fn has_compliance_role(env: &Env, offering_id: &OfferingId, addr: &Address) -> bool {
+    Self::assert_role(env, offering_id, addr, Role::Compliance).is_ok()
+}
+
+/// Check if an address holds the Treasury role for an offering.
+fn has_treasury_role(env: &Env, offering_id: &OfferingId, addr: &Address) -> bool {
+    Self::assert_role(env, offering_id, addr, Role::Treasury).is_ok()
+}
+
+/// Check if an address holds the Operations role for an offering.
+fn has_operations_role(env: &Env, offering_id: &OfferingId, addr: &Address) -> bool {
+    Self::assert_role(env, offering_id, addr, Role::Operations).is_ok()
+}
 }
 
 #[cfg(test)]
@@ -15715,3 +16107,7 @@ mod test_storage_layout_version;
 mod test_merkle_root_rotation;
 #[cfg(test)]
 mod test_merkle_proof_depth;
+#[cfg(test)]
+mod test_transfer_override;
+#[cfg(test)]
+mod test_permission_matrix;
