@@ -330,6 +330,17 @@ pub enum RevoraError {
     /// until the holder relocates to an allowed jurisdiction or the issuer
     /// updates the allowlist.
     JurisdictionMigrationDeadlineExceeded = 76,
+    /// The `proof` vector supplied to `verify_merkle_proof` exceeds
+    /// `MAX_PROOF_DEPTH` (32) siblings.
+    ///
+    /// Very deep proofs risk exhausting contract memory and gas budgets.
+    /// The check is performed before any hashing so the contract incurs no
+    /// additional cost from the oversized payload.  A `proof_reject_depth`
+    /// event is emitted before returning this error so off-chain indexers
+    /// can observe and alert on oversized-proof attempts.
+    ///
+    /// Wire value: 77. Stable since v1.
+    ProofTooDeep = 77,
 }
 
 pub mod vesting;
@@ -624,6 +635,15 @@ const EVENT_SNAP_COMMIT: Symbol = symbol_short!("snap_cmt");
 const EVENT_SNAP_SHARES_APPLIED: Symbol = symbol_short!("snap_shr");
 const EVENT_SNAP_FINALIZED: Symbol = symbol_short!("snap_fin");
 const EVENT_SNAP_FINALIZATION_CONFIG: Symbol = symbol_short!("snap_fnc");
+/// Emitted when a Merkle proof is rejected because its depth exceeds `MAX_PROOF_DEPTH`.
+///
+/// Topics: `(proof_reject_depth, caller)`
+/// Data:   `(proof_len, MAX_PROOF_DEPTH)`
+///
+/// Off-chain indexers can use this event to detect and alert on oversized-proof
+/// submission attempts.  Because the check fires before any hashing, the contract
+/// incurs no additional compute cost from the malicious payload.
+const EVENT_PROOF_REJECT_DEPTH: Symbol = symbol_short!("prf_rej_d");
 const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
 const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
 const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
@@ -14101,6 +14121,72 @@ impl RevoraRevenueShare {
         }
     }
 
+
+    // ── Merkle proof verification ────────────────────────────────────────────
+
+    /// Verify a Merkle membership proof against a known root.
+    ///
+    /// This is a **read-only**, **auth-free** entrypoint that lets off-chain clients
+    /// confirm that a specific leaf is a member of the Merkle tree with the given
+    /// root hash without performing any state mutations.
+    ///
+    /// ## Parameters
+    ///
+    /// * `leaf_hash` — SHA-256 hash of the leaf being proven (use
+    ///   `SHA-256(0x00 || holder_xdr || share_bps_xdr)` to match the on-chain leaf
+    ///   construction from [`crate::merkle_helpers`]).
+    /// * `root` — The expected Merkle root (e.g. from a committed and finalized snapshot).
+    /// * `proof` — Ordered vector of sibling hashes, one per tree level, bottom-up.
+    ///
+    /// ## Depth bound — `MAX_PROOF_DEPTH = 32`
+    ///
+    /// The `proof` vector **must not exceed `MAX_PROOF_DEPTH` (32)** siblings.
+    /// A standard binary Merkle tree over 2³² leaves has depth 32, making this
+    /// sufficient for any realistic snapshot while preventing gas and memory
+    /// exhaustion from adversarially crafted deep proofs.
+    ///
+    /// If `proof.len() > MAX_PROOF_DEPTH` the function:
+    /// 1. Emits a `proof_reject_depth` event carrying `(proof_len, MAX_PROOF_DEPTH)`
+    ///    so off-chain indexers can detect and alert on oversized-proof attempts.
+    /// 2. Returns `Err(RevoraError::ProofTooDeep)` without performing any hashing.
+    ///
+    /// ## Returns
+    ///
+    /// * `Ok(true)`  — proof is valid; the leaf belongs to the tree.
+    /// * `Ok(false)` — proof is structurally valid but the computed path does not
+    ///   reach the given root (leaf is not a member, or root/proof is wrong).
+    /// * `Err(RevoraError::ProofTooDeep)` — `proof.len() > MAX_PROOF_DEPTH`.
+    ///
+    /// ## Security notes
+    ///
+    /// * No storage reads or writes; no token transfers.
+    /// * No auth required — the function is purely computational.
+    /// * The depth check executes **before** any SHA-256 calls, so an adversary
+    ///   cannot force expensive hashing by submitting an oversized proof.
+    pub fn verify_merkle_proof(
+        env: Env,
+        caller: Address,
+        leaf_hash: BytesN<32>,
+        root: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+    ) -> Result<bool, RevoraError> {
+        use crate::merkle_helpers::{verify_merkle_proof as merkle_verify_proof, MAX_PROOF_DEPTH};
+
+        // Depth-bound check with event emission on failure.
+        // This mirrors the check inside `merkle_verify_proof` but also emits the
+        // structured event required by the contract API contract.
+        if proof.len() > MAX_PROOF_DEPTH {
+            env.events().publish(
+                (EVENT_PROOF_REJECT_DEPTH, caller),
+                (proof.len(), MAX_PROOF_DEPTH),
+            );
+            return Err(RevoraError::ProofTooDeep);
+        }
+
+        merkle_verify_proof(&env, leaf_hash, root, &proof)
+            .map_err(|_e| RevoraError::ProofTooDeep)
+    }
+
     /// Execute the storage walker migration from `from_version` to `to_version`.
     ///
     /// The walker supports a dry-run mode (`dry_run = true`) that emits plan
@@ -14205,3 +14291,5 @@ mod test_snapshot_voting_weight;
 mod test_storage_layout_version;
 #[cfg(test)]
 mod test_merkle_root_rotation;
+#[cfg(test)]
+mod test_merkle_proof_depth;
