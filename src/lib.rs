@@ -606,6 +606,9 @@ const EVENT_LOCKUP_VIOLATION: Symbol = symbol_short!("lock_viol");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
+/// Emitted when a freeze reason is cleared but other reasons remain active.
+/// Data: `(holder, cleared_reason, remaining_mask)`
+const EVENT_FREEZE_REASON_CLEARED: Symbol = symbol_short!("frz_rc");
 /// Emitted when an OFAC attestation triggers automatic holder freeze.
 const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
 const BPS_DENOMINATOR: i128 = 10_000;
@@ -742,22 +745,46 @@ pub struct TenantId {
     pub namespace: Symbol,
 }
 
+/// Each variant is assigned a stable u32 discriminant for bitmask operations.
+///
+/// # Bitmask contract (do not reorder or insert)
+///
+/// | Variant        | Bit  | Mask Value |
+/// |----------------|------|------------|
+/// | Compliance     | 0    | 1          |
+/// | LegalHold      | 1    | 2          |
+/// | DisputeOpen    | 2    | 4          |
+/// | SanctionsMatch | 3    | 8          |
+/// | Sanctions      | 4    | 16         |
+/// | CourtOrder     | 5    | 32         |
+/// | IssuerDispute  | 6    | 64         |
+/// | Manual         | 7    | 128        |
+///
+/// Do NOT exceed 32 variants; bitmask operations assume u32 width.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
+#[repr(u32)]
 pub enum FreezeReason {
     /// Broad compliance or regulatory action.
-    Compliance,
+    Compliance = 0,
     /// Court-ordered legal hold.
-    LegalHold,
+    LegalHold = 1,
     /// Active dispute under investigation.
-    DisputeOpen,
+    DisputeOpen = 2,
     /// Address matched on a sanctions list.
-    SanctionsMatch,
+    SanctionsMatch = 3,
     // Legacy variants kept for storage compatibility.
-    Sanctions,
-    CourtOrder,
-    IssuerDispute,
-    Manual,
+    Sanctions = 4,
+    CourtOrder = 5,
+    IssuerDispute = 6,
+    Manual = 7,
+}
+
+impl FreezeReason {
+    /// Convert this reason to its single-bit mask.
+    pub fn to_bitmask(self) -> u32 {
+        1u32 << (self as u32)
+    }
 }
 
 /// Outcome of a dispute resolution (#593).
@@ -1502,7 +1529,17 @@ pub enum DataKey2 {
     /// Per-category holder count for transfer restriction accounting.
     CategoryHolderCount(OfferingId, Symbol),
     /// Emergency freeze record for (offering_id, holder).
+    ///
+    /// **Deprecated** — new code uses `HolderFreezeMask` which stores a u32
+    /// bitmask for multi-reason freeze support (#607).  This key remains for
+    /// backward-compatible reads only.
     EmergencyFreeze(OfferingId, Address),
+    /// Holder freeze reason bitmask for (offering_id, holder).
+    ///
+    /// Stores a `u32` where each bit corresponds to an active [`FreezeReason`].
+    /// A value of `0` is treated as "not frozen" and the key SHOULD be removed
+    /// when the mask clears entirely.  See [`FreezeReason::to_bitmask`].
+    HolderFreezeMask(OfferingId, Address),
     /// Total shares issued for an offering (tracks against MaxTotalSupplyShares).
     TotalSharesIssued(OfferingId),
     /// Maximum total supply shares cap for an offering.
@@ -1956,13 +1993,24 @@ impl RevoraRevenueShare {
 
     /// Check if a holder is emergency frozen for an offering.
     fn is_frozen(env: &Env, offering_id: &OfferingId, holder: &Address) -> bool {
-        env.storage()
+        // Read bitmask from the new key first; fall back to legacy key for
+        // backward-compatible reads during migration.
+        let mask: u32 = env
+            .storage()
             .persistent()
-            .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(
-                offering_id.clone(),
-                holder.clone(),
-            ))
-            .is_some()
+            .get(&DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone()))
+            .unwrap_or_else(|| {
+                // Legacy path: single-reason freeze stored under EmergencyFreeze.
+                env.storage()
+                    .persistent()
+                    .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(
+                        offering_id.clone(),
+                        holder.clone(),
+                    ))
+                    .map(|r| r.to_bitmask())
+                    .unwrap_or(0)
+            });
+        mask != 0
     }
 
     /// Require that a holder is not emergency frozen.
@@ -11926,8 +11974,31 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::EmergencyFreeze(offering_id, holder.clone());
-        env.storage().persistent().set(&key, &reason);
+        // Read existing bitmask (migrating legacy single-reason key on read).
+        let key = DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone());
+        let legacy_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
+        let mut current_mask: u32 = env.storage().persistent().get(&key).unwrap_or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<DataKey2, FreezeReason>(&legacy_key)
+                .map(|r| r.to_bitmask())
+                .unwrap_or(0)
+        });
+
+        let reason_bit = reason.to_bitmask();
+        if current_mask & reason_bit != 0 {
+            // Reason already active — idempotent no-op (do not emit duplicate event).
+            return Ok(());
+        }
+
+        current_mask |= reason_bit;
+
+        // Clean up legacy key if present.
+        if env.storage().persistent().has(&legacy_key) {
+            env.storage().persistent().remove(&legacy_key);
+        }
+
+        env.storage().persistent().set(&key, &current_mask);
         env.events().publish((EVENT_FRZ_SET, issuer, namespace, token), (caller, holder, reason));
         Ok(())
     }
@@ -12039,7 +12110,25 @@ impl RevoraRevenueShare {
     ///
     /// Security posture:
     /// - Requires the exact same `reason` that was used to freeze the holder.
-    pub fn emergency_unfreeze_holder(
+    /// Clear a single freeze reason from a holder's bitmask (#607).
+    ///
+    /// Only the specific reason bit is cleared.  If other reasons remain active
+    /// the holder stays frozen.  When ALL reasons have been cleared (mask == 0)
+    /// the holder is fully unfrozen and [`EVENT_FRZ_CLR`] is emitted.
+    ///
+    /// # Authorization
+    /// Same as [`emergency_freeze_holder`]: caller must be the offering's current
+    /// issuer or the contract admin.
+    ///
+    /// # Errors
+    /// | Error | Condition |
+    /// |---|---|
+    /// | `ContractFrozen` | Contract is globally frozen |
+    /// | `OfferingNotFound` | No offering matches (issuer, namespace, token) |
+    /// | `NotAuthorized` | Caller is neither issuer nor admin |
+    /// | `HolderFrozen` | Holder has no active freeze record |
+    /// | `FreezeReasonMismatch` | The requested reason is not currently set |
+    pub fn clear_freeze_reason(
         env: Env,
         caller: Address,
         issuer: Address,
@@ -12066,16 +12155,66 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::EmergencyFreeze(offering_id, holder.clone());
-        let stored_reason: FreezeReason =
-            env.storage().persistent().get(&key).ok_or(RevoraError::HolderFrozen)?;
-        if stored_reason != reason {
+        let key = DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone());
+        let legacy_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
+
+        // Read current mask; migrate legacy single-reason key on read.
+        let current_mask: u32 = env.storage().persistent().get(&key).unwrap_or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<DataKey2, FreezeReason>(&legacy_key)
+                .map(|r| r.to_bitmask())
+                .unwrap_or(0)
+        });
+
+        if current_mask == 0 {
+            return Err(RevoraError::HolderFrozen);
+        }
+
+        let reason_bit = reason.to_bitmask();
+        if current_mask & reason_bit == 0 {
             return Err(RevoraError::FreezeReasonMismatch);
         }
 
-        env.storage().persistent().remove(&key);
-        env.events().publish((EVENT_FRZ_CLR, issuer, namespace, token), (caller, holder, reason));
+        let new_mask = current_mask & !reason_bit;
+
+        // Clean up legacy key if present.
+        if env.storage().persistent().has(&legacy_key) {
+            env.storage().persistent().remove(&legacy_key);
+        }
+
+        if new_mask == 0 {
+            // All reasons cleared — full unfreeze.
+            env.storage().persistent().remove(&key);
+            env.events().publish(
+                (EVENT_FRZ_CLR, issuer, namespace, token),
+                (caller, holder, reason),
+            );
+        } else {
+            // Partial unfreeze — update mask and emit scoped event.
+            env.storage().persistent().set(&key, &new_mask);
+            env.events().publish(
+                (EVENT_FREEZE_REASON_CLEARED, issuer, namespace, token),
+                (caller, holder, reason, new_mask),
+            );
+        }
+
         Ok(())
+    }
+
+    pub fn emergency_unfreeze_holder(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        reason: FreezeReason,
+    ) -> Result<(), RevoraError> {
+        // Delegates to clear_freeze_reason (#607 reason-scoped unfreeze).
+        // When only one reason is active, this results in a full unfreeze.
+        // When multiple reasons are active, only the specified reason is cleared.
+        Self::clear_freeze_reason(env, caller, issuer, namespace, token, holder, reason)
     }
 
     /// Return true if a holder is emergency frozen for an offering.
@@ -12087,10 +12226,49 @@ impl RevoraRevenueShare {
         holder: Address,
     ) -> bool {
         let offering_id = OfferingId { issuer, namespace, token };
+        // Read bitmask from the new key first; fall back to legacy key.
+        let mask: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(
+                        offering_id,
+                        holder,
+                    ))
+                    .map(|r| r.to_bitmask())
+                    .unwrap_or(0)
+            });
+        mask != 0
+    }
+
+    /// Return the raw freeze reason bitmask for a holder on an offering.
+    ///
+    /// Returns `0` when no freeze is active.  Callers can test individual
+    /// reasons with `(mask & reason.to_bitmask()) != 0`.
+    pub fn get_holder_freeze_reasons(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
         env.storage()
             .persistent()
-            .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(offering_id, holder))
-            .is_some()
+            .get(&DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<DataKey2, FreezeReason>(&DataKey2::EmergencyFreeze(
+                        offering_id,
+                        holder,
+                    ))
+                    .map(|r| r.to_bitmask())
+                    .unwrap_or(0)
+            })
     }
 
     /// Get a dispute entry by its ID.
@@ -12154,12 +12332,28 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
-        // Freeze the holder with SanctionsMatch reason
+        // Freeze the holder with SanctionsMatch reason (OR into bitmask).
         if !Self::is_event_only(&env) {
-            env.storage().persistent().set(
-                &DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone()),
-                &FreezeReason::SanctionsMatch,
-            );
+            let fk = DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone());
+            let legacy_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
+
+            // Read existing mask, migrating legacy key if present.
+            let current_mask: u32 = env.storage().persistent().get(&fk).unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<DataKey2, FreezeReason>(&legacy_key)
+                    .map(|r| r.to_bitmask())
+                    .unwrap_or(0)
+            });
+
+            // Clean up legacy key if present.
+            if env.storage().persistent().has(&legacy_key) {
+                env.storage().persistent().remove(&legacy_key);
+            }
+
+            env.storage()
+                .persistent()
+                .set(&fk, &(current_mask | FreezeReason::SanctionsMatch.to_bitmask()));
         }
 
         // Emit structured event for audit trail
