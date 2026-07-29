@@ -117,6 +117,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::DualSigEnabled(OfferingId)", "bool", "offering"),
     ("DataKey2::AdminRotationLog(u64)", "AdminRotationEntry", "contract"),
     ("DataKey2::AdminRotationCount", "u64", "contract"),
+    ("DataKey2::RedemptionRequest(OfferingId, Address)", "PendingRedemption", "offering+holder"),
+    ("DataKey2::RedemptionFeeConfig(OfferingId)", "RedemptionFeeConfig", "offering"),
     ("DataKey2::AdminRotationDelay", "u64", "contract"),
     ("DataKey2::MultisigOwners", "Vec<Address>", "contract"),
     ("DataKey2::MultisigThreshold", "u32", "contract"),

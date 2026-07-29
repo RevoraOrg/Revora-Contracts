@@ -521,6 +521,10 @@ const EVENT_REDEMPTION_WINDOW_SET: Symbol = symbol_short!("rdm_win");
 const EVENT_REDEMPTION_REQUESTED: Symbol = symbol_short!("red_req");
 /// Emitted when an issuer fulfills a holder redemption request.
 const EVENT_REDEMPTION_FULFILLED: Symbol = symbol_short!("red_full");
+/// Emitted when a redemption fee configuration is set for an offering.
+const EVENT_REDEMPTION_FEE_SET: Symbol = symbol_short!("rdm_fcfg");
+/// Emitted when a redemption fee is deducted and routed to treasury during fulfillment.
+const EVENT_REDEMPTION_FEE: Symbol = symbol_short!("rdm_fee");
 /// Missing v1 event symbols (referenced by report_revenue versioned path).
 /// Emitted when payment token decimals are set for an offering.
 
@@ -1009,6 +1013,14 @@ pub struct PendingRedemption {
     pub timestamp: u64,
 }
 
+/// Per-offering redemption fee configuration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RedemptionFeeConfig {
+    pub fee_bps: u32,
+    pub treasury: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowDataKey {
@@ -1300,6 +1312,11 @@ pub enum DataKey2 {
     AdminRotationLog(u64),
     /// Monotonically increasing counter for admin rotation entries.
     AdminRotationCount,
+
+    /// Per-holder pending redemption request.
+    RedemptionRequest(OfferingId, Address),
+    /// Per-offering redemption fee configuration (fee_bps and treasury address).
+    RedemptionFeeConfig(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -1319,6 +1336,9 @@ const MAX_BATCH_SIZE: u32 = 50;
 
 /// Maximum platform fee in basis points (50%).
 const MAX_PLATFORM_FEE_BPS: u32 = 5_000;
+
+/// Maximum redemption fee in basis points (50%).
+const MAX_REDEMPTION_FEE_BPS: u32 = 5_000;
 
 /// Maximum number of periods that can be claimed in a single transaction.
 /// Keeps compute costs predictable within Soroban limits.
@@ -9581,15 +9601,39 @@ impl RevoraRevenueShare {
         let redeem_bps = core::cmp::min(pending.shares_bps, current_share);
         let new_share = current_share - redeem_bps;
 
-        // Transfer amount from contract to holder using locked payment token
+        // Transfer amount (minus redemption fee if configured) from contract to holder
         let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
             .ok_or(RevoraError::PaymentTokenMismatch)?;
         let contract_addr = env.current_contract_address();
-        if token::Client::new(&env, &payment_token)
-            .try_transfer(&contract_addr, &holder, &amount)
-            .is_err()
-        {
+
+        let fee_config = Self::get_redemption_fee_config(env.clone(), issuer.clone(), namespace.clone(), token.clone());
+        let (net_amount, fee_amount, treasury_addr) = if let Some(cfg) = fee_config {
+            if cfg.fee_bps > 0 {
+                let fee = amount.checked_mul(cfg.fee_bps as i128).unwrap_or(0) / 10_000i128;
+                let net = amount.saturating_sub(fee);
+                (net, fee, Some(cfg.treasury))
+            } else {
+                (amount, 0i128, None)
+            }
+        } else {
+            (amount, 0i128, None)
+        };
+
+        let token_client = token::Client::new(&env, &payment_token);
+        if net_amount > 0 && token_client.try_transfer(&contract_addr, &holder, &net_amount).is_err() {
             return Err(RevoraError::TransferFailed);
+        }
+
+        if fee_amount > 0 {
+            if let Some(treasury) = treasury_addr {
+                if token_client.try_transfer(&contract_addr, &treasury, &fee_amount).is_err() {
+                    return Err(RevoraError::TransferFailed);
+                }
+                env.events().publish(
+                    (EVENT_REDEMPTION_FEE, issuer.clone(), namespace.clone(), token.clone()),
+                    (holder.clone(), treasury, fee_amount, net_amount),
+                );
+            }
         }
 
         // Reduce holder's share by the redeemed bps
@@ -9611,6 +9655,75 @@ impl RevoraRevenueShare {
             (holder, redeem_bps, amount),
         );
         Ok(amount)
+    }
+
+    /// Set the redemption fee configuration for an offering.
+    ///
+    /// Auth: Issuer only. Must be current issuer of a registered offering.
+    /// Fee must not exceed `MAX_REDEMPTION_FEE_BPS` (5 000 BPS / 50%).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_redemption_fee_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        fee_bps: u32,
+        treasury: Address,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Verify offering exists and caller is current issuer
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // Validate fee_bps cap
+        if fee_bps > MAX_REDEMPTION_FEE_BPS {
+            return Err(RevoraError::InvalidRevenueShareBps);
+        }
+
+        let config = RedemptionFeeConfig { fee_bps, treasury: treasury.clone() };
+        let key = DataKey2::RedemptionFeeConfig(offering_id);
+        env.storage().persistent().set(&key, &config);
+
+        env.events()
+            .publish((EVENT_REDEMPTION_FEE_SET, issuer, namespace, token), (fee_bps, treasury));
+        Ok(())
+    }
+
+    /// Return the stored redemption fee configuration for an offering.
+    pub fn get_redemption_fee_config(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<RedemptionFeeConfig> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::RedemptionFeeConfig(offering_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Return the configured redemption fee BPS for an offering (0 if unset).
+    pub fn get_redemption_fee_bps(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u32 {
+        Self::get_redemption_fee_config(env, issuer, namespace, token)
+            .map(|cfg| cfg.fee_bps)
+            .unwrap_or(0)
     }
 
     /// Preview the total claimable amount for a holder without mutating state.
