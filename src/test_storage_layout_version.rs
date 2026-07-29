@@ -124,7 +124,7 @@ fn test_migration_resumes_from_cursor() {
 
     // Verify mig_resume event was emitted
     let events = env.events().all();
-    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resm")).collect();
     assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
     let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
     assert_eq!(resume_val, 5, "Resume cursor should be 5");

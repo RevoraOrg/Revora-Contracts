@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -125,6 +125,15 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
     ("DataKey2::VoterWeight(Address)", "u32", "address"),
     ("DataKey2::MultisigQuorumBps", "u32", "contract"),
+    ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "address"),
+    ("DataKey2::RemainingBasis(OfferingId, Address)", "i128", "offering+holder"),
+    ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering"),
+    ("DataKey2::EmitV2Compat", "bool", "contract"),
+    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
+    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+meta_hash"),
+    ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot_ref+holder"),
+    ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
     ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer")
 ]);
 
