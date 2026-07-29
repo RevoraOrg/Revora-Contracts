@@ -381,12 +381,12 @@ fn frozen_propose_admin_rotation_returns_contract_frozen() {
 }
 
 #[test]
-fn frozen_accept_admin_rotation_returns_contract_frozen() {
+fn frozen_finalize_admin_rotation_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, _, _, _) = frozen_setup(&env);
     let new_admin = Address::generate(&env);
-    // accept_admin_rotation checks frozen before checking pending state
-    let result = client.try_accept_admin_rotation(&new_admin);
+    // finalize_admin_rotation checks frozen before checking pending state
+    let result = client.try_finalize_admin_rotation(&new_admin);
     assert_frozen_err(result);
 }
 

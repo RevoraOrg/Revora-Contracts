@@ -162,3 +162,23 @@ Tests live in `src/test.rs` inside `mod regression`.
 - All setters validate `fee_bps ≤ MAX_PLATFORM_FEE_BPS` before writing to
   storage, preventing fees that exceed the protocol maximum.
 - Fee reads are non-authorised and O(1); they cannot mutate state.
+
+---
+
+## Redemption Fee BPS Configuration (`feat/redemption-fee-bps`)
+
+### Overview
+
+Offerings can configure a `redemption_fee_bps` (0–5 000 BPS / 0–50%) and a `treasury` address. When a holder's redemption request is fulfilled via `fulfill_redemption`:
+1. The contract calculates `fee_amount = amount × fee_bps / 10 000`.
+2. The net amount (`amount - fee_amount`) is transferred to the holder.
+3. The `fee_amount` is transferred directly to the configured `treasury` address.
+4. An `EVENT_REDEMPTION_FEE` (`"rdm_fee"`) event is emitted with the fee details.
+
+### Public API — Redemption Fee
+
+| Function | Auth | Complexity | Event |
+|---|---|---|---|
+| `set_redemption_fee_bps(issuer, namespace, token, fee_bps: u32, treasury: Address)` | Issuer | O(1) | `EVENT_REDEMPTION_FEE_SET` |
+| `get_redemption_fee_config(issuer, namespace, token) -> Option<RedemptionFeeConfig>` | None | O(1) | — |
+| `get_redemption_fee_bps(issuer, namespace, token) -> u32` | None | O(1) | — |
