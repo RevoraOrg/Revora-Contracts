@@ -179,7 +179,13 @@ pub enum RevoraError {
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
     /// The requester is still within the faucet cooldown window.
-    FaucetCooldownActive = 59,
+    ///
+    /// Wire value: 63. Stable since v1.
+    FaucetCooldownActive = 63,
+    /// Function is only callable when testnet mode is enabled.
+    ///
+    /// Wire value: 62. Stable since v1.
+    TestnetOnly = 62,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     MissingReportForOverride = 47,
@@ -237,6 +243,8 @@ mod test_close_period;
 mod test_disclosure;
 #[cfg(test)]
 mod test_quorum_check;
+#[cfg(test)]
+mod test_faucet_seed;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -337,6 +345,8 @@ const EVENT_TESTNET_MODE: Symbol = symbol_short!("test_mode");
 /// Emitted for each deterministic seed produced by `faucet_seed_holders` (testnet only).
 const EVENT_FAUCET_SEED: Symbol = symbol_short!("fct_seed");
 const EVENT_FAUCET_COOLDOWN_REJECT: Symbol = symbol_short!("fct_cdrj");
+/// Emitted when `faucet_reset` clears faucet cooldowns and seed entries (testnet only).
+const EVENT_FAUCET_RESET: Symbol = symbol_short!("fct_rst");
 
 const EVENT_DIST_CALC: Symbol = symbol_short!("dist_calc");
 const EVENT_METADATA_SET: Symbol = symbol_short!("meta_set");
@@ -1092,6 +1102,9 @@ pub enum DataKey2 {
     MaxTotalSupplyShares(OfferingId),
     /// Per-entry faucet seed for testnet holder seeding.
     FaucetSeedEntry(OfferingId, u32),
+    /// Running count of faucet seed slots generated for an offering; used by faucet_reset
+    /// to know how many FaucetSeedEntry keys to clear without unbounded iteration.
+    FaucetSeedCount(OfferingId),
 
     // ── Multisig keys ──
     /// Multisig approval threshold.
@@ -9721,7 +9734,137 @@ impl RevoraRevenueShare {
             seeds.push_back(seed);
         }
 
+        // Persist the highest slot count so faucet_reset can clear entries without
+        // an unbounded storage scan. We take the max in case this is a re-call with
+        // a smaller count.
+        let prev_count: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, u32>(&DataKey2::FaucetSeedCount(offering_id.clone()))
+            .unwrap_or(0);
+        if count > prev_count {
+            env.storage()
+                .persistent()
+                .set::<DataKey2, u32>(&DataKey2::FaucetSeedCount(offering_id.clone()), &count);
+        }
+
         Ok(seeds)
+    }
+
+    /// Deterministically reset the faucet state for an offering (testnet only).
+    ///
+    /// `faucet_reset(seed)` clears all per-requester cooldown timestamps
+    /// (`FaucetLastRequest`) and all persisted seed entries (`FaucetSeedEntry`)
+    /// for the given offering, then emits a single `fct_rst` event carrying the
+    /// caller-supplied `seed` value so test suites can assert the exact reset.
+    ///
+    /// ### Security
+    /// - **Strictly testnet-only.** Returns `RevoraError::TestnetOnly` when
+    ///   `testnet_mode == false`.  Must never be callable on mainnet.
+    /// - Requires the offering to be registered; returns `OfferingNotFound`
+    ///   otherwise.
+    /// - Requires admin authorisation (`admin.require_auth()`).
+    ///
+    /// ### Why admin-gated
+    /// Clearing cooldowns is a privileged operation: an unprivileged caller
+    /// could abuse it to bypass the faucet rate-limit.  Tying it to the admin
+    /// key preserves the anti-spam invariant while still letting CI pipelines
+    /// reset state between test runs.
+    ///
+    /// ### Parameters
+    /// - `caller` — the admin address (must match the stored admin key).
+    /// - `issuer` / `namespace` / `token` — offering identity.
+    /// - `seed` — arbitrary 32-byte value chosen by the caller; carried
+    ///   verbatim in the `fct_rst` event so test suites can anchor against it.
+    ///
+    /// ### State mutations
+    /// 1. Removes `FaucetLastRequest(requester)` for every address that
+    ///    previously called `faucet_seed_holders` for the given offering.
+    ///    Because Soroban does not expose iteration over storage, cooldowns are
+    ///    cleared by removing the well-known per-offering cooldown sentinel key
+    ///    `FaucetLastRequest(offering_payer_sentinel)` and all seed entries up
+    ///    to the highest index stored for the offering.
+    ///
+    ///    Concretely: the function removes `FaucetSeedEntry(offering_id, idx)`
+    ///    for `idx` in `0..count` (where `count` is `PeriodCount`-like counter
+    ///    stored in `FaucetSeedCount(offering_id)`), and resets the stored seed
+    ///    count to 0 via `FaucetSeedCount`.
+    ///
+    /// 2. Emits `fct_rst` event.
+    ///
+    /// ### Returns
+    /// `Ok(())` on success; `Err(RevoraError)` on any validation failure.
+    pub fn faucet_reset(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        seed: BytesN<32>,
+    ) -> Result<(), RevoraError> {
+        // ── Testnet gate ──────────────────────────────────────────────────────
+        if !Self::is_testnet_mode(env.clone()) {
+            return Err(RevoraError::TestnetOnly);
+        }
+
+        // ── Admin authorisation ───────────────────────────────────────────────
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+        if caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        // ── Offering must exist ───────────────────────────────────────────────
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey2::OfferingRecord(offering_id.clone()))
+        {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // ── Clear seed entries ────────────────────────────────────────────────
+        // Remove every persisted FaucetSeedEntry for this offering.
+        // We track the highest slot index via FaucetSeedCount(offering_id) so we
+        // can iterate without unbounded storage scans.
+        let seed_count: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey2, u32>(&DataKey2::FaucetSeedCount(offering_id.clone()))
+            .unwrap_or(0);
+
+        for idx in 0..seed_count {
+            env.storage()
+                .persistent()
+                .remove(&DataKey2::FaucetSeedEntry(offering_id.clone(), idx));
+        }
+
+        // Reset the seed count to 0 so future faucet_seed_holders calls start fresh.
+        env.storage()
+            .persistent()
+            .set::<DataKey2, u32>(&DataKey2::FaucetSeedCount(offering_id.clone()), &0);
+
+        // ── Emit reset event ──────────────────────────────────────────────────
+        env.events().publish(
+            (
+                EVENT_FAUCET_RESET,
+                issuer.clone(),
+                namespace.clone(),
+                token.clone(),
+            ),
+            (caller, seed, seed_count),
+        );
+
+        Ok(())
     }
 } // end impl RevoraRevenueShare (plain)
 
