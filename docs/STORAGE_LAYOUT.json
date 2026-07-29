@@ -179,6 +179,13 @@
     },
     {
       "module": "revora_revenue_share",
+      "key": "DataKey2::HolderLastTransferTime(OfferingId, Address)",
+      "value_type": "u64",
+      "ownership": "offering+holder",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
       "key": "DataKey2::HolderShareSchedule(OfferingId, Address)",
       "value_type": "Vec<ShareCheckpoint>",
       "ownership": "offering+holder",
@@ -357,6 +364,13 @@
       "key": "DataKey2::TotalSharesIssued(OfferingId)",
       "value_type": "u32",
       "ownership": "offering",
+      "version": 2
+    },
+    {
+      "module": "revora_revenue_share",
+      "key": "DataKey2::TransferCooldownConfig(OfferingId, Symbol)",
+      "value_type": "u64",
+      "ownership": "offering+jurisdiction",
       "version": 2
     },
     {

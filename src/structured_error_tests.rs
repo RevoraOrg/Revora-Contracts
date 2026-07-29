@@ -121,6 +121,7 @@ mod tests {
             ("InsufficientClassBalance", RevoraError::InsufficientClassBalance as u32),
             ("RedemptionWindowClosed", RevoraError::RedemptionWindowClosed as u32),
             ("JurisdictionMigrationDeadlineExceeded", RevoraError::JurisdictionMigrationDeadlineExceeded as u32),
+            ("TransferCooldownActive", RevoraError::TransferCooldownActive as u32),
         ];
 
         // O(n²) uniqueness check — n is small, negligible cost.
@@ -200,6 +201,7 @@ mod tests {
         assert_eq!(RevoraError::FaucetCooldownActive as u32, 56);
         assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
         assert_eq!(RevoraError::JurisdictionMigrationDeadlineExceeded as u32, 76);
+        assert_eq!(RevoraError::TransferCooldownActive as u32, 89);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -283,9 +285,10 @@ mod tests {
             RevoraError::AlreadyApproved as u32,
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
+            RevoraError::TransferCooldownActive as u32,
         ];
         for v in all.iter() {
-            assert!(*v >= 1 && *v <= 76, "discriminant {v} out of expected range 1..=76");
+            assert!(*v >= 1 && *v <= 89, "discriminant {v} out of expected range 1..=89");
         }
     }
 
@@ -358,6 +361,7 @@ mod tests {
             RevoraError::AlreadyApproved as u32,
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
+            RevoraError::TransferCooldownActive as u32,
         ];
         for v in all.iter() {
             assert_ne!(*v, 0, "discriminant 0 is reserved for Ok; no error variant may use it");

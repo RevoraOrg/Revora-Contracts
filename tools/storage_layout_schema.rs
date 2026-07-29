@@ -151,6 +151,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
     // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
     ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
+    ("DataKey2::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
+    ("DataKey2::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),

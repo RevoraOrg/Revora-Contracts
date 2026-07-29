@@ -350,6 +350,12 @@ pub enum RevoraError {
     DisputeAlreadyResolved = 87,
     /// A freeze is currently active due to an open dispute.
     DisputeFreezeActive = 88,
+    /// The holder is still within the per-jurisdiction transfer cooldown window.
+    ///
+    /// Transfers are rejected until the cooldown period (configured via
+    /// [`set_transfer_cooldown`]) has elapsed since the holder's last transfer.
+    /// Wire value: 89. Stable since v1.
+    TransferCooldownActive = 89,
 }
 
 pub mod vesting;
@@ -402,6 +408,8 @@ mod test_faucet_metrics;
 mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_reg_limit_delta;
+#[cfg(test)]
+mod test_transfer_cooldown;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -629,6 +637,11 @@ const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
 /// Emitted when an OFAC attestation triggers automatic holder freeze.
 const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
+
+/// Emitted when per-offering per-jurisdiction transfer cooldown is configured.
+/// Topic: `(tr_cool_set, issuer, namespace, token)`
+/// Data: `(jurisdiction: Symbol, cooldown_secs: u64)`
+const EVENT_TRANSFER_COOLDOWN_SET: Symbol = symbol_short!("tr_cool");
 
 /// ── Regulatory-limit delta event (reg_limit_delta event stream) ──
 ///
@@ -1577,6 +1590,13 @@ pub enum DataKey2 {
     /// transfer so indexers can reconstruct the per-jurisdiction cap-usage history
     /// from `reg_limit_delta` events without an additional RPC scan.
     JurisdictionAggregateShare(OfferingId, Symbol),
+    /// Per-offering per-jurisdiction transfer cooldown in seconds.
+    /// When set, a holder whose jurisdiction matches cannot transfer again
+    /// until `cooldown_secs` have elapsed since their last transfer.
+    TransferCooldownConfig(OfferingId, Symbol),
+    /// Ledger timestamp of the last transfer for (offering_id, holder).
+    /// Used by the cooldown check to reject premature transfers.
+    HolderLastTransferTime(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -6991,6 +7011,174 @@ impl RevoraRevenueShare {
             }
         }
 
+        // ── Per-jurisdiction transfer cooldown check ──
+        // Look up the `from` holder's jurisdiction and check whether a cooldown
+        // is configured for that jurisdiction.  If so, verify the required time
+        // has elapsed since the holder's last transfer.
+        let jurisdiction = Self::get_holder_jurisdiction_internal(&env, &offering_id, &from);
+        if let Some(jur) = jurisdiction {
+            if jur != EVENT_JUR_UNSET {
+                let cooldown_key = DataKey2::TransferCooldownConfig(offering_id.clone(), jur.clone());
+                if let Some(cooldown_secs) =
+                    env.storage().persistent().get::<DataKey2, u64>(&cooldown_key)
+                {
+                    if cooldown_secs > 0 {
+                        let last_xfer_key =
+                            DataKey2::HolderLastTransferTime(offering_id.clone(), from.clone());
+                        let last_xfer: u64 =
+                            env.storage().persistent().get(&last_xfer_key).unwrap_or(0);
+                        let now = env.ledger().timestamp();
+                        if now < last_xfer.saturating_add(cooldown_secs) {
+                            return Err(RevoraError::TransferCooldownActive);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check all transfer eligibility gates in one place.
+    ///
+    /// Validates that a transfer between `from` and `to` within the given
+    /// offering and category is permitted.  This gate is called by
+    /// `transfer_with_attestation`.  Note that `estimate_transfer` duplicates
+    /// these checks inline (including the cooldown check) as a public query
+    /// endpoint so callers can dry-run without issuer auth.
+    ///
+    /// # Checks performed
+    /// - Contract not frozen
+    /// - Non-zero amount
+    /// - Neither party blacklisted
+    /// - `to` jurisdiction allowed
+    /// - Lockup schedule not active
+    /// - Sender has enough shares
+    /// - Category capacity not exceeded
+    /// - Per-jurisdiction transfer cooldown has elapsed
+    fn check_transfer_eligibility(
+        env: &Env,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+        from: &Address,
+        to: &Address,
+        amount_bps: u32,
+        category: &Symbol,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(env)?;
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if from == to {
+            return Ok(());
+        }
+
+        // Zero-value transfer is meaningless
+        if amount_bps == 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // Blacklist check
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), from.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+        if Self::is_blacklisted(env.clone(), issuer.clone(), namespace.clone(), token.clone(), to.clone()) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // Jurisdiction block
+        Self::require_holder_jurisdiction_allowed(
+            env,
+            &offering_id,
+            to,
+            symbol_short!("xfer"),
+        )?;
+
+        // Lockup violation check: reject transfer if lockup is still active
+        if let Some(schedule) = Self::get_lockup_schedule(env.clone(), issuer.clone(), namespace.clone(), token.clone()) {
+            let now = env.ledger().timestamp();
+            let unlocked_bps = schedule.calculate_unlocked_bps(now);
+            if unlocked_bps < 10_000 {
+                env.events().publish(
+                    (EVENT_LOCKUP_VIOLATION, from.clone()),
+                    (to.clone(), amount_bps, schedule.clone()),
+                );
+                return Err(RevoraError::LockupViolation);
+            }
+        }
+
+        let from_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
+            .unwrap_or(0);
+        if from_share < amount_bps {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        let to_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
+            .unwrap_or(0);
+
+        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
+        if let Some(existing) = existing_cat {
+            if existing != category {
+                if to_share > 0 {
+                    let old_count_key =
+                        DataKey2::CategoryHolderCount(offering_id.clone(), existing);
+                    let old_count: u32 =
+                        env.storage().persistent().get(&old_count_key).unwrap_or(0);
+
+                    let new_count_key =
+                        DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+                    let new_count: u32 =
+                        env.storage().persistent().get(&new_count_key).unwrap_or(0);
+                    if let Some(restrictions) =
+                        env.storage().persistent().get::<_, TransferRestrictions>(
+                            &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
+                        )
+                    {
+                        if new_count >= restrictions.max_holders {
+                            return Err(RevoraError::CategoryCapReached);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Per-jurisdiction transfer cooldown check ──
+        // Look up the `from` holder's jurisdiction and check whether a cooldown
+        // is configured for that jurisdiction.  If so, verify the required time
+        // has elapsed since the holder's last transfer.
+        let jurisdiction = Self::get_holder_jurisdiction_internal(env, &offering_id, from);
+        if let Some(jur) = jurisdiction {
+            if jur != EVENT_JUR_UNSET {
+                let cooldown_key = DataKey2::TransferCooldownConfig(offering_id.clone(), jur.clone());
+                if let Some(cooldown_secs) =
+                    env.storage().persistent().get::<DataKey2, u64>(&cooldown_key)
+                {
+                    if cooldown_secs > 0 {
+                        let last_xfer_key =
+                            DataKey2::HolderLastTransferTime(offering_id.clone(), from.clone());
+                        let last_xfer: u64 =
+                            env.storage().persistent().get(&last_xfer_key).unwrap_or(0);
+                        let now = env.ledger().timestamp();
+                        if now < last_xfer.saturating_add(cooldown_secs) {
+                            return Err(RevoraError::TransferCooldownActive);
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -7073,6 +7261,25 @@ impl RevoraRevenueShare {
             None,
         )?;
         Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps, None, None)?;
+
+        // ── Record last transfer timestamp for cooldown enforcement ──
+        // Update the `from` holder's last transfer timestamp so that subsequent
+        // transfers by the same holder are gated by the jurisdiction cooldown.
+        // Only record when `from` retains shares (moved some, kept some) or
+        // when `from` still has a jurisdiction set, so that the cooldown state
+        // is meaningful.
+        let now = env.ledger().timestamp();
+        let jur = Self::get_holder_jurisdiction_internal(&env, &offering_id, &from);
+        if let Some(j) = jur {
+            if j != EVENT_JUR_UNSET {
+                let cooldown_key = DataKey2::TransferCooldownConfig(offering_id.clone(), j.clone());
+                if env.storage().persistent().has(&cooldown_key) {
+                    let last_xfer_key =
+                        DataKey2::HolderLastTransferTime(offering_id.clone(), from.clone());
+                    env.storage().persistent().set(&last_xfer_key, &now);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -8595,6 +8802,66 @@ impl RevoraRevenueShare {
     ) -> Option<Symbol> {
         let offering_id = OfferingId { issuer, namespace, token };
         Self::get_holder_jurisdiction_internal(&env, &offering_id, &holder)
+    }
+
+    /// Configure a per-jurisdiction transfer cooldown for an offering.
+    ///
+    /// When a cooldown is set, holders whose jurisdiction matches the given
+    /// `jurisdiction` symbol must wait at least `cooldown_secs` between
+    /// successive transfers.  The cooldown is tracked per `(offering_id, holder)`
+    /// and is enforced in the transfer path.
+    ///
+    /// Set `cooldown_secs` to `0` to disable the cooldown for this jurisdiction.
+    ///
+    /// # Auth
+    /// Requires issuer authentication.
+    ///
+    /// # Events
+    /// Emits [`EVENT_TRANSFER_COOLDOWN_SET`] on success.
+    pub fn set_transfer_cooldown(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        jurisdiction: Symbol,
+        cooldown_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        let key = DataKey2::TransferCooldownConfig(offering_id, jurisdiction.clone());
+        env.storage().persistent().set(&key, &cooldown_secs);
+
+        env.events().publish(
+            (EVENT_TRANSFER_COOLDOWN_SET, issuer, namespace, token),
+            (jurisdiction, cooldown_secs),
+        );
+        Ok(())
+    }
+
+    /// Return the per-jurisdiction transfer cooldown (in seconds) for an offering.
+    ///
+    /// Returns `0` when no cooldown is configured for the given jurisdiction.
+    pub fn get_transfer_cooldown(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        jurisdiction: Symbol,
+    ) -> u64 {
+        let offering_id = OfferingId {
+            issuer,
+            namespace,
+            token,
+        };
+        let key = DataKey2::TransferCooldownConfig(offering_id, jurisdiction);
+        env.storage().persistent().get::<DataKey2, u64>(&key).unwrap_or(0)
     }
 
     /// Replace the offering's allowed jurisdiction set.
