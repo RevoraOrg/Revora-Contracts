@@ -41,6 +41,8 @@
     clippy::unnecessary_lazy_evaluations,
     clippy::enum_variant_names
 )]
+use crate::safe_math::SafeMath;
+
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
     xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, Vec,
@@ -211,9 +213,9 @@ pub enum RevoraError {
     /// Off-chain signer key has not been registered.
     SignerKeyNotRegistered = 29,
     /// The provided attestation network identifier does not match the active ledger network.
-    NetworkIdMismatch = 62,
+    NetworkIdMismatch = 77,
     /// Transfer blocked because shares are still locked (lockup schedule active).
-    LockupViolation = 63,
+    LockupViolation = 78,
     /// Multisig proposal has expired.
     /// Wire value: 30. Stable since v1.
     ProposalExpired = 30,
@@ -257,7 +259,7 @@ pub enum RevoraError {
     /// The requester is still within the faucet cooldown window.
     FaucetCooldownActive = 38,
     /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 67,
+    MaxTotalSupplySharesExceeded = 79,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     MissingReportForOverride = 47,
@@ -324,12 +326,30 @@ pub enum RevoraError {
     /// The holder does not have sufficient class balance for the requested operation.
     InsufficientClassBalance = 74,
     /// Current time is outside the configured redemption window.
-    RedemptionWindowClosed = 75,
-    /// Holder's jurisdiction migration grace period has expired and the
+    RedemptionWindowClosed = 75,    /// Holder's jurisdiction migration grace period has expired and the
     /// new jurisdiction is disallowed for this offering. Claims are blocked
     /// until the holder relocates to an allowed jurisdiction or the issuer
     /// updates the allowlist.
     JurisdictionMigrationDeadlineExceeded = 76,
+    /// Decimals mismatch between payment token and offering config.
+    DecimalsMismatch = 80,
+    /// The dispute window has closed; no further actions are accepted.
+    DisputeWindowClosed = 81,
+    /// The provided nonce is not strictly greater than the last accepted nonce.
+    /// Replayed or out-of-order off-chain updates are rejected.
+    StaleNonce = 82,
+    /// TWAP window is below the minimum allowed duration.
+    TwapWindowTooShort = 83,
+    /// TWAP window exceeds the maximum allowed duration.
+    TwapWindowTooLong = 84,
+    /// The governance proposal is stale and cannot be acted upon.
+    StaleProposal = 85,
+    /// Caller is not the dispute issuer for this dispute.
+    NotDisputeIssuer = 86,
+    /// The dispute has already been resolved.
+    DisputeAlreadyResolved = 87,
+    /// A freeze is currently active due to an open dispute.
+    DisputeFreezeActive = 88,
 }
 
 pub mod vesting;
@@ -470,6 +490,8 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
     pub expiry: u64,
+    pub epoch: u64,
+    pub quorum_bps: u32,
 }
 
 const EVENT_SNAP_CONFIG: Symbol = symbol_short!("snap_cfg");
@@ -6061,7 +6083,7 @@ impl RevoraRevenueShare {
         let now = env.ledger().timestamp();
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if !was_present {
                 let attestation = SanctionsAttestation {
@@ -6268,7 +6290,7 @@ impl RevoraRevenueShare {
         // Task 3.5: Batch remove logic
         for i in 0..unique_investors.len() {
             let investor = unique_investors.get(i).unwrap();
-            let was_present = map.get(investor.clone()).unwrap_or(false);
+            let was_present = map.contains_key(investor.clone());
 
             if was_present {
                 // Remove from map
@@ -6872,7 +6894,7 @@ impl RevoraRevenueShare {
         attest_hash: BytesN<32>,
         network_id: BytesN<32>,
     ) -> Result<(), RevoraError> {
-        Self::require_not_frozen(env)?;
+        Self::require_not_frozen(&env)?;
         // We do not check issuer.require_auth() here because this is a pure query
 
         let active_network_id = env.ledger().network_id();
@@ -6944,7 +6966,7 @@ impl RevoraRevenueShare {
         let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
         let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
         if let Some(existing) = existing_cat {
-            if existing != *category {
+            if existing != category {
                 if to_share > 0 {
                     let old_count_key =
                         DataKey2::CategoryHolderCount(offering_id.clone(), existing);
@@ -7047,8 +7069,10 @@ impl RevoraRevenueShare {
             token.clone(),
             from.clone(),
             from_share - amount_bps,
+            None,
+            None,
         )?;
-        Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps)?;
+        Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps, None, None)?;
 
         Ok(())
     }
@@ -8238,6 +8262,7 @@ impl RevoraRevenueShare {
             holder,
             share_bps,
             Some(share_class),
+            None,
         )
     }
     ///
@@ -8287,7 +8312,7 @@ impl RevoraRevenueShare {
         input.append(&offering_id.token.to_xdr(&env));
         input.append(&holder.to_xdr(&env));
         input.append(&meta_hash.to_xdr(&env));
-        let dispute_id: BytesN<32> = env.crypto().sha256(&input);
+        let dispute_id: BytesN<32> = env.crypto().sha256(&input).into();
 
         // Reject duplicate
         if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
@@ -8487,10 +8512,10 @@ impl RevoraRevenueShare {
             let mut from_idx = None;
             let mut to_idx = None;
             for (i, (sc, _)) in cls_vec.iter().enumerate() {
-                if *sc == from_class {
+                if sc == from_class {
                     from_idx = Some(i as u32);
                 }
-                if *sc == to_class {
+                if sc == to_class {
                     to_idx = Some(i as u32);
                 }
             }
@@ -8510,7 +8535,7 @@ impl RevoraRevenueShare {
         }
 
         env.events().publish(
-            (soroban_sdk::symbol_short!("class_conv"), offering_id, holder),
+            (soroban_sdk::symbol_short!("cls_conv"), offering_id, holder),
             (from_class, from_balance, new_from, to_class, to_balance, new_to),
         );
 
@@ -9121,7 +9146,7 @@ impl RevoraRevenueShare {
         input.append(&offering_id.token.to_xdr(&env));
         input.append(&holder.to_xdr(&env));
         input.append(&meta_hash.to_xdr(&env));
-        let dispute_id: BytesN<32> = env.crypto().sha256(&input);
+        let dispute_id: BytesN<32> = env.crypto().sha256(&input).into();
 
         // Reject duplicate
         if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
@@ -9181,7 +9206,7 @@ impl RevoraRevenueShare {
     /// Check whether any critical dispute is active for the given offering.
     ///
     /// When `true`, claims for this offering are halted (returns [`RevoraError::DisputeFreezeActive`]).
-    pub fn is_dispute_freeze_active(env: &Env, offering_id: &OfferingId) -> bool {
+    pub fn is_dispute_freeze_active(env: &Env, offering_id: OfferingId) -> bool {
         let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
         env.storage().persistent().get::<DataKey2, u32>(&crit_key).unwrap_or(0) > 0
     }
@@ -9976,7 +10001,7 @@ impl RevoraRevenueShare {
             env.storage().persistent().get(&classes_key);
         let registered = classes_opt
             .as_ref()
-            .map(|v| v.iter().any(|(sc, _)| sc == &share_class))
+            .map(|v| v.iter().any(|(sc, _)| sc == share_class))
             .unwrap_or(false);
         if !registered {
             return Err(RevoraError::InvalidShareClass);
@@ -12718,7 +12743,7 @@ impl RevoraRevenueShare {
             // Per-slot seed: sha256(prefix_bytes || idx_xdr)
             let mut slot_input = prefix_input.clone();
             slot_input.append(&idx.to_xdr(&env));
-            let seed: BytesN<32> = env.crypto().sha256(&slot_input);
+            let seed: BytesN<32> = env.crypto().sha256(&slot_input).into();
 
             let share_bps: u32 =
                 if idx == count - 1 { bps_floor + bps_remainder } else { bps_floor };
@@ -14015,6 +14040,9 @@ pub struct MigrationCursor {
 pub enum MigrationDataKey {
     LastMigrationCompletedAt(Address),
     MigrationResumeCursor(Address),
+    MigrationHook(Symbol),
+    MigrationHookIndex(u32),
+    MigrationHookCount,
 }
 
 #[contracterror(export = false)]
@@ -14226,7 +14254,7 @@ impl RevoraRevenueShare {
 
         if cursor.last_key > 0 && !dry_run {
             env.events()
-                .publish((symbol_short!("mig_resume"), from_version, to_version), cursor.last_key);
+                .publish((symbol_short!("mig_rsme"), from_version, to_version), cursor.last_key);
         }
 
         // Add per-version migrators in a dispatch table

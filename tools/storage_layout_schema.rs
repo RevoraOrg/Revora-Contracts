@@ -154,7 +154,10 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
-    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer")
+    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer"),
+    ("MigrationDataKey::MigrationHook(Symbol)", "MigrationTransform", "legacy_key"),
+    ("MigrationDataKey::MigrationHookIndex(u32)", "Symbol", "index"),
+    ("MigrationDataKey::MigrationHookCount", "u32", "contract"),
 ]);
 
 const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revenue_deposit_contract", [

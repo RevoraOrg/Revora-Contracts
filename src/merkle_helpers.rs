@@ -55,7 +55,7 @@
 
 #![allow(dead_code)]
 
-use soroban_sdk::{contracterror, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
 // ── Error type ─────────────────────────────────────────────────────────────
 
@@ -80,6 +80,8 @@ pub enum MerkleError {
 /// Produced by [`canonical_leaves`] and consumed by [`build_merkle_root`].
 /// The fields are intentionally `pub` so external code can inspect the ordering.
 #[derive(Clone, Debug)]
+#[contracttype]
+#[derive(Clone)]
 pub struct MerkleLeaf {
     /// The holder address.
     pub holder: Address,
