@@ -42,8 +42,10 @@ pub struct VestingOfferingId {
 pub enum VestingCurve {
     Linear,
     Cliff,
-    Graded { step_secs: u64 },
-    Step { steps: u32 },
+    /// Graded vesting; field is step duration in seconds.
+    Graded(u64),
+    /// Step vesting; field is number of steps.
+    Step(u32),
 }
 
 /// A single vesting tranche for a beneficiary.
@@ -92,7 +94,7 @@ pub const VESTING_EVENT_SCHEMA_VERSION: u32 = 1;
 // Legacy event symbols (for backward compatibility).
 const EVENT_VESTING_CREATED: Symbol = symbol_short!("vest_crt");
 const EVENT_VESTING_CLAIMED: Symbol = symbol_short!("vest_clm");
-const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_accel");
+const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_acc");
 
 #[contract]
 pub struct VestingContract;

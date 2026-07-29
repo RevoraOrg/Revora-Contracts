@@ -21,10 +21,11 @@
 /// - Assertions are deterministic (no state-dependent randomness)
 /// - Assertions are testable in isolation
 /// - Clear error messages aid debugging and forensic analysis
+#[deny(clippy::arithmetic_side_effects)]
+
 use core::fmt::Debug;
 
 use crate::{DataKey2, RevoraError};
-#![deny(clippy::arithmetic_side_effects)]
 
 use soroban_sdk::{Address, Bytes, BytesN, Env};
 

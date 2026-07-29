@@ -210,7 +210,7 @@ pub enum RevoraError {
     /// Admin rotation failed: caller is not the pending new admin.
     UnauthorizedRotationAccept = 36,
     /// Admin rotation failed: the configured delay has not elapsed since the proposal.
-    AdminRotationDelayNotElapsed = 58,
+    AdminRotationDelayNotElapsed = 38,
     /// Offering is frozen.
     OfferingFrozen = 42,
     /// Issuer transfer has expired.
@@ -224,9 +224,9 @@ pub enum RevoraError {
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
     /// The requester is still within the faucet cooldown window.
-    FaucetCooldownActive = 56,
+    FaucetCooldownActive = 37,
     /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 51,
+    // Note: canonical wire value is 34, defined above. This duplicate entry is removed.
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     MissingReportForOverride = 47,
@@ -292,10 +292,22 @@ pub enum RevoraError {
     InsufficientClassBalance = 74,
     /// Current time is outside the configured redemption window.
     RedemptionWindowClosed = 75,
+    /// The issuer signature over the (from, to, amount_bps, nonce) override tuple
+    /// is invalid, does not match the registered signer key, or the nonce/expiry is
+    /// outside the permitted window.
+    ///
+    /// Wire value: 76. Stable since v1.
+    OverrideAttestationInvalid = 76,
+    /// The one-shot override nonce has already been consumed by a prior successful call.
+    /// Reusing an override attestation is rejected to prevent replay attacks.
+    ///
+    /// Wire value: 77. Stable since v1.
+    OverrideAlreadyConsumed = 77,
 }
 
 pub mod vesting;
 pub mod tax_bucket;
+pub mod security_assertions;
 
 /// Deterministic Merkle-tree helpers for snapshot finalization.
 ///
@@ -322,8 +334,6 @@ mod test_time_windows;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
-#[cfg(test)]
-mod test_time_windows;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -391,7 +401,7 @@ const EVENT_PROPOSAL_APPROVED_V2: Symbol = symbol_short!("prop_a2");
 const EVENT_PROPOSAL_EXECUTED_V2: Symbol = symbol_short!("prop_e2");
 const EVENT_PROPOSAL_APPROVED: Symbol = symbol_short!("prop_app");
 const EVENT_PROPOSAL_EXECUTED: Symbol = symbol_short!("prop_exe");
-const EVENT_PROPOSAL_CREATED_GOV: Symbol = symbol_short!("prop_create");
+const EVENT_PROPOSAL_CREATED_GOV: Symbol = symbol_short!("prop_crt");
 const EVENT_DURATION_SET: Symbol = symbol_short!("dur_set");
 
 #[contracttype]
@@ -506,6 +516,15 @@ const EVENT_META_REV_APPROVE: Symbol = symbol_short!("meta_rev");
 const EVENT_AUDIT_REPAIRED: Symbol = symbol_short!("aud_rep");
 /// Emitted when a share transfer with attestation occurs.
 const EVENT_XFER_ATT: Symbol = symbol_short!("xfer_att");
+/// Emitted when an issuer-signed transfer-restriction override is applied.
+///
+/// topic : `(xfer_ovrd, issuer, namespace, token)`
+/// data  : `(from: Address, to: Address, amount_bps: u32, nonce: u64)`
+///
+/// One event is emitted per successful `transfer_with_override` call.
+/// The nonce is included so indexers can correlate with the off-chain attestation
+/// and confirm one-shot consumption without reading on-chain storage.
+const EVENT_TRANSFER_OVERRIDE_APPLIED: Symbol = symbol_short!("xfer_ovrd");
 /// Emitted when a cross-class share transfer is blocked.
 /// Data: `(offering_id, from, to, from_class, to_class)`.
 const EVENT_CLASS_XFER_BLOCK: Symbol = symbol_short!("cls_block");
@@ -834,6 +853,41 @@ pub struct TransferRestrictions {
     pub max_holders: u32,
 }
 
+/// Signed payload authorizing a single one-shot transfer that bypasses transfer restrictions.
+///
+/// The issuer signs XDR-serialised `OverrideAttestation` with their registered ed25519 key.
+/// Once consumed the `nonce` is permanently burned; re-submitting the same attestation
+/// returns `OverrideAlreadyConsumed`.
+///
+/// # Canonicalisation
+/// All fields are included in the XDR encoding to bind the signature tightly to
+/// the exact (contract, issuer, namespace, token, from, to, amount_bps, nonce, expiry) tuple.
+/// Changing any field — including `amount_bps` by a single unit — invalidates the signature.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverrideAttestation {
+    /// Version tag for forward-compatible schema evolution (currently `1`).
+    pub version: u32,
+    /// Contract address that will consume this attestation (prevents cross-contract replay).
+    pub contract: Address,
+    /// Issuer address whose registered ed25519 key signed this attestation.
+    pub issuer: Address,
+    /// Namespace of the offering.
+    pub namespace: Symbol,
+    /// Token address of the offering.
+    pub token: Address,
+    /// Sender of the shares being transferred.
+    pub from: Address,
+    /// Recipient of the shares being transferred.
+    pub to: Address,
+    /// Number of basis-points of shares to transfer (must be > 0).
+    pub amount_bps: u32,
+    /// Monotonic nonce bound to the issuer; must not have been used before.
+    pub nonce: u64,
+    /// Unix timestamp after which this attestation is rejected as expired.
+    pub expiry: u64,
+}
+
 /// Read-only comparison between stored audit state and recomputed report state.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -1089,13 +1143,6 @@ pub struct AdminRotationEntry {
 /// - `NotPaused`  – all operations open.
 /// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
 /// - `HardPaused` – all state-mutating operations blocked, including `claim`.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
-}
 
 /// Primary storage keys for core contract state.
 /// Split from the full key set to stay within the Soroban XDR union variant limit (â‰¤50).
@@ -1288,10 +1335,6 @@ pub enum DataKey2 {
     /// Duplicate meta-hash guard keyed by (offering_id, meta_hash).
     GovernanceProposalMeta(OfferingId, BytesN<32>),
 
-    /// Per-offering minimum revenue threshold below which reports are skipped.
-    MinRevenueThreshold(OfferingId),
-    /// Per-offering cumulative deposited revenue tracker.
-    DepositedRevenue(OfferingId),
     /// Timestamp of the last faucet request for a requester address.
     FaucetLastRequest(Address),
     /// Whether dual-signature close-of-period is enabled for this offering.
@@ -1300,6 +1343,15 @@ pub enum DataKey2 {
     AdminRotationLog(u64),
     /// Monotonically increasing counter for admin rotation entries.
     AdminRotationCount,
+    /// Transfer-restriction override: per-(issuer-address, nonce) consumed marker.
+    ///
+    /// Stored as `true` after a successful `transfer_with_override` call.  Presence
+    /// of the key means the nonce is burned; the value itself is not semantically
+    /// significant.  Keyed by (issuer, nonce) rather than a raw nonce so that
+    /// different issuers cannot consume each other's nonces.
+    ///
+    /// Storage: persistent (must survive ledger close).
+    TransferOverrideNonce(Address, u64),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2045,7 +2097,6 @@ impl RevoraRevenueShare {
                     break;
                 }
             }
-            None => {}
         }
 
         let new_total =
@@ -6061,6 +6112,7 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+        }
 
         // Zero-value transfer is meaningless
         if amount_bps == 0 {
@@ -6192,6 +6244,228 @@ impl RevoraRevenueShare {
             from_share - amount_bps,
         )?;
         Self::set_holder_share_internal(&env, issuer, namespace, token, to, to_share + amount_bps)?;
+
+        Ok(())
+    }
+
+    // ── Transfer-restriction override attestation (#589) ─────────────────────
+
+    /// Version tag embedded in every [`OverrideAttestation`] payload.
+    /// Increment when the payload schema changes to prevent old signatures from being
+    /// accepted by upgraded contracts.
+    const OVERRIDE_ATTESTATION_VERSION: u32 = 1;
+
+    /// Execute a one-shot issuer-signed transfer that bypasses all transfer restrictions.
+    ///
+    /// The issuer generates an [`OverrideAttestation`] struct, signs its XDR-serialized form
+    /// with their registered ed25519 key, and passes the 64-byte signature here.  The contract:
+    ///
+    /// 1. Verifies the contract is not globally frozen or paused.
+    /// 2. Verifies the offering exists and the caller is the primary issuer.
+    /// 3. Checks the attestation has not expired (`expiry > now`).
+    /// 4. Checks the nonce has **never** been consumed for this issuer (one-shot guard).
+    /// 5. Verifies the ed25519 signature against the issuer's registered signer key.
+    /// 6. Burns the nonce atomically before executing the transfer.
+    /// 7. Moves `amount_bps` basis-points of shares from `from` to `to`, bypassing all
+    ///    category-cap and whitelist checks.
+    /// 8. Emits [`EVENT_TRANSFER_OVERRIDE_APPLIED`] for audit trail.
+    ///
+    /// The `from` holder must have at least `amount_bps` shares.  The transfer itself is
+    /// bounded by the same share arithmetic used by `transfer_with_attestation`.
+    ///
+    /// ### Auth
+    /// `issuer.require_auth()` — the issuer must sign the Soroban transaction in addition
+    /// to providing the off-chain attestation signature.  This dual-auth pattern prevents
+    /// a stolen attestation from being replayed by an unauthorized caller.
+    ///
+    /// ### Parameters
+    /// - `issuer`     — Primary issuer of the offering; must match the offering on-chain.
+    /// - `namespace`  — Offering namespace.
+    /// - `token`      — Offering token address.
+    /// - `from`       — Holder transferring shares.
+    /// - `to`         — Recipient of the transferred shares.
+    /// - `amount_bps` — Number of basis-points to transfer (must be > 0).
+    /// - `nonce`      — Unique u64 bound to `issuer`; must never have been used before.
+    /// - `expiry`     — Unix timestamp (seconds) after which the attestation is invalid.
+    /// - `sig`        — 64-byte ed25519 signature over the XDR-encoded [`OverrideAttestation`].
+    ///
+    /// ### Errors
+    /// | Error | Condition |
+    /// |-------|-----------|
+    /// | `ContractFrozen`              | Global freeze is active. |
+    /// | `ContractPaused`              | Contract is soft- or hard-paused. |
+    /// | `OfferingNotFound`            | No offering matches `(issuer, namespace, token)`. |
+    /// | `OfferingFrozen`              | The specific offering is frozen. |
+    /// | `SignatureExpired`            | `expiry < ledger timestamp`. |
+    /// | `OverrideAlreadyConsumed`     | `nonce` was already burned by a prior call. |
+    /// | `OverrideAttestationInvalid`  | Signer key not registered or signature invalid. |
+    /// | `InvalidAmount`               | `amount_bps == 0` or `from` has insufficient shares. |
+    /// | `HolderBlacklisted`           | `from` or `to` is blacklisted for this offering. |
+    pub fn transfer_with_override(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from: Address,
+        to: Address,
+        amount_bps: u32,
+        nonce: u64,
+        expiry: u64,
+        sig: BytesN<64>,
+    ) -> Result<(), RevoraError> {
+        // ── Guard 1: global freeze / pause ───────────────────────────────────
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
+        // ── Guard 2: issuer on-chain auth ─────────────────────────────────────
+        // Dual-auth: the issuer must sign the Soroban tx AND provide a valid
+        // off-chain attestation.  This prevents a stolen sig from being replayed.
+        issuer.require_auth();
+
+        // ── Guard 3: zero-amount rejection ───────────────────────────────────
+        if amount_bps == 0 {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // ── Guard 4: self-transfer rejection ─────────────────────────────────
+        if from == to {
+            return Err(RevoraError::InvalidAmount);
+        }
+
+        // ── Guard 5: offering must exist and caller must be primary issuer ────
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if !env.storage().persistent().has(&DataKey::OfferingIssuer(offering_id.clone())) {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        // ── Guard 6: offering freeze check ───────────────────────────────────
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey2, bool>(&DataKey2::FrozenOffering(offering_id.clone()))
+            .unwrap_or(false)
+        {
+            return Err(RevoraError::OfferingFrozen);
+        }
+
+        // ── Guard 7: blacklist (from and to) ─────────────────────────────────
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            from.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            to.clone(),
+        ) {
+            return Err(RevoraError::HolderBlacklisted);
+        }
+
+        // ── Guard 8: attestation expiry ──────────────────────────────────────
+        if env.ledger().timestamp() > expiry {
+            return Err(RevoraError::SignatureExpired);
+        }
+
+        // ── Guard 9: one-shot nonce (replay prevention) ──────────────────────
+        // Check BEFORE signature verification so that a mismatched sig on a
+        // burned nonce returns OverrideAlreadyConsumed, not OverrideAttestationInvalid.
+        let nonce_key = DataKey2::TransferOverrideNonce(issuer.clone(), nonce);
+        if env.storage().persistent().has(&nonce_key) {
+            return Err(RevoraError::OverrideAlreadyConsumed);
+        }
+
+        // ── Guard 10: ed25519 signature verification ─────────────────────────
+        // Look up the issuer's registered public key.  We reuse the same
+        // MetaDataKey::SignerKey registry used by verify_meta_signature so that
+        // issuers only need to register once.
+        let pk_key = MetaDataKey::SignerKey(issuer.clone());
+        let public_key: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&pk_key)
+            .ok_or(RevoraError::OverrideAttestationInvalid)?;
+
+        // Build the canonical payload and verify.  Any mismatch (wrong tuple,
+        // wrong contract, wrong issuer, tampered amount) will cause a panic in
+        // `ed25519_verify` which aborts the transaction — the nonce is NOT burned.
+        let payload = OverrideAttestation {
+            version: Self::OVERRIDE_ATTESTATION_VERSION,
+            contract: env.current_contract_address(),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            amount_bps,
+            nonce,
+            expiry,
+        };
+        let payload_bytes = payload.to_xdr(&env);
+        env.crypto().ed25519_verify(&public_key, &payload_bytes, &sig);
+
+        // ── Action: burn nonce atomically before mutating shares ─────────────
+        // Burning first ensures that even if the share update somehow fails, the
+        // nonce is consumed and the attestation cannot be replayed.
+        env.storage().persistent().set(&nonce_key, &true);
+
+        // ── Action: transfer shares, bypassing category/whitelist checks ──────
+        let from_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
+            .unwrap_or(0);
+        if from_share < amount_bps {
+            return Err(RevoraError::InvalidAmount);
+        }
+        let to_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
+            .unwrap_or(0);
+
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            from.clone(),
+            from_share - amount_bps,
+            None,
+        )?;
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            to.clone(),
+            to_share + amount_bps,
+            None,
+        )?;
+
+        // ── Audit event ───────────────────────────────────────────────────────
+        // Emitted after all state mutations succeed.  Indexers replay the event
+        // log to reconstruct the full override history without reading storage.
+        env.events().publish(
+            (
+                EVENT_TRANSFER_OVERRIDE_APPLIED,
+                issuer.clone(),
+                namespace.clone(),
+                token.clone(),
+            ),
+            (from.clone(), to.clone(), amount_bps, nonce),
+        );
 
         Ok(())
     }
@@ -7306,7 +7580,6 @@ impl RevoraRevenueShare {
             share_bps,
             Some(share_class),
         )
-        )
     }
 
     /// Open a formal on-chain dispute against an offering.
@@ -7561,7 +7834,7 @@ impl RevoraRevenueShare {
         }
 
         env.events().publish(
-            (soroban_sdk::symbol_short!("class_conv"), offering_id, holder),
+            (soroban_sdk::symbol_short!("cls_conv"), offering_id, holder),
             (from_class, from_balance, new_from, to_class, to_balance, new_to),
         );
 
@@ -12150,7 +12423,7 @@ impl RevoraRevenueShare {
 
         if cursor.last_key > 0 && !dry_run {
             env.events()
-                .publish((symbol_short!("mig_resume"), from_version, to_version), cursor.last_key);
+                .publish((symbol_short!("mig_res"), from_version, to_version), cursor.last_key);
         }
 
         // Add per-version migrators in a dispatch table
@@ -12203,10 +12476,11 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+} // close impl RevoraRevenueShare (migration block)
+
 // ── Contract self-test entrypoint (#618) ─────────────────────────────────────
 #[contractimpl]
-impl RevoraRevenueShare {
-    /// Run contract-invariant self-test against the embedded canary dataset.
+impl RevoraRevenueShare {    /// Run contract-invariant self-test against the embedded canary dataset.
     ///
     /// Returns `0` on success or a non-zero reason code indicating the first
     /// invariant check that failed. This is a read-only entrypoint that does
@@ -12226,11 +12500,10 @@ impl RevoraRevenueShare {
         crate::self_test::self_test_status()
     }
 }
-}
 
-#[cfg(test)]
-mod test_close_period;
 #[cfg(test)]
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+#[cfg(test)]
+mod test_transfer_with_override;

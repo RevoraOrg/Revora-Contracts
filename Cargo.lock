@@ -1884,7 +1884,9 @@ name = "revora-contracts"
 version = "0.1.0"
 dependencies = [
  "derive_arbitrary",
+ "ed25519-dalek",
  "proptest",
+ "serde_json",
  "soroban-sdk",
 ]
 
