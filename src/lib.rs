@@ -348,6 +348,9 @@ pub enum RevoraError {
     DisputeAlreadyResolved = 87,
     /// A freeze is currently active due to an open dispute.
     DisputeFreezeActive = 88,
+    /// Multi-proof leaf ordering is inconsistent with the flags bitmap;
+    /// unconsumed leaves or proof elements remain after processing.
+    MultiProofLeafOrdering = 89,
 }
 
 pub mod tax_bucket;
@@ -14663,6 +14666,61 @@ impl RevoraRevenueShare {
             .map_err(|_e| RevoraError::ProofTooDeep)
     }
 
+    /// Batched Merkle inclusion verification using an OpenZeppelin-style multi-proof.
+    ///
+    /// Verifies that every leaf hash in `leaves` belongs to the tree with the given
+    /// `root`, using a shared `proof` array and a compact `flags` bitmap.  This allows
+    /// an aggregator to settle N claims in one transaction with a single proof structure
+    /// instead of N independent `verify_merkle_proof` calls.
+    ///
+    /// # Parameters
+    ///
+    /// * `caller` — address making the call (unused for auth; included for event topics).
+    /// * `root` — the expected Merkle root (32 bytes).
+    /// * `leaves` — pre-hashed leaf values to verify (order matters).
+    /// * `proof` — shared sibling hashes used during tree reconstruction.
+    /// * `flags` — flat flag array (0 or 1): `1` means the second child is from `leaves` or
+    ///   computed hashes; `0` means it comes from `proof`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` — all leaves are members of the tree.
+    /// * `Ok(false)` — the recomputed root does not match.
+    /// * `Err(RevoraError::ProofTooDeep)` — `proof` exceeds `MAX_PROOF_DEPTH`.
+    /// * `Err(RevoraError::InvalidShareBps)` — inconsistent leaf ordering (mapped from
+    ///   `MerkleError::InconsistentLeafOrdering`).
+    ///
+    /// # Events
+    ///
+    /// Emits `proof_reject_depth(caller, proof_len, MAX_PROOF_DEPTH)` when the depth
+    /// bound is exceeded, mirroring `verify_merkle_proof`.
+    pub fn verify_multi_proof(
+        env: Env,
+        caller: Address,
+        root: BytesN<32>,
+        leaves: Vec<BytesN<32>>,
+        proof: Vec<BytesN<32>>,
+        flags: Vec<u32>,
+    ) -> Result<bool, RevoraError> {
+        use crate::merkle_helpers::{verify_multi_proof as merkle_multi_verify, MAX_PROOF_DEPTH};
+
+        if proof.len() > MAX_PROOF_DEPTH {
+            env.events().publish(
+                (EVENT_PROOF_REJECT_DEPTH, caller),
+                (proof.len(), MAX_PROOF_DEPTH),
+            );
+            return Err(RevoraError::ProofTooDeep);
+        }
+
+        merkle_multi_verify(&env, root, &leaves, &proof, &flags).map_err(|e| match e {
+            crate::merkle_helpers::MerkleError::ProofTooDeep => RevoraError::ProofTooDeep,
+            crate::merkle_helpers::MerkleError::InconsistentLeafOrdering => {
+                RevoraError::MultiProofLeafOrdering
+            }
+            _ => RevoraError::InvalidShareBps,
+        })
+    }
+
     /// Execute the storage walker migration from `from_version` to `to_version`.
     ///
     /// The walker supports a dry-run mode (`dry_run = true`) that emits plan
@@ -15078,3 +15136,5 @@ mod test_storage_layout_version;
 mod test_merkle_root_rotation;
 #[cfg(test)]
 mod test_merkle_proof_depth;
+#[cfg(test)]
+mod test_merkle_multi_proof;

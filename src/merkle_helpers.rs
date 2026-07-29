@@ -132,6 +132,11 @@ pub enum MerkleError {
     /// The check is performed before any hashing so the contract incurs no
     /// additional cost from the oversized payload.
     ProofTooDeep = 1003,
+    /// The leaf ordering in a multi-proof is inconsistent with the flags
+    /// bitmap.  After processing all hashes there are unconsumed leaves
+    /// or proof elements, indicating that the caller supplied leaves in
+    /// the wrong order relative to their tree positions.
+    InconsistentLeafOrdering = 1004,
 }
 
 // ── Public helpers ──────────────────────────────────────────────────────────
@@ -357,6 +362,137 @@ pub fn verify_merkle_proof(
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────
+
+/// Verify multiple Merkle inclusion proofs in a single batched call using a
+/// shared proof structure (OpenZeppelin-style multi-proof format).
+///
+/// An aggregator can settle many claims in one transaction with a single
+/// shared sibling-hash array and a compact flags bitmap instead of submitting
+/// N independent proofs.  This reduces per-claim gas overhead materially.
+///
+/// ## Format
+///
+/// * `leaves` — pre-hashed leaf values to verify (order matters: each leaf
+///   must appear in the same position it occupies in the tree).
+/// * `proof`  — shared sibling hashes used during tree reconstruction.
+/// * `flags`  — compact flag array (each element is 0 or 1) indicating the
+///     source of the second child at each hashing step:
+///     * `1` → second child comes from `leaves` or a previously computed
+///                 hash (an internal tree node).
+///     * `0` → second child comes from `proof` (a sibling from outside
+///                 the verified leaf set).
+///
+/// ## Algorithm
+///
+/// The function reconstructs the Merkle root bottom-up by iterating through
+/// `flags` and consuming from `leaves` and `proof` as directed.  At each
+/// step two children are paired via [`hash_node`] (sorted-pair rule, `0x01`
+/// prefix) to produce a parent hash.  After the final flag is consumed the
+/// last computed hash is compared to `root`.
+///
+/// ## Depth bound
+///
+/// **`proof.len()` must be ≤ [`MAX_PROOF_DEPTH`] (32).**
+///
+/// This is the same guard applied by [`verify_merkle_proof`]; a multi-proof
+/// cannot have more sibling hashes than the maximum tree depth.
+///
+/// ## Returns
+///
+/// * `Ok(true)`  — all leaves are members of the tree with the given root.
+/// * `Ok(false)` — the computed root does not match the expected root.
+/// * `Err(MerkleError::ProofTooDeep)` — `proof.len() > MAX_PROOF_DEPTH`.
+/// * `Err(MerkleError::InconsistentLeafOrdering)` — unconsumed leaves or
+///   proof elements remain after processing all flags.
+///
+/// ## Edge cases
+///
+/// * Empty `leaves` and empty `proof` with no flags → returns `Ok(root == SHA-256(b""))`.
+/// * Single leaf with no flags and no proof → returns `Ok(leaf == root)`.
+pub fn verify_multi_proof(
+    env: &Env,
+    root: BytesN<32>,
+    leaves: &Vec<BytesN<32>>,
+    proof: &Vec<BytesN<32>>,
+    flags: &Vec<u32>,
+) -> Result<bool, MerkleError> {
+    // ── Depth-bound assertion ───────────────────────────────────────────────
+    if proof.len() > MAX_PROOF_DEPTH {
+        return Err(MerkleError::ProofTooDeep);
+    }
+
+    let total_hashes = flags.len();
+
+    // ── Empty tree ──────────────────────────────────────────────────────────
+    if leaves.len() == 0 && proof.len() == 0 && total_hashes == 0 {
+        return Ok(root == env.crypto().sha256(&Bytes::new(env)));
+    }
+
+    // ── Single leaf, no proof, no flags ─────────────────────────────────────
+    if leaves.len() == 1 && proof.len() == 0 && total_hashes == 0 {
+        return Ok(leaves.get(0).unwrap() == root);
+    }
+
+    // ── Structural guard: validate the multi-proof invariant. ───────────────
+    // For a well-formed tree: each flag combines two inputs into one hash,
+    // so starting with (leaves + proof) elements and ending with one root
+    // requires exactly (leaves.len() + proof.len() - 1) flags.
+    if flags.len().saturating_add(1) != leaves.len().saturating_add(proof.len()) {
+        return Err(MerkleError::InconsistentLeafOrdering);
+    }
+
+    // ── Reconstruct the tree ────────────────────────────────────────────────
+    let mut hashes: Vec<BytesN<32>> = Vec::new(env);
+    let mut leaf_pos: u32 = 0;
+    let mut hash_pos: u32 = 0;
+    let mut proof_pos: u32 = 0;
+    let leaves_len = leaves.len();
+    let proof_len = proof.len();
+
+    for i in 0..total_hashes {
+        // First child: consume from leaves first, then from computed hashes.
+        let a = if leaf_pos < leaves_len {
+            let val = leaves.get(leaf_pos).unwrap();
+            leaf_pos = leaf_pos.saturating_add(1);
+            val
+        } else {
+            let val = hashes.get(hash_pos).unwrap();
+            hash_pos = hash_pos.saturating_add(1);
+            val
+        };
+
+        // Second child: flag determines source.
+        let flag_val = flags.get(i).unwrap();
+        let b = if flag_val != 0 {
+            // flag=1 → sibling from leaves or computed hashes.
+            if leaf_pos < leaves_len {
+                let val = leaves.get(leaf_pos).unwrap();
+                leaf_pos = leaf_pos.saturating_add(1);
+                val
+            } else {
+                let val = hashes.get(hash_pos).unwrap();
+                hash_pos = hash_pos.saturating_add(1);
+                val
+            }
+        } else {
+            // flag=0 → sibling from the shared proof array.
+            let val = proof.get(proof_pos).unwrap();
+            proof_pos = proof_pos.saturating_add(1);
+            val
+        };
+
+        hashes.push_back(hash_node(env, &a, &b));
+    }
+
+    // ── Consistency check: all inputs must be fully consumed ────────────────
+    if leaf_pos != leaves_len || proof_pos != proof_len {
+        return Err(MerkleError::InconsistentLeafOrdering);
+    }
+
+    let computed_root = hashes.get(total_hashes.saturating_sub(1)).unwrap();
+
+    Ok(computed_root == root)
+}
 
 /// Simple three-way comparison result (no std `Ordering` in no_std environments).
 #[derive(Eq, PartialEq)]
