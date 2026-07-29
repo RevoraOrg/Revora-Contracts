@@ -59,6 +59,27 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+fn setup_offering_with_contract_id() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let offering_token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("ns"), &offering_token, &10_000, &payment_token, &0);
+
+    (env, client, issuer, offering_token, payment_token, contract_id)
+}
+
+fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+    let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
+    (env, client, issuer, token, payment_token)
+}
+
 #[test]
 fn close_period_happy_path() {
     let (_env, client, issuer, token, _payment) = setup_offering();
@@ -67,6 +88,30 @@ fn close_period_happy_path() {
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
     client.close_period(&issuer, &ns, &token, &1);
     assert!(client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn close_period_aborts_when_share_ledger_is_inconsistent() {
+    let (env, client, issuer, token, payment_token, contract_id) = setup_offering_with_contract_id();
+    let ns = symbol_short!("ns");
+    let holder = Address::generate(&env);
+
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
+
+    let before_events = env.events().all().len();
+    env.as_contract(&contract_id, || {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: ns.clone(),
+            token: token.clone(),
+        };
+        env.storage().persistent().set(&DataKey::HolderShareTotal(offering_id), &7_000u32);
+    });
+
+    let result = client.try_close_period(&issuer, &ns, &token, &1);
+    assert_eq!(result, Err(Ok(RevoraError::CloseAbortInvariantsViolated)));
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+    assert_eq!(env.events().all().len(), before_events, "abort path must not emit close_period events");
 }
 
 #[test]
@@ -870,4 +915,477 @@ fn class_priority_get_class_pay_order_empty_for_unset_period() {
     let ns = symbol_short!("ns");
     let order = client.get_class_pay_order(&issuer, &ns, &token, &999u64);
     assert_eq!(order.len(), 0);
+}
+
+// ── Close-of-period preflight simulation tests (#563) ───────────────────────
+//
+// Required by the issuing task: the preflight must return per-holder payouts
+// without state mutation and must mirror `close_period`'s precondition chain.
+// These tests assert: empty period, single holder, multi-holder, parity
+// against the actual on-chain close, and every documented error path.
+
+fn offering_id(
+    issuer: &Address,
+    namespace: &Symbol,
+    token: &Address,
+) -> crate::OfferingId {
+    crate::OfferingId {
+        issuer: issuer.clone(),
+        namespace: namespace.clone(),
+        token: token.clone(),
+    }
+}
+
+#[test]
+fn preflight_empty_period_returns_zero_payouts() {
+    // No `report_revenue` / `deposit_revenue` call has landed — period_revenue
+    // should be 0 and every holder's normalized payout should be 0.
+    let (_env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let holder = Address::generate(&_env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000u32);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&_env);
+    holders.push_back(holder.clone());
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(pre.period_id, 1u64);
+    assert_eq!(pre.period_revenue, 0);
+    assert_eq!(pre.class_pay_order.len(), 0);
+    assert_eq!(pre.payouts.len(), 1);
+    assert_eq!(pre.payouts.get(0).unwrap().holder, holder);
+    assert_eq!(pre.payouts.get(0).unwrap().share_bps, 5_000);
+    assert_eq!(pre.payouts.get(0).unwrap().normalized_payout, 0);
+    assert_eq!(pre.total_distributed, 0);
+
+    // No state was mutated: the period is still unclosed.
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn preflight_single_holder_full_share_matches_actual_close() {
+    // 1 holder at 100% (10_000 bps), revenue = 1_000. Expected per-holder
+    // payout = 1_000 and total_distributed = 1_000.
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000u32);
+
+    // Mint & deposit revenue for period 1.
+    mint(&env, &payment_token, &issuer, 1_000);
+    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &1_000, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&env);
+    holders.push_back(holder.clone());
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(pre.period_revenue, 1_000);
+    assert_eq!(pre.payouts.len(), 1);
+    assert_eq!(pre.payouts.get(0).unwrap().holder, holder);
+    assert_eq!(pre.payouts.get(0).unwrap().share_bps, 10_000);
+    assert_eq!(pre.payouts.get(0).unwrap().normalized_payout, 1_000);
+    assert_eq!(pre.total_distributed, 1_000);
+
+    // Now actually close and confirm claim() yields the same amount. This is
+    // the parity guarantee the issue text calls out: "Preview must be exactly
+    // equal to what atomic close would produce."
+    client.close_period(&issuer, &ns, &token, &1);
+    let payout = client.claim(&holder, &issuer, &ns, &token, &10);
+    assert_eq!(payout, 1_000);
+}
+
+#[test]
+fn preflight_multi_holder_split_sums_to_revenue() {
+    // 3 holders at 3_333 / 3_333 / 3_334 bps with revenue = 1_000_000. Total
+    // must not exceed period_revenue and the per-holder payouts must respect
+    // `compute_share` truncation semantics.
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let h1 = Address::generate(&env);
+    let h2 = Address::generate(&env);
+    let h3 = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &h1, &3_333u32);
+    client.set_holder_share(&issuer, &ns, &token, &h2, &3_333u32);
+    client.set_holder_share(&issuer, &ns, &token, &h3, &3_334u32);
+
+    mint(&env, &payment_token, &issuer, 1_000_000);
+    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &1_000_000, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&env);
+    holders.push_back(h1.clone());
+    holders.push_back(h2.clone());
+    holders.push_back(h3.clone());
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(pre.period_revenue, 1_000_000);
+    let mut sum: i128 = 0;
+    for i in 0..pre.payouts.len() {
+        sum = sum.saturating_add(pre.payouts.get(i).unwrap().normalized_payout);
+    }
+    assert!(sum <= pre.period_revenue);
+    assert_eq!(pre.total_distributed, sum);
+
+    // Truncation default for an offering with no explicit `set_rounding_mode`:
+    // 1_000_000 * 3_333 / 10_000 = 333_300 (truncated). 3_334 bps -> 333_400.
+    let p0 = pre.payouts.get(0).unwrap();
+    let p1 = pre.payouts.get(1).unwrap();
+    let p2 = pre.payouts.get(2).unwrap();
+    assert_eq!(p0.share_bps, 3_333);
+    assert_eq!(p1.share_bps, 3_333);
+    assert_eq!(p2.share_bps, 3_334);
+    assert_eq!(p0.normalized_payout, 333_300);
+    assert_eq!(p1.normalized_payout, 333_300);
+    assert_eq!(p2.normalized_payout, 333_400);
+}
+
+#[test]
+fn preflight_zero_holder_input_returns_empty_payouts() {
+    // No holders passed in -> empty payouts, but preflight still succeeds
+    // when the offering exists.
+    let (_env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let holders = Vec::<Address>::new(&_env);
+
+    let pre = client
+        .try_preflight_close_period(&oid, &7u64, &holders)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.period_id, 7u64);
+    assert_eq!(pre.payouts.len(), 0);
+    assert_eq!(pre.total_distributed, 0);
+    assert_eq!(pre.class_pay_order.len(), 0);
+}
+
+#[test]
+fn preflight_handles_no_classes_registered_with_empty_pay_order() {
+    // No classes registered -> class_pay_order is empty. The preflight must
+    // still compute per-holder payouts using the flat `share_bps` path.
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000u32);
+
+    mint(&env, &payment_token, &issuer, 5_000);
+    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &5_000, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&env);
+    holders.push_back(holder.clone());
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.class_pay_order.len(), 0);
+    assert_eq!(pre.payouts.get(0).unwrap().normalized_payout, 5_000);
+}
+
+#[test]
+fn preflight_rejects_frozen_contract() {
+    // Drive the `ContractFrozen` guard by writing `DataKey::Frozen` directly
+    // rather than going through `freeze()` — that keeps the test focused on
+    // the preflight precondition chain and avoids any contract-API surface
+    // risks around `initialize` / `MultisigThreshold`.
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None, &None);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payment_token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::from_array(&env, []),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &10_000u32,
+        &payment_token,
+        &0i128,
+        &symbol_short!(""),
+        &0u32,
+    );
+
+    // Flip the global Frozen flag directly. `require_not_frozen` only reads
+    // this key, so the preflight chain will short-circuit to ContractFrozen.
+    env.storage().persistent().set(&DataKey::Frozen, &true);
+
+    let oid = offering_id(&issuer, &symbol_short!("ns"), &token);
+    let holders = Vec::<Address>::new(&env);
+    let result = client.try_preflight_close_period(&oid, &1u64, &holders);
+    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+}
+
+#[test]
+fn preflight_rejects_zero_period_id() {
+    let (_env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+    let oid = offering_id(&issuer, &ns, &token);
+    let holders = Vec::<Address>::new(&_env);
+
+    let result = client.try_preflight_close_period(&oid, &0u64, &holders);
+    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
+}
+
+#[test]
+fn preflight_rejects_unknown_offering() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &None, &None);
+
+    let unknown_issuer = Address::generate(&env);
+    let unknown_token = Address::generate(&env);
+    let oid = offering_id(&unknown_issuer, &symbol_short!("ns"), &unknown_token);
+    let holders = Vec::<Address>::new(&env);
+
+    let result = client.try_preflight_close_period(&oid, &1u64, &holders);
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}
+
+#[test]
+fn preflight_rejects_already_closed_period() {
+    let (_env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    // Close period 1, then preflight for period 1 must reject.
+    client.close_period(&issuer, &ns, &token, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let holders = Vec::<Address>::new(&_env);
+    let result = client.try_preflight_close_period(&oid, &1u64, &holders);
+    assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
+}
+
+#[test]
+fn preflight_returns_class_pay_order_matching_close() {
+    // Register two Custom classes, set priorities, then confirm the preflight
+    // returns the same `class_pay_order` that the actual `close_period` will
+    // write via `record_and_emit_pay_order`.
+    let (env, client, issuer, token, _payment) = setup_offering();
+    let ns = symbol_short!("ns");
+    let oid_storage = offering_id(&issuer, &ns, &token);
+    let pref = ShareClass::Custom(Symbol::new(&env, "pref"));
+    let comm = ShareClass::Custom(Symbol::new(&env, "comm"));
+    register_classes_in_storage(
+        &env,
+        &oid_storage,
+        &[
+            (pref.clone(), crate::ClassConfig { bps: 5_000, voting: true }),
+            (comm.clone(), crate::ClassConfig { bps: 5_000, voting: false }),
+        ],
+    );
+    client.set_class_priority(&issuer, &ns, &token, &pref.clone(), &0u32);
+    client.set_class_priority(&issuer, &ns, &token, &comm.clone(), &1u32);
+
+    let holders = Vec::<Address>::new(&env);
+    let pre = client
+        .try_preflight_close_period(&oid_storage, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.class_pay_order.len(), 2);
+    assert_eq!(pre.class_pay_order.get(0).unwrap(), pref);
+    assert_eq!(pre.class_pay_order.get(1).unwrap(), comm);
+
+    // Now actually close, then read the persisted pay order and assert it
+    // exactly equals the preflight result.
+    client.close_period(&issuer, &ns, &token, &1);
+    let persisted = client.get_class_pay_order(&issuer, &ns, &token, &1u64);
+
+    assert_eq!(persisted.len(), pre.class_pay_order.len());
+    for i in 0..persisted.len() {
+        assert_eq!(persisted.get(i).unwrap(), pre.class_pay_order.get(i).unwrap());
+    }
+}
+
+#[test]
+fn preflight_skips_blacklisted_holders() {
+    // Blacklist precedence: a blacklisted holder is silently dropped from the
+    // preview, and so is its payout (the issue says "without state mutation"
+    // which guarantees we're not flipping any share flag).
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let h_ok = Address::generate(&env);
+    let h_bad = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &h_ok, &5_000u32);
+    client.set_holder_share(&issuer, &ns, &token, &h_bad, &10_000u32);
+
+    // Write `DataKey::Blacklist` directly rather than via `blacklist_add`. The
+    // contract-side `is_blacklisted` only checks membership in the map, so
+    // any non-empty `SanctionsAttestation` is sufficient to exercise the
+    // blacklist precedence rule in the preflight.
+    let mut blacklisted =
+        soroban_sdk::Map::<Address, crate::SanctionsAttestation>::new(&env);
+    blacklisted.set(
+        h_bad.clone(),
+        crate::SanctionsAttestation {
+            source: crate::Source::Manual,
+            ref_id: symbol_short!("blk"),
+            attested_at: 0,
+        },
+    );
+    env.storage().persistent().set(
+        &DataKey::Blacklist(offering_id(&issuer, &ns, &token)),
+        &blacklisted,
+    );
+
+    mint(&env, &payment_token, &issuer, 1_000);
+    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &1_000, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&env);
+    holders.push_back(h_ok.clone());
+    holders.push_back(h_bad.clone());
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.payouts.len(), 1, "blacklisted holder must be excluded");
+    assert_eq!(pre.payouts.get(0).unwrap().holder, h_ok);
+    assert_eq!(pre.payouts.get(0).unwrap().normalized_payout, 500);
+}
+
+#[test]
+fn preflight_does_not_write_period_closed_storage() {
+    // Multiple preflights on the same period must not flip any state and
+    // must keep returning the same number — i.e. the preflight is idempotent
+    // and has no execution cost other than the read.
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+    let holder = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000u32);
+    mint(&env, &payment_token, &issuer, 750);
+    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &750, &1);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let mut holders = Vec::<Address>::new(&env);
+    holders.push_back(holder.clone());
+
+    let a = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    let b = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    let c = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(a.period_revenue, b.period_revenue);
+    assert_eq!(b.period_revenue, c.period_revenue);
+    assert_eq!(a.total_distributed, b.total_distributed);
+    assert_eq!(b.total_distributed, c.total_distributed);
+    assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
+}
+
+#[test]
+fn preflight_dual_sig_capable_offering_still_works() {
+    // The preflight is auth-free and intentionally ignores `DualSigEnabled` —
+    // a preview must be available even when the atomic close would require
+    // dual sigs. We assert that preflight succeeds regardless.
+    let env = Env::default();
+    let client = make_client(&env);
+    let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
+
+    let oid = offering_id(&issuer, &ns, &token);
+    let holders = Vec::<Address>::new(&env);
+
+    let pre = client
+        .try_preflight_close_period(&oid, &1u64, &holders)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.period_id, 1u64);
+    assert_eq!(pre.class_pay_order.len(), 0);
+    assert_eq!(pre.payouts.len(), 0);
+}
+
+#[test]
+fn preflight_total_distributed_never_exceeds_revenue() {
+    // Exhaustively assert `total_distributed <= period_revenue` for several
+    // revenue magnitudes and several holder splits. The bound is a hard
+    // contract invariant (`compute_share` is capped at `100%` of revenue)
+    // and a regression here would mean every holder can be overpaid.
+    let (env, client, issuer, token, payment_token) = setup_offering();
+    let ns = symbol_short!("ns");
+
+    let h1 = Address::generate(&env);
+    let h2 = Address::generate(&env);
+    let h3 = Address::generate(&env);
+    let h4 = Address::generate(&env);
+    client.set_holder_share(&issuer, &ns, &token, &h1, &2_500u32);
+    client.set_holder_share(&issuer, &ns, &token, &h2, &2_500u32);
+    client.set_holder_share(&issuer, &ns, &token, &h3, &2_500u32);
+    client.set_holder_share(&issuer, &ns, &token, &h4, &2_500u32);
+
+    let cases: [i128; 3] = [1_000i128, 1_000_000, 999_999_999_999];
+
+    for (idx, revenue) in cases.iter().enumerate() {
+        let period: u64 = (idx + 1) as u64;
+        mint(&env, &payment_token, &issuer, *revenue);
+        client.deposit_revenue(&issuer, &ns, &token, &payment_token, revenue, &period);
+
+        let oid = offering_id(&issuer, &ns, &token);
+        let mut holders = Vec::<Address>::new(&env);
+        holders.push_back(h1.clone());
+        holders.push_back(h2.clone());
+        holders.push_back(h3.clone());
+        holders.push_back(h4.clone());
+
+        let pre = client
+            .try_preflight_close_period(&oid, &period, &holders)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pre.period_revenue, *revenue);
+        assert!(
+            pre.total_distributed <= pre.period_revenue,
+            "total_distributed {} exceeds period_revenue {} at case {}",
+            pre.total_distributed,
+            pre.period_revenue,
+            idx,
+        );
+        for i in 0..pre.payouts.len() {
+            let p = pre.payouts.get(i).unwrap();
+            assert!(
+                p.normalized_payout <= pre.period_revenue,
+                "holder {} payout {} exceeds revenue {} at case {}",
+                i,
+                p.normalized_payout,
+                pre.period_revenue,
+                idx,
+            );
+        }
+    }
 }

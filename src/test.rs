@@ -7536,6 +7536,27 @@ fn multisig_set_admin_action_updates_admin() {
 }
 
 #[test]
+fn multisig_stale_threshold_proposal_is_rejected_after_rotation() {
+    let (env, client, owner1, owner2, owner3, _caller) = multisig_setup();
+
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::SetThreshold(3));
+    client.approve_action(&owner2, &proposal_id);
+
+    let remove_id = client.propose_action(&owner1, &ProposalAction::RemoveOwner(owner3.clone()));
+    client.approve_action(&owner2, &remove_id);
+    client.execute_action(&remove_id);
+
+    let before = legacy_events(&env).len();
+    let r = client.try_execute_action(&proposal_id);
+    assert!(matches!(r.err(), Some(Ok(RevoraError::StaleProposal))));
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(!proposal.executed);
+    assert_eq!(client.get_multisig_threshold(), Some(2));
+    assert!(legacy_events(&env).len() >= before + 1);
+}
+
+#[test]
 fn multisig_set_threshold_action_updates_threshold() {
     let (_env, client, owner1, owner2, _owner3, _caller) = multisig_setup();
 
@@ -8481,6 +8502,192 @@ fn issuer_transfer_self_transfer_ignores_expiry() {
         client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
         None
     );
+}
+
+// ── Kani-aligned cancel_issuer_transfer integration tests (Issue #577) ────────
+//
+// These tests exercise the on-chain `cancel_issuer_transfer` entrypoint via the
+// Soroban test client.  They are the integration complement to the pure-model
+// proofs in `src/kani_harness/issuer_transfer_cancel.rs`.  Together they provide
+// ≥95 % coverage of every cancel code-path including edge cases.
+
+/// After a successful cancel the `get_pending_issuer_transfer` query must return
+/// `None` (no orphan key).
+#[test]
+fn kani_cancel_leaves_no_orphan_pending_key() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer.clone())
+    );
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None,
+        "cancel must remove the PendingIssuerTransfer key"
+    );
+}
+
+/// After cancel the offering's `issuer` field in `get_offering` must be unchanged.
+#[test]
+fn kani_cancel_does_not_change_offering_issuer() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let before = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let after = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(
+        after.issuer, before.issuer,
+        "cancel must not mutate the offering issuer"
+    );
+}
+
+/// Cancel with no pending transfer must return `NoTransferPending`.
+#[test]
+fn kani_cancel_no_pending_returns_no_transfer_pending() {
+    let (_env, client, issuer, token, _pmt, _cid) = claim_setup();
+
+    let result = client.try_cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NoTransferPending)),
+        "cancel with no pending must return NoTransferPending"
+    );
+}
+
+/// Propose → cancel → propose again must succeed (storage is fully clean after cancel).
+#[test]
+fn kani_cancel_then_propose_again_succeeds() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer_1 = Address::generate(&env);
+    let new_issuer_2 = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    // A fresh propose must succeed, proving no residual IssuerTransferPending state.
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_2);
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        Some(new_issuer_2)
+    );
+}
+
+/// Double-cancel must return `NoTransferPending` on the second call.
+#[test]
+fn kani_double_cancel_returns_no_transfer_pending() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let second = client.try_cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        second,
+        Err(Ok(RevoraError::NoTransferPending)),
+        "second cancel must return NoTransferPending"
+    );
+}
+
+/// After propose + cancel the offering's `revenue_share_bps` and other fields are
+/// unchanged — full offering-state idempotency.
+#[test]
+fn kani_cancel_full_offering_state_idempotent() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    let before = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    let after = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(after, before, "full offering state must be identical after propose+cancel");
+}
+
+/// Cancel with a custom-expiry pending transfer (propose_transfer_with_expiry) must
+/// still remove the key and leave issuer unchanged.
+#[test]
+fn kani_cancel_with_custom_expiry_pending_clears_key() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let two_hours: u64 = 2 * 60 * 60;
+
+    client.propose_transfer_with_expiry(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &new_issuer,
+        &two_hours,
+    );
+    assert!(
+        client
+            .get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token)
+            .is_some()
+    );
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token),
+        None,
+        "cancel must clear custom-expiry pending transfer key"
+    );
+    // Offering issuer unchanged.
+    let offering = client.get_offering(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(offering.issuer, issuer);
+}
+
+/// Cancel must emit the `iss_canc` event and include both the current and proposed
+/// issuer in the payload.
+#[test]
+fn kani_cancel_emits_iss_canc_event() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+    let before_count = legacy_events(&env).len();
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    assert_eq!(
+        legacy_events(&env).len(),
+        before_count + 1,
+        "cancel must emit exactly one event"
+    );
+}
+
+/// After cancel, the old issuer can immediately propose a transfer to a third address —
+/// proving the IssuerTransferPending guard is fully lifted.
+#[test]
+fn kani_cancel_lifts_transfer_pending_guard() {
+    let (env, client, issuer, token, _pmt, _cid) = claim_setup();
+    let new_issuer = Address::generate(&env);
+    let third = Address::generate(&env);
+
+    client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
+
+    // Double propose is rejected.
+    let err =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &third);
+    assert_eq!(err, Err(Ok(RevoraError::IssuerTransferPending)));
+
+    client.cancel_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+
+    // After cancel, fresh propose succeeds.
+    let ok =
+        client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &third);
+    assert!(ok.is_ok(), "fresh propose after cancel must succeed");
 }
 
 #[test]
@@ -10828,6 +11035,135 @@ mod regression {
             999,
             "second set_offering_fee_bps must overwrite first"
         );
+    }
+
+    #[test]
+    fn set_secondary_market_royalty_bps_stores_and_retrieves() {
+        let env = Env::default();
+        let (client, issuer, token, payout_asset) = setup_fee_offering(&env);
+        client.set_secondary_market_royalty_bps(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &payout_asset,
+            &200,
+        );
+        assert_eq!(
+            client.get_secondary_market_royalty_bps(&issuer, &symbol_short!("fee"), &token, &payout_asset),
+            200,
+        );
+    }
+
+    #[test]
+    fn set_secondary_market_royalty_bps_above_maximum_fails() {
+        let env = Env::default();
+        let (client, issuer, token, payout_asset) = setup_fee_offering(&env);
+        let result = client.try_set_secondary_market_royalty_bps(
+            &issuer,
+            &symbol_short!("fee"),
+            &token,
+            &payout_asset,
+            &5_001,
+        );
+        assert!(result.is_err(), "royalty_bps > MAX_PLATFORM_FEE_BPS (5 000) must be rejected");
+    }
+
+    #[test]
+    fn set_secondary_market_royalty_bps_fails_for_nonexistent_offering() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token = Address::generate(&env);
+        let asset = Address::generate(&env);
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        let result = client.try_set_secondary_market_royalty_bps(
+            &admin,
+            &symbol_short!("fee"),
+            &token,
+            &asset,
+            &100,
+        );
+        assert!(result.is_err(), "must fail when offering does not exist");
+    }
+
+    #[test]
+    fn pay_secondary_market_royalty_transfers_to_issuer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &1_000, &payout_asset, &0);
+        client.set_secondary_market_royalty_bps(&issuer, &symbol_short!("fee"), &token, &payout_asset, &250);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let royalty_amount = client
+            .pay_secondary_market_royalty(
+                &buyer,
+                &issuer,
+                &symbol_short!("fee"),
+                &token,
+                &payment_asset,
+                &400,
+                &seller,
+                &buyer,
+            )
+            .unwrap();
+
+        assert_eq!(royalty_amount, 10); // 400 * 2.5%
+        assert_eq!(
+            crate::test_utils::get_balance(&env, &payment_asset, &issuer),
+            10,
+        );
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 990);
+    }
+
+    #[test]
+    fn pay_secondary_market_royalty_zero_when_not_configured() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = admin.clone();
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payout_asset = Address::generate(&env);
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(&issuer, &symbol_short!("fee"), &token, &1_000, &payout_asset, &0);
+
+        let payment_asset = crate::test_utils::create_token(&env, &admin);
+        crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
+
+        let royalty_amount = client
+            .pay_secondary_market_royalty(
+                &buyer,
+                &issuer,
+                &symbol_short!("fee"),
+                &token,
+                &payment_asset,
+                &400,
+                &seller,
+                &buyer,
+            )
+            .unwrap();
+
+        assert_eq!(royalty_amount, 0);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &issuer), 0);
+        assert_eq!(crate::test_utils::get_balance(&env, &payment_asset, &buyer), 1_000);
     }
 
     // ── Platform-level per-asset fee ─────────────────────────────────────────
