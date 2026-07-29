@@ -158,14 +158,23 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::VoteRecord(OfferingId, u32, Address)", "bool", "offering+proposal+voter"),
     ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
     ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
-    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
-    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
-    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+meta_hash"),
-    ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey2::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
+    // ── Accrual-checkpoint keys ──
+    ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
+    ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
+    // ── Governance keys (issue #557) ──
+    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposalPayload", "offering+proposal"),
+    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
+    // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
+    ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
+    ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
-    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer")
+    ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer"),
+    ("MigrationDataKey::MigrationHook(Symbol)", "MigrationTransform", "legacy_key"),
+    ("MigrationDataKey::MigrationHookIndex(u32)", "Symbol", "index"),
+    ("MigrationDataKey::MigrationHookCount", "u32", "contract"),
 ]);
 
 const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revenue_deposit_contract", [
