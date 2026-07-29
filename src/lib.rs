@@ -212,6 +212,8 @@ pub enum RevoraError {
     SignerKeyNotRegistered = 29,
     /// The provided attestation network identifier does not match the active ledger network.
     NetworkIdMismatch = 62,
+    /// Transfer blocked because shares are still locked (lockup schedule active).
+    LockupViolation = 63,
     /// Multisig proposal has expired.
     /// Wire value: 30. Stable since v1.
     ProposalExpired = 30,
@@ -595,6 +597,9 @@ const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
 const EVENT_ADMIN_ROTATION_REVOKED: Symbol = symbol_short!("adm_rvk");
 /// Emitted when a lockup schedule is configured for an offering.
 const EVENT_LOCKUP_SET: Symbol = symbol_short!("lock_set");
+/// Emitted when a transfer is attempted while the offering has active lockup restrictions.
+/// Includes the caller, unlock timestamp, and attempted amount for indexer alerting.
+const EVENT_LOCKUP_VIOLATION: Symbol = symbol_short!("lock_viol");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -6800,6 +6805,19 @@ impl RevoraRevenueShare {
 
         if from == to {
             return Ok(());
+        }
+
+        // Lockup violation check: reject transfer if lockup is still active
+        if let Some(schedule) = Self::get_lockup_schedule(env.clone(), issuer.clone(), namespace.clone(), token.clone()) {
+            let now = env.ledger().timestamp();
+            let unlocked_bps = schedule.calculate_unlocked_bps(now);
+            if unlocked_bps < 10_000 {
+                env.events().publish(
+                    (EVENT_LOCKUP_VIOLATION, from.clone()),
+                    (to.clone(), amount_bps, schedule.unlock_ts),
+                );
+                return Err(RevoraError::LockupViolation);
+            }
         }
 
         // Zero-value transfer is meaningless
