@@ -224,9 +224,9 @@ pub enum RevoraError {
     /// Approver has already approved this proposal.
     AlreadyApproved = 46,
     /// The requester is still within the faucet cooldown window.
-    FaucetCooldownActive = 56,
+    FaucetCooldownActive = 65,
     /// Total supply shares would exceed the offering's max total supply shares.
-    MaxTotalSupplySharesExceeded = 51,
+    MaxTotalSupplySharesExceeded = 67,
 
     /// override_existing=true was requested but no persisted report exists for the given period_id.
     MissingReportForOverride = 47,
@@ -258,40 +258,12 @@ pub enum RevoraError {
     MaxDisputesReached = 60,
     /// The caller holds zero shares in the offering and cannot open a dispute.
     DisputeZeroShare = 61,
-    /// The configured FX oracle quote is older than the offering's maximum allowed age.
-    ///
-    /// Wire value: 62. Stable since v1.
-    OracleQuoteStale = 62,
-    /// All oracles in the oracle chain returned stale quotes; no fresh quote is available.
-    ///
-    /// Wire value: 63. Stable since v1.
-    AllOraclesStale = 63,
-
-    // ── Feature extension codes (64–99) ──────────────────────────────────────
-    /// Caller is only permitted in testnet mode (e.g. faucet endpoints).
-    TestnetOnly = 64,
-    /// The holder's address is individually frozen for this offering.
-    HolderFrozen = 65,
-    /// The provided share class identifier is not valid for this offering.
-    InvalidShareClass = 66,
-    /// Share class bps allocation is invalid (e.g. > 10 000).
-    InvalidShareClassBps = 67,
-    /// The conversion ratio supplied for class conversion is invalid.
-    InvalidConversionRatio = 68,
-    /// The platform fee would exceed the remaining holder-share headroom.
-    FeeExceedsHolderShare = 69,
-    /// Adding to a transfer-restriction category would exceed its configured cap.
-    CategoryCapReached = 70,
-    /// The requested class conversion has not been approved.
-    ConversionNotApproved = 71,
-    /// Conversion is blocked because the holder still has unvested tokens.
-    UnvestedConversionBlocked = 72,
-    /// The stored freeze reason does not match the reason supplied for unfreeze.
-    FreezeReasonMismatch = 73,
-    /// The holder does not have sufficient class balance for the requested operation.
-    InsufficientClassBalance = 74,
-    /// Current time is outside the configured redemption window.
-    RedemptionWindowClosed = 75,
+    /// Claims are halted for this offering due to an active critical dispute.
+    DisputeFreezeActive = 62,
+    /// The dispute resolution caller is not the issuer of the disputed offering.
+    NotDisputeIssuer = 63,
+    /// The dispute is already resolved or rejected and cannot be resolved again.
+    DisputeAlreadyResolved = 64,
 }
 
 pub mod vesting;
@@ -406,6 +378,15 @@ pub enum ProposalAction {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PauseState {
+    NotPaused = 0,
+    SoftPaused = 1,
+    HardPaused = 2,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
     pub id: u32,
@@ -419,21 +400,48 @@ pub struct Proposal {
     pub quorum_bps: u32,
 }
 
+/// Status of an on-chain dispute record.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub struct GovernanceProposal {
-    pub id: u32,
-    pub meta_hash: BytesN<32>,
-    pub quorum_bps: u32,
-    pub ends_at: u64,
+pub enum DisputeStatus {
+    /// Dispute is open and awaiting resolution.
+    Open,
+    /// Dispute has been resolved in favour of the holder.
+    Resolved,
+    /// Dispute has been rejected by the issuer or admin.
+    Rejected,
 }
 
+/// Severity level of an on-chain dispute.
 #[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PauseState {
-    NotPaused = 0,
-    SoftPaused = 1,
-    HardPaused = 2,
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeSeverity {
+    /// Standard dispute — no special side-effects.
+    Standard,
+    /// Critical dispute — halts claims for the affected offering until resolved.
+    Critical,
+}
+
+/// An on-chain dispute opened by a holder against an offering.
+///
+/// The `id` is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dispute {
+    /// Deterministic identifier for this dispute.
+    pub id: BytesN<32>,
+    /// The holder who opened the dispute.
+    pub holder: Address,
+    /// The offering the dispute concerns.
+    pub offering_id: OfferingId,
+    /// Ledger timestamp when the dispute was opened.
+    pub opened_at: u64,
+    /// Severity level of the dispute.
+    pub severity: DisputeSeverity,
+    /// Hash of the off-chain dispute metadata (evidence, description, etc.).
+    pub meta_hash: BytesN<32>,
+    /// Current status of the dispute.
+    pub status: DisputeStatus,
 }
 
 
@@ -540,6 +548,8 @@ const EVENT_ADMIN_ROTATION_LOGGED: Symbol = symbol_short!("adm_log");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
+const EVENT_DISPUTE_FREEZE_ON: Symbol = symbol_short!("dsp_frzon");
+const EVENT_DISPUTE_FREEZE_OFF: Symbol = symbol_short!("dsp_fzoff");
 const BPS_DENOMINATOR: i128 = 10_000;
 const ACCRUAL_SCALE_E18: i128 = 1_000_000_000_000_000_000;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
@@ -1081,40 +1091,6 @@ pub struct SnapshotEntry {
     pub total_bps: u32,
 }
 
-/// Immutable record of a completed admin rotation, persisted in an append-only log.
-///
-/// Written once in `accept_admin_rotation` and read via `get_admin_rotation_history_page`.
-/// The log is bounded — see `MAX_ADMIN_ROTATION_LOG`.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdminRotationEntry {
-    /// Admin address before the rotation.
-    pub prior_admin: Address,
-    /// Admin address after the rotation.
-    pub new_admin: Address,
-    /// Ledger timestamp when `accept_admin_rotation` executed.
-    pub rotated_at: u64,
-}
-
-/// Tiered pause state for the contract.
-///
-/// - `NotPaused`  – all operations open.
-/// - `SoftPaused` – reports/deposits blocked; `claim` still allowed.
-/// - `HardPaused` – all state-mutating operations blocked, including `claim`.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum PauseState {
-    NotPaused,
-    SoftPaused,
-    HardPaused,
-}
-
-/// Primary storage keys for core contract state.
-/// Split from the full key set to stay within the Soroban XDR union variant limit (â‰¤50).
-///
-/// Scoped to the crate: storage keys are an internal implementation detail and are not part
-/// of the contract's external interface, so no contract spec entry is generated for them.
-/// This also keeps the enum clear of the 50-case spec union limit as new keys are added.
 #[contracttype]
 #[derive(Clone)]
 pub(crate) enum DataKey {
@@ -1293,17 +1269,6 @@ pub enum DataKey2 {
     /// Off-chain disclosure metadata (URI + hash) for an offering (#485).
     DisclosureMeta(OfferingId),
 
-    /// Governance proposal count scoped to an offering.
-    GovernanceProposalCount(OfferingId),
-    /// Governance proposal payload keyed by (offering_id, proposal_id).
-    GovernanceProposal(OfferingId, u32),
-    /// Duplicate meta-hash guard keyed by (offering_id, meta_hash).
-    GovernanceProposalMeta(OfferingId, BytesN<32>),
-
-    /// Per-offering minimum revenue threshold below which reports are skipped.
-    MinRevenueThreshold(OfferingId),
-    /// Per-offering cumulative deposited revenue tracker.
-    DepositedRevenue(OfferingId),
     /// Timestamp of the last faucet request for a requester address.
     FaucetLastRequest(Address),
     /// Whether dual-signature close-of-period is enabled for this offering.
@@ -1348,10 +1313,9 @@ const MAX_CLAIM_PERIODS: u32 = 50;
 /// This is a safety cap to prevent accidental long-running loops in read-only methods.
 const MAX_CHUNK_PERIODS: u32 = 200;
 
-/// Maximum number of admin rotation history entries retained.
-/// Prevents unbounded storage growth. When the log reaches this limit, the oldest
-/// entries are evicted (FIFO) on each new rotation.
-const MAX_ADMIN_ROTATION_LOG: u64 = 100;
+/// Maximum number of open disputes a single holder may have per offering.
+/// Prevents spam and unbounded storage growth.
+const MAX_OPEN_DISPUTES_PER_HOLDER: u32 = 5;
 
 // â”€â”€ Negative Amount Validation Matrix (#163) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1638,8 +1602,10 @@ impl RevoraRevenueShare {
     /// # Errors
     /// - [`RevoraError::MigrationDowngradeNotAllowed`] if `CONTRACT_VERSION < persisted version`.
     fn assert_contract_version_compatible(env: &Env) -> Result<(), RevoraError> {
-        if let Some(min_supported) =
-            env.storage().persistent().get::<DataKey, (u32, u32, u32)>(&DataKey::DeployedVersion)
+        if let Some(min_supported) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u32, u32, u32)>(&DataKey::DeployedVersion)
         {
             if CONTRACT_VERSION < min_supported {
                 env.events().publish(
@@ -7858,6 +7824,11 @@ impl RevoraRevenueShare {
 
         let offering_id = OfferingId { issuer, namespace, token };
 
+        // Halt claims while a critical dispute is active for this offering
+        if Self::is_dispute_freeze_active(&env, &offering_id) {
+            return Err(RevoraError::DisputeFreezeActive);
+        }
+
         // Initial blacklist check for early fail-fast
         if Self::is_blacklisted(
             env.clone(),
@@ -8033,6 +8004,182 @@ impl RevoraRevenueShare {
     /// Read-only: get a proposal by id.
     pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
         env.storage().persistent().get(&DataKey2::MultisigProposal(proposal_id))
+    }
+
+    /// Open a formal on-chain dispute against an offering.
+    ///
+    /// The dispute ID is deterministic: `sha256(issuer || namespace || token || holder || meta_hash)`.
+    /// A holder may have at most [`MAX_OPEN_DISPUTES_PER_HOLDER`] open disputes per offering.
+    ///
+    /// When `severity` is [`DisputeSeverity::Critical`] the offering's claims are frozen
+    /// (blocked) until the dispute is resolved or rejected via [`resolve_dispute`].
+    ///
+    /// ### Arguments
+    /// * `holder` — The address opening the dispute. Must authenticate.
+    /// * `issuer` — The offering's issuer address.
+    /// * `namespace` — The offering's namespace symbol.
+    /// * `token` — The offering's token address.
+    /// * `severity` — [`DisputeSeverity::Critical`] halts claims until resolved.
+    /// * `meta_hash` — A 32-byte hash pointing to off-chain dispute evidence (e.g. IPFS CID).
+    ///
+    /// ### Errors
+    /// - [`RevoraError::DisputeZeroShare`] if the holder holds zero shares.
+    /// - [`RevoraError::DisputeAlreadyOpen`] if an identical dispute already exists.
+    /// - [`RevoraError::MaxDisputesReached`] if the per-holder cap is exceeded.
+    pub fn open_dispute(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        severity: DisputeSeverity,
+        meta_hash: BytesN<32>,
+    ) -> Result<BytesN<32>, RevoraError> {
+        holder.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let offering_id = OfferingId { issuer, namespace, token };
+
+        // Reject holders with zero shares (not a participant)
+        let share = Self::get_holder_share(
+            env.clone(),
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+            holder.clone(),
+        );
+        if share == 0 {
+            return Err(RevoraError::DisputeZeroShare);
+        }
+
+        // Deterministic dispute ID: sha256(issuer || namespace || token || holder || meta_hash)
+        let mut input = Bytes::new(&env);
+        input.append(&offering_id.issuer.to_xdr(&env));
+        input.append(&offering_id.namespace.to_xdr(&env));
+        input.append(&offering_id.token.to_xdr(&env));
+        input.append(&holder.to_xdr(&env));
+        input.append(&meta_hash.to_xdr(&env));
+        let dispute_id: BytesN<32> = env.crypto().sha256(&input);
+
+        // Reject duplicate
+        if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
+            return Err(RevoraError::DisputeAlreadyOpen);
+        }
+
+        // Enforce spam cap per (offering_id, holder)
+        let count_key = DataKey2::DisputeCount(offering_id.clone(), holder.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if count >= MAX_OPEN_DISPUTES_PER_HOLDER {
+            return Err(RevoraError::MaxDisputesReached);
+        }
+
+        let opened_at = env.ledger().timestamp();
+
+        let dispute = Dispute {
+            id: dispute_id.clone(),
+            holder: holder.clone(),
+            offering_id: offering_id.clone(),
+            opened_at,
+            severity: severity.clone(),
+            meta_hash: meta_hash.clone(),
+            status: DisputeStatus::Open,
+        };
+
+        env.storage().persistent().set(&DataKey2::Dispute(dispute_id.clone()), &dispute);
+        env.storage().persistent().set(&count_key, &(count + 1));
+
+        // Track critical dispute for O(1) freeze lookups
+        if severity == DisputeSeverity::Critical {
+            let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
+            let crit_count: u32 = env.storage().persistent().get(&crit_key).unwrap_or(0);
+            env.storage().persistent().set(&crit_key, &(crit_count + 1));
+            if crit_count == 0 {
+                env.events().publish(
+                    (EVENT_DISPUTE_FREEZE_ON,),
+                    (offering_id.clone(), holder.clone(), dispute_id.clone()),
+                );
+            }
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_open"),),
+            (dispute_id.clone(), offering_id, holder.clone(), meta_hash, severity),
+        );
+
+        Ok(dispute_id)
+    }
+
+    /// Read an on-chain dispute record by its deterministic ID.
+    ///
+    /// Returns `None` if no dispute with the given ID exists.
+    pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<Dispute> {
+        env.storage().persistent().get(&DataKey2::Dispute(dispute_id))
+    }
+
+    /// Check whether any critical dispute is active for the given offering.
+    ///
+    /// When `true`, claims for this offering are halted (returns [`RevoraError::DisputeFreezeActive`]).
+    pub fn is_dispute_freeze_active(env: &Env, offering_id: &OfferingId) -> bool {
+        let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
+        env.storage().persistent().get::<DataKey2, u32>(&crit_key).unwrap_or(0) > 0
+    }
+
+    /// Resolve or reject an open dispute.
+    ///
+    /// Only the issuer of the disputed offering may call this.
+    /// When the last critical dispute for an offering transitions from `Open` to
+    /// `Resolved` / `Rejected`, the dispute freeze is lifted and a `dispute_freeze_off`
+    /// event is emitted.
+    ///
+    /// ### Arguments
+    /// * `caller` — The address resolving the dispute. Must be the offering's issuer.
+    /// * `dispute_id` — The deterministic dispute ID to resolve.
+    /// * `resolution` — The target status: [`DisputeStatus::Resolved`] or [`DisputeStatus::Rejected`].
+    ///
+    /// ### Errors
+    /// - [`RevoraError::NotDisputeIssuer`] if the caller is not the dispute's offering issuer.
+    /// - [`RevoraError::DisputeNotFound`] if no dispute with the given ID exists.
+    /// - [`RevoraError::DisputeAlreadyResolved`] if the dispute is not `Open`.
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        dispute_id: BytesN<32>,
+        resolution: DisputeStatus,
+    ) -> Result<(), RevoraError> {
+        caller.require_auth();
+
+        let mut dispute: Dispute =
+            env.storage().persistent().get(&DataKey2::Dispute(dispute_id.clone()))
+                .ok_or(RevoraError::DisputeNotFound)?;
+
+        if dispute.status != DisputeStatus::Open {
+            return Err(RevoraError::DisputeAlreadyResolved);
+        }
+        if caller != dispute.offering_id.issuer {
+            return Err(RevoraError::NotDisputeIssuer);
+        }
+
+        let was_critical = dispute.severity == DisputeSeverity::Critical;
+        dispute.status = resolution.clone();
+        env.storage().persistent().set(&DataKey2::Dispute(dispute_id), &dispute);
+
+        // Decrement critical dispute count and emit freeze_off when it hits zero
+        if was_critical {
+            let crit_key = DataKey2::CriticalDisputeCount(dispute.offering_id.clone());
+            let crit_count: u32 = env.storage().persistent().get(&crit_key).unwrap_or(0);
+            if crit_count > 0 {
+                let new_count = crit_count - 1;
+                env.storage().persistent().set(&crit_key, &new_count);
+                if new_count == 0 {
+                    env.events().publish(
+                        (EVENT_DISPUTE_FREEZE_OFF,),
+                        (dispute.offering_id, dispute.holder, dispute.id),
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -8253,6 +8400,11 @@ impl RevoraRevenueShare {
         holder.require_auth();
 
         let offering_id = OfferingId { issuer, namespace, token };
+
+        // Halt claims while a critical dispute is active for this offering
+        if Self::is_dispute_freeze_active(&env, &offering_id) {
+            return Err(RevoraError::DisputeFreezeActive);
+        }
 
         // Initial blacklist and freeze checks for early fail-fast
         if Self::is_blacklisted(
@@ -12347,3 +12499,5 @@ mod test_close_period;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+#[cfg(test)]
+mod test_dispute;
