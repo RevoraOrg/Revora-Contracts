@@ -284,6 +284,37 @@ impl VestingContract {
         }
         out
     }
+
+    /// Calculate the vested progress in basis points (BPS) at an arbitrary timestamp.
+    /// Returns a value clamped between 0 and 10000.
+    pub fn vested_progress_at(
+        env: Env,
+        offering_id: VestingOfferingId,
+        holder: Address,
+        at_ts: u64,
+    ) -> u32 {
+        let schedule: VestingSchedule = match env.storage().persistent().get(&VestingKey::Schedule(holder)) {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        if schedule.issuer != offering_id.issuer || schedule.token != offering_id.token {
+            return 0;
+        }
+
+        if schedule.total_amount <= 0 {
+            return 0;
+        }
+
+        let vested = compute_vested(&schedule, at_ts);
+        let bps = (vested.saturating_mul(10000) / schedule.total_amount) as u32;
+
+        if bps > 10000 {
+            10000
+        } else {
+            bps
+        }
+    }
 }
 
 /// Migrate all vesting schedules for an issuer/token pair to a new issuer.
