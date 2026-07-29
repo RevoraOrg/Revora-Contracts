@@ -22,7 +22,7 @@
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, BytesN, Env, IntoVal, Val, Vec,
 };
 
@@ -40,10 +40,16 @@ fn attest(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0xabu8; 32])
 }
 
+/// Deterministic 32-byte network ID for tests.
+fn test_network_id(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
 /// Register an offering with a single issuer (1-of-1 quorum) and return
 /// (client, issuer, token).
 fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address) {
     env.mock_all_auths();
+    env.ledger().set_network_id([0x01u8; 32]);
     let client = make_client(env);
     let issuer = Address::generate(env);
     let token = Address::generate(env);
@@ -98,7 +104,9 @@ fn transfer_blocked_when_frozen() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     // State must be unchanged
@@ -125,7 +133,9 @@ fn transfer_blocked_when_paused() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
@@ -146,7 +156,9 @@ fn self_transfer_rejected() {
         &holder,
         &holder,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidTransferParticipants)));
     // Share is unchanged
@@ -170,7 +182,9 @@ fn zero_shares_rejected() {
         &from,
         &to,
         &0u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -196,7 +210,9 @@ fn unknown_offering_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
@@ -216,7 +232,9 @@ fn wrong_issuer_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
@@ -241,7 +259,9 @@ fn transfer_blocked_when_offering_frozen() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingFrozen)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -266,7 +286,9 @@ fn blacklisted_from_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     // Share unchanged
@@ -291,7 +313,9 @@ fn blacklisted_to_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -319,7 +343,9 @@ fn whitelist_unlisted_from_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -345,7 +371,9 @@ fn whitelist_unlisted_to_rejected() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -371,7 +399,9 @@ fn whitelist_both_listed_succeeds() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
@@ -397,7 +427,9 @@ fn no_whitelist_transfer_unrestricted() {
         &from,
         &to,
         &500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -420,7 +452,9 @@ fn insufficient_shares_rejected() {
         &from,
         &to,
         &600u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
@@ -443,7 +477,9 @@ fn zero_holder_share_rejected() {
         &from,
         &to,
         &1u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
 }
@@ -467,7 +503,9 @@ fn recipient_share_cap_rejected() {
         &from,
         &to,
         &3_000u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     // State unchanged
@@ -492,7 +530,9 @@ fn recipient_share_at_cap_boundary_allowed() {
         &from,
         &to,
         &5_000u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
@@ -517,7 +557,9 @@ fn happy_path_full_transfer() {
         &from,
         &to,
         &4_000u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
@@ -541,7 +583,9 @@ fn happy_path_partial_transfer() {
         &from,
         &to,
         &2_500u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 3_500);
@@ -564,7 +608,9 @@ fn minimum_granularity_one_bps() {
         &from,
         &to,
         &1u32,
+        &symbol_short!("def"),
         &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 99);
@@ -598,7 +644,8 @@ fn share_total_invariant_after_transfer() {
     let total_before = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_before, 6_000);
 
-    client2.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &attest(&env));
+    client2.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
 
     let total_after = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_after, 6_000, "HolderShareTotal must be invariant across peer-to-peer transfer");
@@ -623,7 +670,9 @@ fn subsequent_set_holder_share_respects_post_transfer_state() {
 
     // Transfer 2000 from alice to bob → alice=2000, bob=5000 (total=7000)
     client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &alice, &bob, &2_000u32, &attest(&env),
+        &issuer, &symbol_short!("def"), &token, &alice, &bob, &2_000u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &alice), 2_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &bob), 5_000);
@@ -652,7 +701,7 @@ fn event_payload_correct() {
     let before = env.events().all().len();
 
     client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &hash,
+        &issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &hash, &test_network_id(&env, 0x01),
     );
 
     let events = env.events().all();
@@ -705,7 +754,9 @@ fn exactly_one_xfer_att_event_per_transfer() {
     let before = env.events().all().len();
 
     client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
     );
 
     let events = env.events().all();
@@ -733,7 +784,9 @@ fn zero_attest_hash_accepted() {
 
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &zero_hash,
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &zero_hash,
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -749,9 +802,51 @@ fn all_ones_attest_hash_accepted() {
 
     let ones_hash = BytesN::from_array(&env, &[0xffu8; 32]);
     let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &ones_hash,
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &ones_hash,
+        &test_network_id(&env, 0x01),
     );
     assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn matching_network_id_is_accepted() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    set_share(&client, &issuer, &token, &from, 1_000);
+
+    let network_id = test_network_id(&env, 0x42);
+    env.ledger().set_network_id([0x42u8; 32]);
+
+    let result = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &network_id,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn mismatched_network_id_is_rejected() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    set_share(&client, &issuer, &token, &from, 1_000);
+
+    env.ledger().set_network_id([0x42u8; 32]);
+    let mismatched_network_id = test_network_id(&env, 0x43);
+
+    let result = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &mismatched_network_id,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::NetworkIdMismatch)));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
 }
 
 // ── Multi-hop and chained transfers ──────────────────────────────────────────
@@ -769,9 +864,11 @@ fn chained_transfers_maintain_total() {
     let ns = symbol_short!("def");
 
     // A→B: 2000
-    client.transfer_with_attestation(&issuer, &ns, &token, &a, &b, &2_000u32, &attest(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token, &a, &b, &2_000u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
     // B→C: 1000
-    client.transfer_with_attestation(&issuer, &ns, &token, &b, &c, &1_000u32, &attest(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token, &b, &c, &1_000u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &a), 4_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &b), 1_000);
@@ -790,8 +887,10 @@ fn multiple_transfers_from_same_holder() {
     set_share(&client, &issuer, &token, &from, 9_000);
 
     let ns = symbol_short!("def");
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to1, &3_000u32, &attest(&env));
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to2, &3_000u32, &attest(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to1, &3_000u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
+    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to2, &3_000u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 3_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &to1), 3_000);
@@ -824,7 +923,8 @@ fn transfer_does_not_affect_other_offerings() {
     client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000);
 
     // Transfer on offering A only
-    client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &attest(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &attest(&env),
+        &test_network_id(&env, 0x01));
 
     // Offering A shares updated
     assert_eq!(client.get_holder_share(&issuer, &ns, &token_a, &from), 2_000);
@@ -854,6 +954,8 @@ fn transfer_without_from_auth_causes_host_panic() {
     set_share(&client, &issuer, &token, &from, 1_000);
     // This will abort the host — cannot be caught by try_
     let _ = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &attest(&env),
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
     );
 }
