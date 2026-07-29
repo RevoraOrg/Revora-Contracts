@@ -109,6 +109,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::HolderAccrualState(OfferingId, Address)", "HolderAccrualState", "offering+holder"),
     ("DataKey2::HolderShareSchedule(OfferingId, Address)", "Vec<ShareCheckpoint>", "offering+holder"),
     ("DataKey2::ContractFlags", "u32", "contract"),
+    ("DataKey2::EmitV2Compat", "bool", "contract"),
     ("DataKey2::OfferingRecord(OfferingId)", "Offering", "offering"),
     ("DataKey2::BlacklistSizeLimit(OfferingId)", "u32", "offering"),
     ("DataKey2::ClosedPeriod(OfferingId, u64)", "bool", "offering+period"),

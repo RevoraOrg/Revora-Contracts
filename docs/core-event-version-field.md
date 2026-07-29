@@ -196,3 +196,41 @@ and this flag can be removed entirely.
 
 **Upgrade Path**: v3 will bump `EVENT_SCHEMA_VERSION_V2 → 3` when storage schemas change;
 the constant guard test will catch any accidental early bump.
+
+## Event Version Negotiation (Issue #567)
+
+Indexers can query the non-authorized, read-only entrypoint `supported_event_versions()` to negotiate active event schema versions before setting up event subscriptions:
+
+```rust
+pub fn supported_event_versions(env: Env) -> Vec<EventVersionInfo>
+```
+
+### Response Schema
+
+Returns a `Vec<EventVersionInfo>` where each item contains:
+- `topic: Symbol` — the on-chain event index topic symbol (e.g. `ev_idx3`, `ev_idx2`)
+- `version: u32` — the schema version (e.g. `3`, `2`)
+
+### Dynamic Shim Reflection
+
+- **V3 Canonical (`ev_idx3`, v3)**: Always returned.
+- **V2 Compat Shim (`ev_idx2`, v2)**: Included dynamically when `EmitV2Compat` is `true` (default), and omitted when `EmitV2Compat` is set to `false`.
+
+### Indexer Pre-Subscription Negotiation Workflow
+
+```rust
+// 1. Query contract before starting event subscription pipeline
+let supported = client.supported_event_versions();
+
+// 2. Negotiate highest supported version
+let mut selected_topic = None;
+let mut selected_version = 0;
+for info in supported.iter() {
+    if info.version > selected_version {
+        selected_topic = Some(info.topic.clone());
+        selected_version = info.version;
+    }
+}
+
+// 3. Subscribe to selected topic (e.g. ev_idx3)
+```
