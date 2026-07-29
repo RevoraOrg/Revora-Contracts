@@ -38,12 +38,15 @@ pub struct VestingOfferingId {
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VestingCurve {
     Linear,
     Cliff,
-    Graded { step_secs: u64 },
-    Step { steps: u32 },
+    /// Graded quarterly vesting curve with milestone timestamps and per-milestone BPS.
+    /// Each tuple is (timestamp, bps) and milestones must be strictly monotonic
+    /// with total BPS summing to 10000.
+    Graded(Vec<(u64, u32)>),
+    Step(u32),
 }
 
 /// A single vesting tranche for a beneficiary.
@@ -92,7 +95,7 @@ pub const VESTING_EVENT_SCHEMA_VERSION: u32 = 1;
 // Legacy event symbols (for backward compatibility).
 const EVENT_VESTING_CREATED: Symbol = symbol_short!("vest_crt");
 const EVENT_VESTING_CLAIMED: Symbol = symbol_short!("vest_clm");
-const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_accel");
+const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_accl");
 
 #[contract]
 pub struct VestingContract;
@@ -118,6 +121,30 @@ impl VestingContract {
         }
         if start_ts < cliff_ts || end_ts <= start_ts {
             return Err(VestingError::InvalidTimestamps);
+        }
+
+        // Validate Graded curve milestones (#525): must be non-empty, strictly
+        // monotonic timestamps, and total BPS must equal 10_000 (100%).
+        if let VestingCurve::Graded(milestones) = &curve {
+            if milestones.is_empty() {
+                return Err(VestingError::InvalidTimestamps);
+            }
+            let mut total_bps: u32 = 0;
+            let mut prev_ts: Option<u64> = None;
+            for milestone in milestones.iter() {
+                let ts = milestone.0;
+                let bps = milestone.1;
+                if let Some(prev) = prev_ts {
+                    if ts <= prev {
+                        return Err(VestingError::InvalidTimestamps);
+                    }
+                }
+                prev_ts = Some(ts);
+                total_bps = total_bps.checked_add(bps).ok_or(VestingError::InvalidTimestamps)?;
+            }
+            if total_bps != 10_000 {
+                return Err(VestingError::InvalidTimestamps);
+            }
         }
 
         let key = VestingKey::Schedule(beneficiary.clone());
@@ -176,8 +203,9 @@ impl VestingContract {
             return Err(VestingError::AlreadyAccelerated);
         }
 
-        let raw_accel = schedule.total_amount.checked_mul(acceleration_bps as i128).unwrap_or(0) / 10000;
-        
+        let raw_accel =
+            schedule.total_amount.checked_mul(acceleration_bps as i128).unwrap_or(0) / 10000;
+
         schedule.accelerated_amount = schedule.accelerated_amount.saturating_add(raw_accel);
         if schedule.accelerated_amount > schedule.total_amount {
             schedule.accelerated_amount = schedule.total_amount;
@@ -349,21 +377,48 @@ pub fn migrate_offering_schedules(
 
 /// Helper: compute total vested tokens at a given timestamp.
 fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
-    let mut base_vested = 0;
-    if now >= schedule.cliff_ts {
-        if now >= schedule.end_ts {
-            base_vested = schedule.total_amount;
-        } else if now > schedule.start_ts {
-            let elapsed = (now - schedule.start_ts) as i128;
-            let duration = (schedule.end_ts - schedule.start_ts) as i128;
-            if duration == 0 {
-                base_vested = schedule.total_amount;
+    let base_vested = match &schedule.curve {
+        VestingCurve::Graded(milestones) => {
+            if now < schedule.cliff_ts {
+                0
             } else {
-                base_vested = schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0);
+                let mut cumulative_bps: u32 = 0;
+                for (ts, bps) in milestones.iter() {
+                    if now >= ts {
+                        cumulative_bps = cumulative_bps.saturating_add(bps);
+                    } else {
+                        break;
+                    }
+                }
+                schedule
+                    .total_amount
+                    .checked_mul(cumulative_bps as i128)
+                    .map(|m| m / 10_000)
+                    .unwrap_or(0)
             }
         }
-    }
-    
+        _ => {
+            // Linear / Cliff / Step: all use the same time-proportional logic.
+            if now >= schedule.cliff_ts {
+                if now >= schedule.end_ts {
+                    schedule.total_amount
+                } else if now > schedule.start_ts {
+                    let elapsed = (now - schedule.start_ts) as i128;
+                    let duration = (schedule.end_ts - schedule.start_ts) as i128;
+                    if duration == 0 {
+                        schedule.total_amount
+                    } else {
+                        schedule.total_amount.checked_mul(elapsed).map(|m| m / duration).unwrap_or(0)
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+    };
+
     let total = base_vested.saturating_add(schedule.accelerated_amount);
     if total > schedule.total_amount {
         schedule.total_amount

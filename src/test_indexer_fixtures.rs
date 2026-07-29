@@ -339,6 +339,7 @@ fn v2_event_symbols_are_all_distinct() {
         symbol_short!("claim2"),
         symbol_short!("sh_set2"),
         symbol_short!("frz2"),
+        symbol_short!("frz_rsn"),
     ];
 
     let n = symbols.len();
@@ -405,4 +406,118 @@ fn fixture_period_scoped_events_carry_requested_period_id() {
             "fixture at index {idx} must carry the requested period_id"
         );
     }
+}
+
+// ── faucet_metrics_v1 (fct_mtr1) indexer fixture ─────────────────────────────
+
+/// Fixture: `fct_mtr1` topic has the correct symbol.
+///
+/// Off-chain indexers should subscribe to events where `topics[0] == "fct_mtr1"`.
+/// This test pins the symbol string so any accidental rename is caught immediately.
+#[test]
+fn fixture_fct_mtr1_topic_symbol_is_stable() {
+    let env = Env::default();
+    let expected: soroban_sdk::Symbol = symbol_short!("fct_mtr1");
+    // The contract constant is pub(crate) — verify it via the symbol value
+    let actual = crate::EVENT_FAUCET_METRICS;
+    assert_eq!(actual, expected, "EVENT_FAUCET_METRICS must be fct_mtr1");
+}
+
+/// Fixture: `fct_mtr1` data tuple is `(u32, u32, u32, u64, u64)`.
+///
+/// Field order (for indexer deserialization):
+/// 0. `total_dispensed : u32`
+/// 1. `unique_addresses: u32`
+/// 2. `cooldown_rejects: u32`
+/// 3. `window_start    : u64`
+/// 4. `window_end      : u64`
+#[test]
+fn fixture_fct_mtr1_data_tuple_shape() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = crate::RevoraRevenueShareClient::new(
+        &env,
+        &env.register_contract(None, crate::RevoraRevenueShare),
+    );
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &None::<soroban_sdk::Address>, &None::<bool>);
+    client.set_testnet_mode(&true);
+
+    let issuer = soroban_sdk::Address::generate(&env);
+    let token = soroban_sdk::Address::generate(&env);
+    let payout = soroban_sdk::Address::generate(&env);
+    let ns = symbol_short!("fix");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0);
+
+    // Set ledger timestamp to a non-zero window (window_id = 1).
+    env.ledger().set_timestamp(crate::FAUCET_METRICS_WINDOW_SECS);
+
+    let requester = soroban_sdk::Address::generate(&env);
+    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &3);
+
+    // Find the fct_mtr1 event and assert tuple shape.
+    let fct_mtr1_val: soroban_sdk::Val = crate::EVENT_FAUCET_METRICS.into_val(&env);
+    let mut found = false;
+    for (_, topics, data) in env.events().all().iter() {
+        if topics.len() >= 2 && topics.get(0).map(|t| t == fct_mtr1_val).unwrap_or(false) {
+            let window_id: u64 = topics.get(1).unwrap().into_val(&env);
+            let (total_dispensed, unique_addresses, cooldown_rejects, window_start, window_end):
+                (u32, u32, u32, u64, u64) = data.into_val(&env);
+
+            // Shape assertions (values are also deterministic here)
+            assert_eq!(window_id, 1u64, "window_id = ts / FAUCET_METRICS_WINDOW_SECS");
+            assert_eq!(total_dispensed, 3u32);
+            assert_eq!(unique_addresses, 1u32);
+            assert_eq!(cooldown_rejects, 0u32);
+            assert_eq!(window_start, crate::FAUCET_METRICS_WINDOW_SECS);
+            assert_eq!(window_end, crate::FAUCET_METRICS_WINDOW_SECS * 2 - 1);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "fct_mtr1 event must be emitted and parseable by the indexer fixture");
+}
+
+/// Fixture: `fct_mtr1` window_id matches `timestamp / FAUCET_METRICS_WINDOW_SECS`.
+///
+/// Indexers must use this formula to bucket events into hourly aggregates.
+#[test]
+fn fixture_fct_mtr1_window_id_formula() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = crate::RevoraRevenueShareClient::new(
+        &env,
+        &env.register_contract(None, crate::RevoraRevenueShare),
+    );
+    let admin = soroban_sdk::Address::generate(&env);
+    client.initialize(&admin, &None::<soroban_sdk::Address>, &None::<bool>);
+    client.set_testnet_mode(&true);
+
+    let issuer = soroban_sdk::Address::generate(&env);
+    let token = soroban_sdk::Address::generate(&env);
+    let payout = soroban_sdk::Address::generate(&env);
+    let ns = symbol_short!("fix2");
+    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0);
+
+    // ts = 7 * FAUCET_METRICS_WINDOW_SECS + 999  →  window_id = 7
+    let ts = crate::FAUCET_METRICS_WINDOW_SECS * 7 + 999;
+    env.ledger().set_timestamp(ts);
+
+    let requester = soroban_sdk::Address::generate(&env);
+    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &1);
+
+    let fct_mtr1_val: soroban_sdk::Val = crate::EVENT_FAUCET_METRICS.into_val(&env);
+    let mut found_window_id: Option<u64> = None;
+    for (_, topics, _) in env.events().all().iter() {
+        if topics.len() >= 2 && topics.get(0).map(|t| t == fct_mtr1_val).unwrap_or(false) {
+            found_window_id = Some(topics.get(1).unwrap().into_val(&env));
+        }
+    }
+
+    let window_id = found_window_id.expect("fct_mtr1 must be emitted");
+    assert_eq!(
+        window_id,
+        ts / crate::FAUCET_METRICS_WINDOW_SECS,
+        "window_id must equal ts / FAUCET_METRICS_WINDOW_SECS"
+    );
 }
