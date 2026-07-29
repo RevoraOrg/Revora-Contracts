@@ -1885,6 +1885,7 @@ version = "0.1.0"
 dependencies = [
  "derive_arbitrary",
  "proptest",
+ "serde_json",
  "soroban-sdk",
 ]
 
