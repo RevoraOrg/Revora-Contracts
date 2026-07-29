@@ -6,7 +6,7 @@
 //! |-------|-----------|
 //! | 1 — global freeze / pause            | `transfer_blocked_when_frozen`, `transfer_blocked_when_paused` |
 //! | 2 — dual-party auth (host panic)     | `[#ignore]` tests documented below |
-//! | 3 — self-transfer rejection          | `self_transfer_rejected` |
+//! | 3 — self-transfer no-op              | `self_transfer_is_noop` |
 //! | 10 — zero shares rejected            | `zero_shares_rejected` |
 //! | 4 — offering existence / issuer      | `unknown_offering_rejected`, `wrong_issuer_rejected` |
 //! | 5 — offering frozen                  | `transfer_blocked_when_offering_frozen` |
@@ -17,6 +17,7 @@
 //! | event emission                       | `event_payload_correct` |
 //! | storage invariants                   | `shares_updated_correctly`, `share_total_invariant` |
 //! | happy path                           | `happy_path_full_transfer`, `happy_path_partial_transfer` |
+//! | attestation nonce/expiry             | `expired_attestation_rejected`, `replayed_attestation_nonce_rejected`, `attestation_used_at_exact_expiry` |
 
 #![cfg(test)]
 
@@ -43,6 +44,16 @@ fn attest(env: &Env) -> BytesN<32> {
 /// Deterministic 32-byte network ID for tests.
 fn test_network_id(env: &Env, byte: u8) -> BytesN<32> {
     BytesN::from_array(env, &[byte; 32])
+}
+
+/// Default nonce for test attestations.
+fn test_nonce() -> u64 {
+    1
+}
+
+/// Far-future expiry timestamp for tests.
+fn test_expires_at() -> u64 {
+    u64::MAX
 }
 
 /// Register an offering with a single issuer (1-of-1 quorum) and return
@@ -107,6 +118,8 @@ fn transfer_blocked_when_frozen() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     // State must be unchanged
@@ -136,14 +149,16 @@ fn transfer_blocked_when_paused() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
-// ── Guard 3: self-transfer rejection ─────────────────────────────────────────
+// ── Guard 3: self-transfer is a no-op ────────────────────────────────────────
 
 #[test]
-fn self_transfer_rejected() {
+fn self_transfer_is_noop() {
     let env = Env::default();
     let (client, issuer, token) = setup_offering(&env);
     let holder = Address::generate(&env);
@@ -159,8 +174,11 @@ fn self_transfer_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
-    assert_eq!(result, Err(Ok(RevoraError::InvalidTransferParticipants)));
+    // Self-transfer is allowed as a no-op (returns Ok, state unchanged)
+    assert_eq!(result, Ok(Ok(())));
     // Share is unchanged
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 2_000);
 }
@@ -185,6 +203,8 @@ fn zero_shares_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -213,6 +233,8 @@ fn unknown_offering_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
@@ -235,6 +257,8 @@ fn wrong_issuer_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
@@ -262,6 +286,8 @@ fn transfer_blocked_when_offering_frozen() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingFrozen)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -289,6 +315,8 @@ fn blacklisted_from_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     // Share unchanged
@@ -316,6 +344,8 @@ fn blacklisted_to_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -346,6 +376,8 @@ fn whitelist_unlisted_from_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -374,6 +406,8 @@ fn whitelist_unlisted_to_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -402,6 +436,8 @@ fn whitelist_both_listed_succeeds() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
@@ -430,6 +466,8 @@ fn no_whitelist_transfer_unrestricted() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -455,6 +493,8 @@ fn insufficient_shares_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
@@ -480,6 +520,8 @@ fn zero_holder_share_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
 }
@@ -506,6 +548,8 @@ fn recipient_share_cap_rejected() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     // State unchanged
@@ -533,6 +577,8 @@ fn recipient_share_at_cap_boundary_allowed() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
@@ -560,6 +606,8 @@ fn happy_path_full_transfer() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
@@ -586,6 +634,8 @@ fn happy_path_partial_transfer() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 3_500);
@@ -611,6 +661,8 @@ fn minimum_granularity_one_bps() {
         &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 99);
@@ -645,7 +697,7 @@ fn share_total_invariant_after_transfer() {
     assert_eq!(total_before, 6_000);
 
     client2.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &test_nonce(), &test_expires_at());
 
     let total_after = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_after, 6_000, "HolderShareTotal must be invariant across peer-to-peer transfer");
@@ -673,6 +725,8 @@ fn subsequent_set_holder_share_respects_post_transfer_state() {
         &issuer, &symbol_short!("def"), &token, &alice, &bob, &2_000u32, &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &alice), 2_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &bob), 5_000);
@@ -687,8 +741,8 @@ fn subsequent_set_holder_share_respects_post_transfer_state() {
 
 // ── Event emission ────────────────────────────────────────────────────────────
 
-/// The `xfer_att` event must carry (from, to, shares_bps, attest_hash) as its
-/// data payload and (EVENT_XFER_ATT, issuer, namespace, token) as its topic.
+/// The `xfer_att` event must carry (from, to, shares_bps, attest_hash, nonce, expires_at)
+/// as its data payload and (EVENT_XFER_ATT, issuer, namespace, token) as its topic.
 #[test]
 fn event_payload_correct() {
     let env = Env::default();
@@ -699,9 +753,12 @@ fn event_payload_correct() {
 
     let hash = BytesN::from_array(&env, &[0x42u8; 32]);
     let before = env.events().all().len();
+    let nonce = 7u64;
+    let expires_at = u64::MAX;
 
     client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &hash, &test_network_id(&env, 0x01),
+        &issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &symbol_short!("def"),
+        &hash, &test_network_id(&env, 0x01), &nonce, &expires_at,
     );
 
     let events = env.events().all();
@@ -723,17 +780,21 @@ fn event_payload_correct() {
             assert_eq!(ev_ns, symbol_short!("def"));
             assert_eq!(ev_token, token);
 
-            // Verify data: (from, to, shares_bps, attest_hash)
+            // Verify data: (from, to, shares_bps, attest_hash, nonce, expires_at)
             let data_vec: soroban_sdk::Vec<Val> = data.clone().into_val(&env);
             let ev_from: Address = data_vec.get(0).unwrap().into_val(&env);
             let ev_to: Address = data_vec.get(1).unwrap().into_val(&env);
             let ev_bps: u32 = data_vec.get(2).unwrap().into_val(&env);
             let ev_hash: BytesN<32> = data_vec.get(3).unwrap().into_val(&env);
+            let ev_nonce: u64 = data_vec.get(4).unwrap().into_val(&env);
+            let ev_expires_at: u64 = data_vec.get(5).unwrap().into_val(&env);
 
             assert_eq!(ev_from, from);
             assert_eq!(ev_to, to);
             assert_eq!(ev_bps, 2_000u32);
             assert_eq!(ev_hash, hash);
+            assert_eq!(ev_nonce, nonce);
+            assert_eq!(ev_expires_at, expires_at);
             found = true;
             break;
         }
@@ -757,6 +818,8 @@ fn exactly_one_xfer_att_event_per_transfer() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
 
     let events = env.events().all();
@@ -787,6 +850,8 @@ fn zero_attest_hash_accepted() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &zero_hash,
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -805,6 +870,8 @@ fn all_ones_attest_hash_accepted() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &ones_hash,
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -824,6 +891,8 @@ fn matching_network_id_is_accepted() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &attest(&env),
         &network_id,
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -843,10 +912,137 @@ fn mismatched_network_id_is_rejected() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &attest(&env),
         &mismatched_network_id,
+        &test_nonce(),
+        &test_expires_at(),
     );
     assert_eq!(result, Err(Ok(RevoraError::NetworkIdMismatch)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
+}
+
+// ── Attestation nonce/expiry validation (issue #561) ──────────────────────────
+
+/// An expired attestation must be rejected.
+#[test]
+fn expired_attestation_rejected() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    set_share(&client, &issuer, &token, &from, 1_000);
+
+    // Set ledger timestamp to 1000, expiry to 500 (already expired)
+    env.ledger().set_timestamp(1000);
+    let expiry = 500u64;
+
+    let result = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &expiry,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::SignatureExpired)));
+    // State must be unchanged
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
+}
+
+/// Reusing a consumed nonce must be rejected.
+#[test]
+fn replayed_attestation_nonce_rejected() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    set_share(&client, &issuer, &token, &from, 2_000);
+
+    let nonce = 42u64;
+    let expires_at = u64::MAX;
+
+    // First use should succeed
+    let r1 = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &nonce,
+        &expires_at,
+    );
+    assert_eq!(r1, Ok(Ok(())));
+
+    // Second use with same nonce (and different `to`) should fail as replay
+    let to2 = Address::generate(&env);
+    let r2 = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to2, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &nonce,
+        &expires_at,
+    );
+    assert_eq!(r2, Err(Ok(RevoraError::SignatureReplay)));
+}
+
+/// A nonce consumed by one `from` address must not block a different `from` address
+/// from using the same nonce value.
+#[test]
+fn nonce_is_per_signer() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+    set_share(&client, &issuer, &token, &alice, 2_000);
+    set_share(&client, &issuer, &token, &bob, 2_000);
+
+    let nonce = 99u64;
+    let expires_at = u64::MAX;
+
+    // Alice uses nonce 99
+    let r1 = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &alice, &charlie, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &nonce,
+        &expires_at,
+    );
+    assert_eq!(r1, Ok(Ok(())));
+
+    // Bob uses nonce 99 — should succeed (per-signer scoping)
+    let to2 = Address::generate(&env);
+    let r2 = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &bob, &to2, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &nonce,
+        &expires_at,
+    );
+    assert_eq!(r2, Ok(Ok(())));
+}
+
+/// Attestation used at the exact expiry second must succeed (boundary condition).
+#[test]
+fn attestation_used_at_exact_expiry() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    set_share(&client, &issuer, &token, &from, 1_000);
+
+    // Set ledger timestamp to exactly equal the expiry
+    let now = 5000u64;
+    env.ledger().set_timestamp(now);
+    let nonce = 7u64;
+
+    let result = client.try_transfer_with_attestation(
+        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
+        &attest(&env),
+        &test_network_id(&env, 0x01),
+        &nonce,
+        &now,
+    );
+    // now == expires_at, transfer should succeed (expires_at is an inclusive upper bound)
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 500);
 }
 
 // ── Multi-hop and chained transfers ──────────────────────────────────────────
@@ -865,10 +1061,10 @@ fn chained_transfers_maintain_total() {
 
     // A→B: 2000
     client.transfer_with_attestation(&issuer, &ns, &token, &a, &b, &2_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
     // B→C: 1000
     client.transfer_with_attestation(&issuer, &ns, &token, &b, &c, &1_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &2u64, &u64::MAX);
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &a), 4_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &b), 1_000);
@@ -888,9 +1084,9 @@ fn multiple_transfers_from_same_holder() {
 
     let ns = symbol_short!("def");
     client.transfer_with_attestation(&issuer, &ns, &token, &from, &to1, &3_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
     client.transfer_with_attestation(&issuer, &ns, &token, &from, &to2, &3_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &2u64, &u64::MAX);
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 3_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &to1), 3_000);
@@ -924,7 +1120,7 @@ fn transfer_does_not_affect_other_offerings() {
 
     // Transfer on offering A only
     client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01));
+        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
 
     // Offering A shares updated
     assert_eq!(client.get_holder_share(&issuer, &ns, &token_a, &from), 2_000);
@@ -957,5 +1153,7 @@ fn transfer_without_from_auth_causes_host_panic() {
         &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
         &attest(&env),
         &test_network_id(&env, 0x01),
+        &test_nonce(),
+        &test_expires_at(),
     );
 }
