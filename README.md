@@ -153,6 +153,26 @@ after the introduction of `ev_idx3`. V2-only subscribers are safe during this de
 After the deprecation window, V2 emission may be removed. V3 subscribers should validate the `version`
 field and ignore events where `version != 3`.
 
+#### Deprecated-event sunset table
+
+A machine-readable table of all deprecated topics is maintained at
+[`docs/EVENT_SUNSET.yaml`](./docs/EVENT_SUNSET.yaml) (source of truth) and
+[`docs/EVENT_SUNSET.json`](./docs/EVENT_SUNSET.json) (generated, for indexer consumption).
+
+Each entry records the deprecated `topic`, its `replacement`, and the `sunset_epoch` – the Soroban
+ledger sequence after which the deprecated topic will stop being emitted. CI rejects any entry with
+a missing or null `sunset_epoch` and verifies that the JSON is always in sync with the YAML.
+
+Indexers can load `EVENT_SUNSET.json` at startup to:
+- Emit a warning when they receive a deprecated topic that has passed its `sunset_epoch`.
+- Automatically switch event routing to the `replacement` topic.
+- Generate observability alerts before a planned removal window.
+
+To regenerate the JSON after editing the YAML:
+```bash
+python3 scripts/generate_event_sunset_json.py
+```
+
 ### Call patterns and limits
 
 - **Pagination:** Use `get_offerings_page(issuer, start, limit)` with `start = 0` then `start = next_cursor` until `next_cursor` is `None`. Max page size 20. Ordering: by registration index (creation order), deterministic.

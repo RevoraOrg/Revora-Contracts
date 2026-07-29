@@ -1,0 +1,135 @@
+# docs/EVENT_SUNSET.yaml
+#
+# Single source of truth for deprecated Revora contract event topics.
+# Machine-readable. Consumed by scripts/gen_event_sunset.py to produce
+# indexer/event_sunset.json, which is shipped alongside the contract WASM.
+#
+# SCHEMA
+# ──────
+# schema_version  : integer — bump when the structure of this file changes
+#                   (must be incremented, never decremented)
+# generated_at    : RFC-3339 timestamp updated by the generator; leave blank
+#                   here so the YAML itself stays stable in source control
+# entries         : list of deprecated topic records
+#
+# ENTRY FIELDS
+# ────────────
+# topic           : string  — the deprecated Soroban event topic symbol
+#                   (exact string compared against on-chain event topics)
+# replacement     : string  — the canonical successor topic that indexers
+#                   MUST migrate to; required for every entry
+# deprecated_in   : string  — contract semver / release tag when deprecation
+#                   was announced (informational; must be a valid semver tag)
+# sunset_epoch    : integer — mandatory Unix timestamp (seconds) after which
+#                   the topic is guaranteed to stop being emitted.
+#                   CI WILL FAIL if this field is missing or zero.
+# reason          : string  — human-readable rationale (required, non-empty)
+# notes           : string  — optional extra guidance for indexer authors
+#
+# RULES
+# ─────
+# 1. Every entry MUST have a non-null, non-zero sunset_epoch.
+# 2. topic MUST be unique across all entries.
+# 3. replacement MUST NOT itself appear in the deprecated topic list
+#    (no chained deprecations without an intermediate stable topic).
+# 4. deprecated_in MUST follow "vMAJOR.MINOR.PATCH" semver format.
+# 5. sunset_epoch MUST be strictly greater than the deprecation announcement
+#    date (i.e., at least one contract version in the future).
+#
+# HOW TO ADD A NEW DEPRECATION
+# ────────────────────────────
+# 1. Add an entry below following the schema.
+# 2. Run: python3 scripts/gen_event_sunset.py
+# 3. Commit both this file and the regenerated indexer/event_sunset.json.
+# 4. CI will reject a push if the JSON is out of sync with this YAML.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+schema_version: 1
+
+entries:
+
+  # ── Indexed event stream: V2 → V3 ─────────────────────────────────────────
+  #
+  # ev_idx2 was the first-generation structured indexed event topic. ev_idx3
+  # was introduced (dual-emitted alongside ev_idx2) to add the _reserved field
+  # for future additive schema evolution. Per the deprecation policy in
+  # docs/core-event-version-field.md, ev_idx2 will be emitted for at least two
+  # contract minor versions after ev_idx3 introduction, then dropped.
+  #
+  - topic: ev_idx2
+    replacement: ev_idx3
+    deprecated_in: "v0.26.0"
+    sunset_epoch: 1785196800   # 2026-07-28 00:00 UTC + ~12 months → 2027-07-28 00:00 UTC
+    reason: >
+      ev_idx3 supersedes ev_idx2 by adding a `_reserved: u32` field to the
+      topic struct (EventIndexTopicV3) for forward-compatible additive schema
+      evolution.  V2-only subscribers have a two-minor-version migration window
+      before V2 emission is removed.
+    notes: >
+      Validate `version == 3` on ev_idx3 events and reject where version != 3.
+      Both topics are dual-emitted during the deprecation window; do not
+      double-count — subscribe to exactly one topic per indexer pipeline.
+
+  # ── V1 direct topic stream → V2 direct topics ─────────────────────────────
+  #
+  # The v1 direct topics (ofr_reg1, rv_init1, etc.) were gated behind
+  # is_event_versioning_enabled().  V2 topics (ofr_reg2, rv_init2, etc.)
+  # are unconditional.  V1 emission was deprecated 90 days post-v2 rollout.
+  # Sunset epoch set to 2025-12-31 23:59:59 UTC (grace period already past).
+
+  - topic: ofr_reg1
+    replacement: ofr_reg2
+    deprecated_in: "v0.20.0"
+    sunset_epoch: 1767225599   # 2025-12-31 23:59:59 UTC
+    reason: >
+      V1 topics were gated behind is_event_versioning_enabled() and did not
+      include the position-0 schema version discriminator required by V2
+      indexers.  ofr_reg2 is the unconditional, version-stamped replacement.
+    notes: >
+      ofr_reg2 data layout: [version:u32=2, token:Address,
+      revenue_share_bps:u32, payout_asset:Address].  Always check data[0]==2.
+
+  - topic: rv_init1
+    replacement: rv_init2
+    deprecated_in: "v0.20.0"
+    sunset_epoch: 1767225599   # 2025-12-31 23:59:59 UTC
+    reason: >
+      V1 revenue-init topic lacked the version discriminator and was
+      feature-flag gated.  rv_init2 is always emitted and schema-versioned.
+    notes: >
+      rv_init2 data layout: [version:u32=2, amount:i128, period_id:u64,
+      blacklist:Vec<Address>].
+
+  - topic: rv_inia1
+    replacement: rv_inia2
+    deprecated_in: "v0.20.0"
+    sunset_epoch: 1767225599   # 2025-12-31 23:59:59 UTC
+    reason: >
+      V1 revenue-init-with-asset topic; replaced by the unconditional V2
+      variant rv_inia2 which includes the payout_asset address in the payload.
+    notes: >
+      rv_inia2 data layout: [version:u32=2, payout_asset:Address, amount:i128,
+      period_id:u64, blacklist:Vec<Address>].
+
+  - topic: rv_rep1
+    replacement: rv_rep2
+    deprecated_in: "v0.20.0"
+    sunset_epoch: 1767225599   # 2025-12-31 23:59:59 UTC
+    reason: >
+      V1 revenue-report topic lacked the version discriminator.  rv_rep2 is
+      always emitted with data[0]==2 for deterministic schema enforcement.
+    notes: >
+      rv_rep2 data layout: [version:u32=2, amount:i128, period_id:u64,
+      blacklist:Vec<Address>].
+
+  - topic: rv_repa1
+    replacement: rv_repa2
+    deprecated_in: "v0.20.0"
+    sunset_epoch: 1767225599   # 2025-12-31 23:59:59 UTC
+    reason: >
+      V1 revenue-report-with-asset topic; replaced by rv_repa2 which is
+      unconditional and version-stamped.
+    notes: >
+      rv_repa2 data layout: [version:u32=2, payout_asset:Address, amount:i128,
+      period_id:u64].
