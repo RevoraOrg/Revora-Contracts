@@ -13936,3 +13936,5 @@ mod test_close_period;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+#[cfg(test)]
+mod test_merkle_root_rotation;
