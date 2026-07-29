@@ -120,6 +120,7 @@ mod tests {
             ("FreezeReasonMismatch", RevoraError::FreezeReasonMismatch as u32),
             ("InsufficientClassBalance", RevoraError::InsufficientClassBalance as u32),
             ("RedemptionWindowClosed", RevoraError::RedemptionWindowClosed as u32),
+            ("RedemptionWindowOverlap", RevoraError::RedemptionWindowOverlap as u32),
             ("JurisdictionMigrationDeadlineExceeded", RevoraError::JurisdictionMigrationDeadlineExceeded as u32),
         ];
 

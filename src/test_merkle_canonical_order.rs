@@ -18,11 +18,7 @@
 #![cfg(test)]
 
 use crate::merkle_helpers::{build_merkle_root, canonical_leaves, MerkleError};
-use soroban_sdk::{
-    testutils::Address as _,
-    xdr::ToXdr,
-    Address, Bytes, BytesN, Env,
-};
+use soroban_sdk::{testutils::Address as _, xdr::ToXdr, Address, Bytes, BytesN, Env};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -103,7 +99,11 @@ fn canonical_leaves_two_entries_sorted_ascending() {
                 break;
             }
         }
-        if a_lt_b { (a.clone(), b.clone()) } else { (b.clone(), a.clone()) }
+        if a_lt_b {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        }
     };
 
     // Supply them in *reverse* expected order so the sort is exercised.
@@ -123,21 +123,9 @@ fn canonical_leaves_order_is_input_independent() {
     let h2 = Address::generate(&env);
     let h3 = Address::generate(&env);
 
-    let entries_abc = [
-        (h1.clone(), 1_000u32),
-        (h2.clone(), 2_000u32),
-        (h3.clone(), 3_000u32),
-    ];
-    let entries_cba = [
-        (h3.clone(), 3_000u32),
-        (h2.clone(), 2_000u32),
-        (h1.clone(), 1_000u32),
-    ];
-    let entries_bac = [
-        (h2.clone(), 2_000u32),
-        (h1.clone(), 1_000u32),
-        (h3.clone(), 3_000u32),
-    ];
+    let entries_abc = [(h1.clone(), 1_000u32), (h2.clone(), 2_000u32), (h3.clone(), 3_000u32)];
+    let entries_cba = [(h3.clone(), 3_000u32), (h2.clone(), 2_000u32), (h1.clone(), 1_000u32)];
+    let entries_bac = [(h2.clone(), 2_000u32), (h1.clone(), 1_000u32), (h3.clone(), 3_000u32)];
 
     let leaves_abc = canonical_leaves(&env, &entries_abc).unwrap();
     let leaves_cba = canonical_leaves(&env, &entries_cba).unwrap();
@@ -407,10 +395,7 @@ fn leaf_hash_differs_from_node_hash_of_same_inputs() {
     let node_hash = env.crypto().sha256(&node_input);
 
     // They must be different — domain prefixes ensure this.
-    assert_ne!(
-        leaf_hash, node_hash,
-        "leaf and node hashes must be domain-separated"
-    );
+    assert_ne!(leaf_hash, node_hash, "leaf and node hashes must be domain-separated");
 }
 
 /// canonical_leaves prevents double-counting: a holder cannot appear twice even
@@ -421,10 +406,7 @@ fn canonical_leaves_no_double_counting() {
     let holder = Address::generate(&env);
 
     // Attempt to add the same holder with two different allocations.
-    let result = canonical_leaves(
-        &env,
-        &[(holder.clone(), 3_000u32), (holder.clone(), 7_000u32)],
-    );
+    let result = canonical_leaves(&env, &[(holder.clone(), 3_000u32), (holder.clone(), 7_000u32)]);
     assert_eq!(
         result,
         Err(MerkleError::DuplicateAddress),
@@ -441,11 +423,7 @@ fn merkle_root_commits_to_exact_share_bps() {
     let h2 = Address::generate(&env);
     let h3 = Address::generate(&env);
 
-    let entries_orig = [
-        (h1.clone(), 3_333u32),
-        (h2.clone(), 3_333u32),
-        (h3.clone(), 3_334u32),
-    ];
+    let entries_orig = [(h1.clone(), 3_333u32), (h2.clone(), 3_333u32), (h3.clone(), 3_334u32)];
     let mut entries_mutated = entries_orig.clone();
     // Mutate h2's share by 1 bps.
     entries_mutated[1].1 = 3_334;
@@ -456,10 +434,7 @@ fn merkle_root_commits_to_exact_share_bps() {
     let root_orig = build_merkle_root(&env, &leaves_orig);
     let root_mutated = build_merkle_root(&env, &leaves_mutated);
 
-    assert_ne!(
-        root_orig, root_mutated,
-        "1-bps change must produce a different root"
-    );
+    assert_ne!(root_orig, root_mutated, "1-bps change must produce a different root");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -502,10 +477,7 @@ fn canonical_leaves_ordering_consistent_with_prove_distribution_tie_break() {
             break;
         }
     }
-    assert!(
-        first_is_lte,
-        "canonical_leaves must place the smaller-XDR address first"
-    );
+    assert!(first_is_lte, "canonical_leaves must place the smaller-XDR address first");
 }
 
 /// Calling `canonical_leaves` then `build_merkle_root` on a two-holder snapshot
@@ -527,8 +499,5 @@ fn end_to_end_root_stable_across_orderings() {
     let root_fwd = build_merkle_root(&env, &fwd);
     let root_rev = build_merkle_root(&env, &rev);
 
-    assert_eq!(
-        root_fwd, root_rev,
-        "root must be identical regardless of presentation order"
-    );
+    assert_eq!(root_fwd, root_rev, "root must be identical regardless of presentation order");
 }
