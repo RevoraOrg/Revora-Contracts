@@ -126,7 +126,7 @@ fn faucet_rejects_requests_within_the_cooldown_window() {
     let second = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
     assert_eq!(
         second,
-        Err(Ok(RevoraError::FaucetCooldownActive)),
+        Err(Ok(RevoraError2::FaucetCooldownActive)),
         "second request within cooldown should be rejected"
     );
 }

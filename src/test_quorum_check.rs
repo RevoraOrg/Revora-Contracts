@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
 fn setup_multisig() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();

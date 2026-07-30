@@ -21,7 +21,8 @@ fn test_claim_on_deferred_fails() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     (env, client, issuer, offering_token, payment_token)
 }
@@ -250,9 +251,7 @@ fn r_squared(points: &[(f64, f64)]) -> f64 {
     let slope = slope_numerator / slope_denominator;
     let intercept = (sum_y - slope * sum_x) / n;
 
-    let ss_residual: f64 = points.iter()
-        .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
-        .sum();
+    let ss_residual: f64 = points.iter().map(|(x, y)| (y - (slope * x + intercept)).powi(2)).sum();
 
     1.0 - (ss_residual / ss_total)
 }
@@ -336,7 +335,7 @@ fn set_dual_sig_config_enables_mode() {
 
     // Single-sig close_period should now fail with DualSigNotConfigured.
     let result = client.try_close_period(&issuer, &ns, &token, &1);
-    assert_eq!(result, Err(Ok(RevoraError::DualSigNotConfigured)));
+    assert_eq!(result, Err(Ok(RevoraError2::DualSigNotConfigured)));
 }
 
 #[test]
@@ -346,9 +345,7 @@ fn close_period_dual_sig_happy_path() {
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
     assert!(result.is_ok(), "dual-sig close should succeed: {:?}", result);
     assert!(client.is_period_closed(&issuer, &ns, &token, &1));
 }
@@ -360,10 +357,8 @@ fn close_period_dual_sig_same_signer_rejected() {
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Both sig_a and sig_b are the issuer — must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &issuer,
-    );
-    assert_eq!(result, Err(Ok(RevoraError::DualSigSameSigner)));
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &issuer);
+    assert_eq!(result, Err(Ok(RevoraError2::DualSigSameSigner)));
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
 }
 
@@ -393,10 +388,8 @@ fn close_period_dual_sig_not_configured() {
     );
 
     // Dual-sig close must fail with DualSigNotConfigured.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
-    assert_eq!(result, Err(Ok(RevoraError::DualSigNotConfigured)));
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
+    assert_eq!(result, Err(Ok(RevoraError2::DualSigNotConfigured)));
 }
 
 #[test]
@@ -409,9 +402,7 @@ fn close_period_dual_sig_unauthorized_signer_rejected() {
     let attacker = Address::generate(&env);
 
     // Unauthorized signer must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &attacker,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &attacker);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
@@ -439,9 +430,7 @@ fn close_period_dual_sig_double_close_rejected() {
     client.close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
 
     // Second close must be rejected.
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &1, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &1, &issuer, &co_issuer);
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyClosed)));
 }
 
@@ -451,9 +440,7 @@ fn close_period_dual_sig_zero_period_id_rejected() {
     let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
-    let result = client.try_close_period_dual_sig(
-        &issuer, &ns, &token, &0, &issuer, &co_issuer,
-    );
+    let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &0, &issuer, &co_issuer);
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
@@ -467,7 +454,12 @@ fn close_period_dual_sig_unknown_offering_returns_not_found() {
     let token = Address::generate(&env);
 
     let result = client.try_close_period_dual_sig(
-        &issuer, &symbol_short!("ns"), &token, &1, &issuer, &co_issuer,
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &1,
+        &issuer,
+        &co_issuer,
     );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }

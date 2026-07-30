@@ -1176,7 +1176,7 @@ fn denomination_metadata_rejects_display_decimals_over_18() {
     );
     assert_eq!(
         result,
-        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        Err(Ok(RevoraError2::DisplayDecimalsOutOfRange)),
         "display_decimals=19 must return DisplayDecimalsOutOfRange"
     );
 }
@@ -1203,7 +1203,7 @@ fn denomination_metadata_rejects_display_decimals_u32_max() {
     );
     assert_eq!(
         result,
-        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        Err(Ok(RevoraError2::DisplayDecimalsOutOfRange)),
         "display_decimals=u32::MAX must return DisplayDecimalsOutOfRange"
     );
 }
@@ -1333,7 +1333,7 @@ fn denomination_metadata_validation_before_duplicate_guard() {
     );
     assert_eq!(
         result,
-        Err(Ok(RevoraError::DisplayDecimalsOutOfRange)),
+        Err(Ok(RevoraError2::DisplayDecimalsOutOfRange)),
         "bad decimals must error even when offering already exists"
     );
 }
@@ -1925,7 +1925,7 @@ fn concentration_staleness_no_prior_report_rejected() {
     );
     assert_eq!(
         r,
-        Err(Ok(RevoraError::StaleConcentrationData)),
+        Err(Ok(RevoraError2::StaleConcentrationData)),
         "must reject when no concentration has been reported and staleness guard is on"
     );
 }
@@ -1960,7 +1960,7 @@ fn concentration_staleness_stale_report_rejected() {
     );
     assert_eq!(
         r,
-        Err(Ok(RevoraError::StaleConcentrationData)),
+        Err(Ok(RevoraError2::StaleConcentrationData)),
         "must reject when concentration report is older than max_staleness_secs"
     );
 }
@@ -8319,7 +8319,7 @@ fn issuer_transfer_rejects_pre_cliff_vesting_schedule() {
     env.ledger().with_mut(|li| li.timestamp = 1_500);
 
     let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
-    assert_eq!(result, Err(Ok(RevoraError::VestingTransferBlocked)));
+    assert_eq!(result, Err(Ok(RevoraError2::VestingTransferBlocked)));
 }
 
 #[test]

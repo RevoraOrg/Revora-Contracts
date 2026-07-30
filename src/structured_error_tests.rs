@@ -89,7 +89,7 @@ mod tests {
             ("ContractPaused", RevoraError::ContractPaused as u32),
             ("BlacklistSizeLimitExceeded", RevoraError::BlacklistSizeLimitExceeded as u32),
             ("AlreadyApproved", RevoraError::AlreadyApproved as u32),
-            ("FaucetCooldownActive", RevoraError::FaucetCooldownActive as u32),
+            ("FaucetCooldownActive", RevoraError2::FaucetCooldownActive as u32),
             ("MissingReportForOverride", RevoraError::MissingReportForOverride as u32),
         ];
 
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(RevoraError::ContractPaused as u32, 44);
         assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
         assert_eq!(RevoraError::AlreadyApproved as u32, 46);
-        assert_eq!(RevoraError::FaucetCooldownActive as u32, 56);
+        assert_eq!(RevoraError2::FaucetCooldownActive as u32, 64);
         assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
     }
 
@@ -249,10 +249,10 @@ mod tests {
             RevoraError::ContractPaused as u32,
             RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::AlreadyApproved as u32,
-            RevoraError::FaucetCooldownActive as u32,
+            RevoraError2::FaucetCooldownActive as u32,
         ];
         for v in all.iter() {
-            assert!(*v >= 1 && *v <= 56, "discriminant {v} out of expected range 1..=56");
+            assert!(*v >= 1 && *v <= 64, "discriminant {v} out of expected range 1..=56");
         }
     }
 
@@ -323,7 +323,7 @@ mod tests {
             RevoraError::ContractPaused as u32,
             RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::AlreadyApproved as u32,
-            RevoraError::FaucetCooldownActive as u32,
+            RevoraError2::FaucetCooldownActive as u32,
         ];
         for v in all.iter() {
             assert_ne!(*v, 0, "discriminant 0 is reserved for Ok; no error variant may use it");

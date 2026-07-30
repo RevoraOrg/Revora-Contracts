@@ -64,7 +64,7 @@ fn finalize_snapshot_fails_when_hash_mismatch() {
 
     let result = client.try_finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
     assert!(result.is_err());
-    assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotHashMismatch))));
+    assert!(matches!(result.err(), Some(Ok(RevoraError2::SnapshotHashMismatch))));
 }
 
 #[test]
@@ -97,5 +97,5 @@ fn deposit_revenue_with_snapshot_fails_when_finalization_required_and_unfinalize
     );
 
     assert!(result.is_err());
-    assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotFinalized))));
+    assert!(matches!(result.err(), Some(Ok(RevoraError2::SnapshotNotFinalized))));
 }

@@ -104,7 +104,7 @@ fn update_disclosure_uri_257_bytes_rejected() {
     let hash = sample_hash(&env);
 
     let result = client.try_update_disclosure(&issuer, &ns, &token, &uri, &hash);
-    assert_eq!(result, Err(Ok(RevoraError::DisclosureUriTooLong)));
+    assert_eq!(result, Err(Ok(RevoraError2::DisclosureUriTooLong)));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn update_disclosure_empty_uri_nonzero_hash_rejected() {
     let hash = sample_hash(&env);
 
     let result = client.try_update_disclosure(&issuer, &ns, &token, &uri, &hash);
-    assert_eq!(result, Err(Ok(RevoraError::InconsistentDisclosure)));
+    assert_eq!(result, Err(Ok(RevoraError2::InconsistentDisclosure)));
 }
 
 #[test]

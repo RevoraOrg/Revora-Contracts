@@ -1,12 +1,13 @@
 #![cfg(test)]
 extern crate alloc;
 
-use soroban_sdk::{testutils::Address as _, Address, Env, symbol_short};
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, MigrationError};
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, symbol_short};
-use crate::{
-    assert_semver_forward, RevoraError,
-    STORAGE_LAYOUT_VERSION,
+use crate::{assert_semver_forward, RevoraError, STORAGE_LAYOUT_VERSION};
+use crate::{MigrationError, RevoraRevenueShare, RevoraRevenueShareClient};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events},
+    Address, Env,
 };
 
 // ─── Existing layout-stamp tests ──────────────────────────────────────────────
@@ -54,7 +55,8 @@ fn test_migrate_storage_dry_run() {
 
     // Verify migration_plan event was emitted
     let events = env.events().all();
-    let plan_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
+    let plan_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
     assert!(!plan_events.is_empty(), "Walker must emit migration_plan events for dry run");
 
     // Run explicit walker migration v1 -> v2 again (should succeed since no state mutated)
@@ -64,7 +66,6 @@ fn test_migrate_storage_dry_run() {
 #[test]
 #[should_panic(expected = "HostError")]
 fn test_migrate_storage_already_applied() {
-
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
@@ -112,7 +113,7 @@ fn test_migration_resumes_from_cursor() {
     // Instead of halting the real execution midway, we will explicitly simulate it.
     // By setting the MigrationResumeCursor manually, we simulate a halted migration.
     // The cursor is 5, meaning keys 1..=5 have been processed.
-    use crate::{MigrationDataKey, MigrationCursor};
+    use crate::{MigrationCursor, MigrationDataKey};
     env.as_contract(&contract_id, || {
         let cursor_key = MigrationDataKey::MigrationResumeCursor(issuer.clone());
         let cursor = MigrationCursor { last_key: 5 };
@@ -124,15 +125,17 @@ fn test_migration_resumes_from_cursor() {
 
     // Verify mig_resume event was emitted
     let events = env.events().all();
-    let resume_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    let resume_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
     assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
     let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
     assert_eq!(resume_val, 5, "Resume cursor should be 5");
 
     // Verify mig_step was emitted for keys 6 through 10, meaning it resumed at 6.
-    let step_events: Vec<_> = events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+    let step_events: Vec<_> =
+        events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
     assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
-    
+
     // Assert the exact keys processed in the steps
     let start_key: u32 = step_events[0].2.clone().into_val(&env);
     assert_eq!(start_key, 6, "First processed key after resume must be 6");
