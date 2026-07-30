@@ -732,6 +732,24 @@ pub struct HolderAccrualState {
     pub accrued_owed: i128,
 }
 
+/// Result of `holder_statement_diff`: delta of holdings and cumulative claimed
+/// amounts between two period IDs for a single holder.
+///
+/// Simplifies UI diff views and reduces client-side work by computing the
+/// difference on-chain rather than requiring the client to fetch two snapshots
+/// and subtract locally.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolderStatementDelta {
+    /// Difference in share_bps between period_b and period_a.
+    /// Positive when the holder's share increased; negative when it decreased.
+    pub share_delta: i128,
+    /// Difference in cumulative claimed amount between period_b and period_a.
+    /// Equals `claimed_at_b - claimed_at_a` where each is the total payout
+    /// accrued through the respective period's sequential index.
+    pub claimed_delta: i128,
+}
+
 /// Versioned structured topic payload for indexers.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -8755,6 +8773,92 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         let count_key = DataKey::PeriodCount(offering_id);
         env.storage().persistent().get(&count_key).unwrap_or(0)
+    }
+
+    /// Compute the delta of holdings and cumulative claimed amounts between two
+    /// period IDs for a holder.
+    ///
+    /// Simplifies UI diff views and reduces client-side work by performing the
+    /// subtraction on-chain.  `share_delta` is the difference in the holder's
+    /// share basis points (`share_at_b - share_at_a`) and `claimed_delta` is
+    /// the difference in cumulative accrued payouts through each period.
+    ///
+    /// # Security
+    /// - Read-only; mutates no state.
+    /// - Rejects `period_a > period_b` with [`RevoraError::InvalidPeriodId`].
+    /// - Returns zeroed deltas when `period_a == period_b`.
+    /// - Returns [`RevoraError::InvalidPeriodId`] when either period ID is
+    ///   zero or exceeds the offering's deposited period count.
+    pub fn holder_statement_diff(
+        env: Env,
+        holder: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_a: u64,
+        period_b: u64,
+    ) -> Result<HolderStatementDelta, RevoraError> {
+        if period_a > period_b {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        let offering_id = OfferingId { issuer, namespace, token };
+        let period_count = Self::get_period_count_internal(&env, &offering_id) as u64;
+
+        // Validate period IDs are within range (period_ids are 1-indexed)
+        if period_a == 0 || period_a > period_count || period_b == 0 || period_b > period_count {
+            return Err(RevoraError::InvalidPeriodId);
+        }
+
+        // Sequential indices are period_id - 1 (periods are strictly sequential)
+        let idx_a = (period_a - 1) as u32;
+        let idx_b = (period_b - 1) as u32;
+
+        let share_a = Self::get_share_at_index(&env, &offering_id, &holder, idx_a) as i128;
+        let share_b = Self::get_share_at_index(&env, &offering_id, &holder, idx_b) as i128;
+
+        // Cumulative accrued through each period index (inclusive of the period itself)
+        let claimed_a = Self::compute_holder_payout_for_range(
+            &env, &offering_id, &holder, 0, idx_a.saturating_add(1),
+        );
+        let claimed_b = Self::compute_holder_payout_for_range(
+            &env, &offering_id, &holder, 0, idx_b.saturating_add(1),
+        );
+
+        Ok(HolderStatementDelta {
+            share_delta: share_b.saturating_sub(share_a),
+            claimed_delta: claimed_b.saturating_sub(claimed_a),
+        })
+    }
+
+    /// Get the holder's share_bps at a specific sequential period index.
+    ///
+    /// Walks the holder's share schedule backwards to find the most recent
+    /// checkpoint whose `start_index <= index`.  Falls back to the legacy
+    /// `HolderShare` singleton when no schedule has been persisted.
+    fn get_share_at_index(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        index: u32,
+    ) -> u32 {
+        let schedule = Self::get_holder_share_schedule(env, offering_id, holder);
+        if schedule.is_empty() {
+            return env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+        }
+
+        let mut share = 0_u32;
+        for checkpoint in schedule.iter() {
+            if checkpoint.start_index > index {
+                break;
+            }
+            share = checkpoint.share_bps;
+        }
+        share
     }
 }
 
