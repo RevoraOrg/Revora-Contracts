@@ -21,10 +21,7 @@ use soroban_sdk::{
     Address, BytesN, Env, IntoVal, Val, Vec,
 };
 
-use crate::{
-    RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
-    TransferOverridePayload,
-};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TransferOverridePayload};
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -99,14 +96,7 @@ fn happy_path_override_succeeds() {
 
     // Note: In the test environment with mock_all_auths, the crypto calls
     // are mocked. We test the full flow including signature verification.
-    client.transfer_with_override(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &payload,
-        &pubkey,
-        &sig,
-    );
+    client.transfer_with_override(&issuer, &symbol_short!("def"), &token, &payload, &pubkey, &sig);
 
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 3_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 2_000);
@@ -246,14 +236,7 @@ fn self_transfer_noop() {
     let pubkey = BytesN::from_array(&env, &[0xabu8; 32]);
     let sig = BytesN::from_array(&env, &[0x42u8; 64]);
 
-    client.transfer_with_override(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &payload,
-        &pubkey,
-        &sig,
-    );
+    client.transfer_with_override(&issuer, &symbol_short!("def"), &token, &payload, &pubkey, &sig);
 
     // Share unchanged for self-transfer
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 2_000);
@@ -275,14 +258,7 @@ fn event_emitted_on_success() {
     let sig = BytesN::from_array(&env, &[0x42u8; 64]);
 
     let before = env.events().all().len();
-    client.transfer_with_override(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &payload,
-        &pubkey,
-        &sig,
-    );
+    client.transfer_with_override(&issuer, &symbol_short!("def"), &token, &payload, &pubkey, &sig);
 
     let events = env.events().all();
     assert!(events.len() > before, "At least one event must be emitted");

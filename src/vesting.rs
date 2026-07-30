@@ -293,10 +293,11 @@ impl VestingContract {
         holder: Address,
         at_ts: u64,
     ) -> u32 {
-        let schedule: VestingSchedule = match env.storage().persistent().get(&VestingKey::Schedule(holder)) {
-            Some(s) => s,
-            None => return 0,
-        };
+        let schedule: VestingSchedule =
+            match env.storage().persistent().get(&VestingKey::Schedule(holder)) {
+                Some(s) => s,
+                None => return 0,
+            };
 
         if schedule.issuer != offering_id.issuer || schedule.token != offering_id.token {
             return 0;

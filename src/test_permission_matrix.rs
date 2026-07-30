@@ -124,13 +124,7 @@ fn compliance_role_required_for_blacklist() {
     );
 
     // Compliance officer can blacklist
-    client.blacklist_add(
-        &compliance_officer,
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &investor,
-    );
+    client.blacklist_add(&compliance_officer, &issuer, &symbol_short!("def"), &token, &investor);
 
     // Non-compliance address cannot blacklist when grants exist
     let result = client.try_blacklist_add(
@@ -151,13 +145,7 @@ fn treasury_role_required_for_deposit() {
     let non_treasury = Address::generate(&env);
 
     // Grant Treasury role to treasury_agent only
-    client.grant_role(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &Role::Treasury,
-        &treasury_agent,
-    );
+    client.grant_role(&issuer, &symbol_short!("def"), &token, &Role::Treasury, &treasury_agent);
 
     // Non-treasury caller should be rejected with RoleNotGranted
     let payment_token = Address::generate(&env);
@@ -172,8 +160,11 @@ fn treasury_role_required_for_deposit() {
     // When grants exist, non-Treasury holders are rejected
     // (The exact error depends on whether other checks fire first,
     // but RoleNotGranted should be the primary rejection)
-    assert_eq!(result, Err(Ok(RevoraError::RoleNotGranted)),
-        "Non-treasury role holder must be rejected with RoleNotGranted");
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::RoleNotGranted)),
+        "Non-treasury role holder must be rejected with RoleNotGranted"
+    );
 }
 
 #[test]
@@ -185,13 +176,8 @@ fn role_check_noop_when_no_grants() {
 
     // No role grants exist — blacklist should work normally for any authorized issuer
     // Non-issuer should still be rejected by existing auth checks
-    let result = client.try_blacklist_add(
-        &caller,
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &investor,
-    );
+    let result =
+        client.try_blacklist_add(&caller, &issuer, &symbol_short!("def"), &token, &investor);
     // Should fail with NotAuthorized (caller is not the issuer), not RoleNotGranted
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
 }
