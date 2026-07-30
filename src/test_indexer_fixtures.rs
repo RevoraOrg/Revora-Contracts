@@ -36,8 +36,8 @@ fn fixture_topics_have_stable_order_and_shape() {
     let ns = symbol_short!("def");
 
     let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &7u64);
-    assert_eq!(v2_fixtures.len(), 16);
-    assert_eq!(v3_fixtures.len(), 16);
+    assert_eq!(v2_fixtures.len(), 17);
+    assert_eq!(v3_fixtures.len(), 17);
 
     let f0 = v2_fixtures.get(0).unwrap();
     assert_eq!(f0.version, 2);
@@ -95,7 +95,11 @@ fn fixture_topics_have_stable_order_and_shape() {
     assert_eq!(f15.event_type, symbol_short!("rg_lim_d"));
     assert_eq!(f15.period_id, 0);
 
-    for i in 0..16 {
+    let f16 = v2_fixtures.get(16).unwrap();
+    assert_eq!(f16.event_type, symbol_short!("rdm_v1"));
+    assert_eq!(f16.period_id, 0);
+
+    for i in 0..17 {
         let v3 = v3_fixtures.get(i).unwrap();
         assert_eq!(v3.version, 3);
         assert_eq!(v3.event_type, v2_fixtures.get(i).unwrap().event_type);
@@ -764,4 +768,231 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
         }
     }
     assert_eq!(tax_lot_count, 2, "2 `tax_lt1` events expected for 2 claim calls");
+}
+
+// ── redeem_v1 topic tests (#555) ──────────────────────────────────────────────
+
+#[test]
+fn redeem_v1_topic_in_fixture_registry() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let ns = symbol_short!("def");
+
+    let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
+
+    // rdm_v1 must be at index 16 in both V2 and V3 fixture vectors
+    let v2_rdm = v2_fixtures.get(16).unwrap();
+    assert_eq!(v2_rdm.version, EVENT_SCHEMA_VERSION_V2);
+    assert_eq!(v2_rdm.event_type, symbol_short!("rdm_v1"));
+    assert_eq!(v2_rdm.issuer, issuer);
+    assert_eq!(v2_rdm.namespace, ns);
+    assert_eq!(v2_rdm.token, token);
+    assert_eq!(v2_rdm.period_id, 0, "Redemption is not period-scoped; period_id must be 0");
+
+    let v3_rdm = v3_fixtures.get(16).unwrap();
+    assert_eq!(v3_rdm.version, 3);
+    assert_eq!(v3_rdm.event_type, symbol_short!("rdm_v1"));
+    assert_eq!(v3_rdm.issuer, issuer);
+    assert_eq!(v3_rdm.namespace, ns);
+    assert_eq!(v3_rdm.token, token);
+    assert_eq!(v3_rdm.period_id, 0);
+    assert_eq!(v3_rdm._reserved, 0);
+}
+
+/// Helper: set up an offering with a holder, payment token, and open redemption window.
+/// Returns (client, issuer, offering_token, payment_token_addr, holder).
+fn setup_redemption_offering(env: &Env) -> (RevoraRevenueShareClient, Address, Address, Address, Address) {
+    use soroban_sdk::{token, testutils::Ledger};
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let issuer = Address::generate(env);
+    let offering_token = Address::generate(env);
+    let payment_admin = Address::generate(env);
+    let payment_token = env.register_stellar_asset_contract_v2(payment_admin.clone());
+    let holder = Address::generate(env);
+
+    client.register_offering(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &1_000,
+        &payment_token.address(),
+        &0,
+    );
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000);
+
+    // Fund the contract with payment tokens
+    token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &2_000_000);
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token.address(),
+        &1_000_000,
+        &1,
+    );
+
+    // Open redemption window
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &50_000);
+
+    (client, issuer, offering_token, payment_token.address(), holder)
+}
+
+#[test]
+fn redeem_v1_event_emitted_on_fulfill() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::IntoVal;
+    use crate::EventIndexTopicV2;
+
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder) = setup_redemption_offering(&env);
+
+    // Request partial redemption: 2_000 of 5_000 bps
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+
+    let before = env.events().all().len();
+    let result = client.fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &100_000,
+    );
+    assert_eq!(result, 100_000);
+
+    // Search for ev_idx2 event with event_type = rdm_v1
+    let ev_idx2 = symbol_short!("ev_idx2");
+    let all = env.events().all();
+    let mut found_v2 = false;
+    for i in (before as u32)..all.len() {
+        let (_, topics, data) = all.get(i).unwrap();
+        if topics.len() >= 2 {
+            let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            if t0 == ev_idx2 {
+                let topic: EventIndexTopicV2 = topics.get(1).unwrap().into_val(&env);
+                if topic.event_type == symbol_short!("rdm_v1") {
+                    assert_eq!(topic.version, 2);
+                    assert_eq!(topic.issuer, issuer);
+                    assert_eq!(topic.namespace, symbol_short!("def"));
+                    assert_eq!(topic.token, offering_token);
+                    assert_eq!(topic.period_id, 0);
+
+                    // Data shape: (holder, nav_amount, shares_redeemed_bps, residual_balance_bps)
+                    let (d_holder, d_nav, d_shares, d_residual): (Address, i128, u32, u32) =
+                        data.into_val(&env);
+                    assert_eq!(d_holder, holder);
+                    assert_eq!(d_nav, 100_000);
+                    assert_eq!(d_shares, 2_000);
+                    assert_eq!(d_residual, 3_000); // 5_000 - 2_000
+
+                    found_v2 = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(found_v2, "rdm_v1 EVENT_INDEXED_V2 must be emitted on fulfill_redemption");
+}
+
+#[test]
+fn redeem_v1_full_balance_redemption() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::IntoVal;
+    use crate::EventIndexTopicV2;
+
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder) = setup_redemption_offering(&env);
+
+    // Request full redemption: 5_000 of 5_000 bps
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &5_000);
+
+    let before = env.events().all().len();
+    client.fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &250_000,
+    );
+
+    let ev_idx2 = symbol_short!("ev_idx2");
+    let all = env.events().all();
+    let mut found = false;
+    for i in (before as u32)..all.len() {
+        let (_, topics, data) = all.get(i).unwrap();
+        if topics.len() >= 2 {
+            let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            if t0 == ev_idx2 {
+                let topic: EventIndexTopicV2 = topics.get(1).unwrap().into_val(&env);
+                if topic.event_type == symbol_short!("rdm_v1") {
+                    let (_, d_nav, d_shares, d_residual): (Address, i128, u32, u32) =
+                        data.into_val(&env);
+                    assert_eq!(d_nav, 250_000);
+                    assert_eq!(d_shares, 5_000, "Full share must be redeemed");
+                    assert_eq!(d_residual, 0, "Residual must be zero after full redemption");
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(found, "rdm_v1 must be emitted on full-balance redemption");
+
+    // Verify holder share is indeed 0
+    let share = client.get_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder);
+    assert_eq!(share, 0);
+}
+
+#[test]
+fn redeem_v1_one_share_redemption() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::IntoVal;
+    use crate::EventIndexTopicV2;
+
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder) = setup_redemption_offering(&env);
+
+    // Request minimum redemption: 1 bps of 5_000 bps
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &1);
+
+    let before = env.events().all().len();
+    client.fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &50,
+    );
+
+    let ev_idx2 = symbol_short!("ev_idx2");
+    let all = env.events().all();
+    let mut found = false;
+    for i in (before as u32)..all.len() {
+        let (_, topics, data) = all.get(i).unwrap();
+        if topics.len() >= 2 {
+            let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            if t0 == ev_idx2 {
+                let topic: EventIndexTopicV2 = topics.get(1).unwrap().into_val(&env);
+                if topic.event_type == symbol_short!("rdm_v1") {
+                    let (_, d_nav, d_shares, d_residual): (Address, i128, u32, u32) =
+                        data.into_val(&env);
+                    assert_eq!(d_nav, 50);
+                    assert_eq!(d_shares, 1, "Only 1 bps should be redeemed");
+                    assert_eq!(d_residual, 4_999, "Residual = 5_000 - 1");
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(found, "rdm_v1 must be emitted on one-share (1 bps) redemption");
 }

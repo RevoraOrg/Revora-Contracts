@@ -568,6 +568,10 @@ const EVENT_TYPE_CLAIM: Symbol = symbol_short!("claim");
 /// topic: `(ev_idx2, EventIndexTopicV2{event_type=acc_idx, ...})`
 /// data:  `(new_idx_e18: i128,)`
 const EVENT_TYPE_ACC_IDX: Symbol = symbol_short!("acc_idx");
+/// Emitted via `EVENT_INDEXED_V2` / `EVENT_INDEXED_V3` on every successful redemption fulfillment.
+/// topic: `(ev_idx3, EventIndexTopicV3{event_type=rdm_v1, period_id=0, ...})`
+/// data:  `(holder: Address, nav_amount: i128, shares_redeemed_bps: u32, residual_balance_bps: u32)`
+const EVENT_TYPE_REDEEM: Symbol = symbol_short!("rdm_v1");
 const EVENT_REPORT_WINDOW_SET: Symbol = symbol_short!("rep_win");
 const EVENT_CLAIM_WINDOW_SET: Symbol = symbol_short!("clm_win");
 const EVENT_META_SIGNER_SET: Symbol = symbol_short!("meta_key");
@@ -11976,8 +11980,31 @@ impl RevoraRevenueShare {
 
         // Emit fulfillment event
         env.events().publish(
-            (EVENT_REDEMPTION_FULFILLED, issuer, namespace, token),
-            (holder, redeem_bps, amount),
+            (EVENT_REDEMPTION_FULFILLED, issuer.clone(), namespace.clone(), token.clone()),
+            (holder.clone(), redeem_bps, amount),
+        );
+
+        // ── Indexed redeem_v1 event for off-chain accounting (#555) ──
+        Self::emit_v2_and_v3(
+            &env,
+            EventIndexTopicV2 {
+                version: EVENT_SCHEMA_VERSION_V2,
+                event_type: EVENT_TYPE_REDEEM,
+                issuer: issuer.clone(),
+                namespace: namespace.clone(),
+                token: token.clone(),
+                period_id: 0, // Redemption is not period-scoped
+            },
+            EventIndexTopicV3 {
+                version: INDEXER_EVENT_SCHEMA_VERSION,
+                event_type: EVENT_TYPE_REDEEM,
+                issuer,
+                namespace,
+                token,
+                period_id: 0,
+                _reserved: 0,
+            },
+            (holder, amount, redeem_bps, new_share),
         );
         Ok(amount)
     }
@@ -15546,6 +15573,15 @@ pub fn get_indexer_fixture_topics(
             token: token.clone(),
             period_id: 0,
         },
+        // ── Redemption fulfillment (#555) ──
+        EventIndexTopicV2 {
+            version: EVENT_SCHEMA_VERSION_V2,
+            event_type: symbol_short!("rdm_v1"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+        },
     ];
 
     let v3_fixtures: Vec<EventIndexTopicV3> = soroban_sdk::vec![
@@ -15689,6 +15725,16 @@ pub fn get_indexer_fixture_topics(
         EventIndexTopicV3 {
             version: INDEXER_EVENT_SCHEMA_VERSION,
             event_type: symbol_short!("rg_lim_d"),
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+            period_id: 0,
+            _reserved: 0,
+        },
+        // ── Redemption fulfillment (#555) ──
+        EventIndexTopicV3 {
+            version: INDEXER_EVENT_SCHEMA_VERSION,
+            event_type: symbol_short!("rdm_v1"),
             issuer: issuer.clone(),
             namespace,
             token,
