@@ -380,6 +380,32 @@ fn report_revenue_duplicate_with_override_updates_state() {
     assert!(indexed >= 1_500);
 }
 
+/// Reports arriving out of order within an open report window should resolve to the
+/// same deterministic period id derived from the window close timestamp.
+#[test]
+fn report_revenue_windowed_reports_share_deterministic_period_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.set_report_window(&issuer, &symbol_short!("def"), &token, &100, &200).unwrap();
+
+    env.ledger().with_mut(|l| l.timestamp = 150);
+    client
+        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &1, &false)
+        .unwrap();
+
+    env.ledger().with_mut(|l| l.timestamp = 175);
+    client
+        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &900, &7, &true)
+        .unwrap();
+
+    let indexed = client.get_revenue_index(&issuer, &symbol_short!("def"), &token, &200u64);
+    assert_eq!(indexed, 900);
+}
+
 // ── Amount boundary interaction with period_id ────────────────────────────────
 
 /// Negative amount is rejected before period_id is evaluated.
