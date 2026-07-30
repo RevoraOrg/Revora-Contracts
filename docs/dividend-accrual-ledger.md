@@ -52,6 +52,11 @@ For that reason, the accrual index is updated on `deposit_revenue`.
 Indexers can reconstruct the cumulative dividend index directly from these
 events and pair it with holder share checkpoint history for off-chain reviews.
 
+For replay stability, accrual-update entries are canonicalized by `(period_id, amount, holder_address)`
+with holder address used as the final lexicographic tie-break. This keeps replay order
+stable when multiple updates share the same period and amount, while leaving the
+underlying accrual totals unchanged.
+
 ## Test Coverage Added
 
 - historical share preserved across unclaimed deposits

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{AccrualUpdateEntry, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
@@ -72,6 +72,50 @@ fn get_claimable_uses_historical_share_schedule() {
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
     assert_eq!(client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder), 50_000);
+}
+
+#[test]
+fn accrual_update_replay_canonicalizes_ties_by_holder_address() {
+    let env = Env::default();
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+
+    let mut entries = soroban_sdk::Vec::new(&env);
+    entries.push_back(AccrualUpdateEntry {
+        period_id: 2,
+        amount: 100,
+        holder: holder_b.clone(),
+    });
+    entries.push_back(AccrualUpdateEntry {
+        period_id: 1,
+        amount: 100,
+        holder: holder_b.clone(),
+    });
+    entries.push_back(AccrualUpdateEntry {
+        period_id: 1,
+        amount: 100,
+        holder: holder_a.clone(),
+    });
+    entries.push_back(AccrualUpdateEntry {
+        period_id: 2,
+        amount: 100,
+        holder: holder_a.clone(),
+    });
+
+    let sorted = RevoraRevenueShare::sort_accrual_update_entries_for_replay(&env, entries);
+    let first = sorted.get(0).unwrap();
+    let second = sorted.get(1).unwrap();
+    let third = sorted.get(2).unwrap();
+    let fourth = sorted.get(3).unwrap();
+
+    assert_eq!(first.period_id, 1);
+    assert_eq!(second.period_id, 1);
+    assert_eq!(third.period_id, 2);
+    assert_eq!(fourth.period_id, 2);
+    assert_eq!(first.holder, holder_a);
+    assert_eq!(second.holder, holder_b);
+    assert_eq!(third.holder, holder_a);
+    assert_eq!(fourth.holder, holder_b);
 }
 
 #[test]

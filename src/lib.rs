@@ -1203,6 +1203,19 @@ pub struct HolderAccrualState {
     pub accrued_owed: i128,
 }
 
+/// Canonical replay entry for accrual-index updates.
+///
+/// Replay consumers should order entries by `(period_id, amount, holder)` so
+/// that equal-amount updates for the same period resolve deterministically via
+/// lexicographic holder-address tie-breaks.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccrualUpdateEntry {
+    pub period_id: u64,
+    pub amount: i128,
+    pub holder: Address,
+}
+
 /// Read-only per-period statement row for a holder.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -1661,6 +1674,23 @@ pub enum DataKey2 {
     /// Ledger timestamp of the last transfer for (offering_id, holder).
     /// Used by the cooldown check to reject premature transfers.
     HolderLastTransferTime(OfferingId, Address),
+
+    /// Whether V2 event-topic compatibility should be emitted alongside V1 topics.
+    EmitV2Compat,
+    /// Global freeze reason for emergency freeze handling.
+    GlobalFreezeReason,
+    /// Delay (in seconds) required before accepting an admin-rotation handoff.
+    AdminRotationDelay,
+    /// Per-offering grace period for jurisdiction migration deadlines.
+    JurisdictionGracePeriod(OfferingId),
+    /// Per-offering per-holder state for pending jurisdiction migration deadlines.
+    JurisdictionMigration(OfferingId, Address),
+    /// Pending redemption request for a holder within an offering.
+    RedemptionRequest(OfferingId, Address),
+    /// Redemption fee configuration for an offering.
+    RedemptionFeeConfig(OfferingId),
+    /// Lockup schedule configured for an offering.
+    LockupSchedule(OfferingId),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2566,6 +2596,51 @@ impl RevoraRevenueShare {
             .unwrap_or(i128::MAX)
             .checked_div(BPS_DENOMINATOR)
             .unwrap_or(0)
+    }
+
+    /// Return a canonical replay ordering for accrual updates.
+    ///
+    /// Entries are ordered ascending by `(period_id, amount, holder_address)`
+    /// where `holder_address` uses the lexicographic XDR-byte order of the
+    /// underlying `Address` to provide a stable deterministic tie-break.
+    pub(crate) fn sort_accrual_update_entries_for_replay(
+        env: &Env,
+        entries: Vec<AccrualUpdateEntry>,
+    ) -> Vec<AccrualUpdateEntry> {
+        let mut sorted = entries;
+        let n = sorted.len();
+        if n > 1 {
+            let mut i: u32 = 0;
+            while i < n.saturating_sub(1) {
+                let mut j: u32 = 0;
+                let stop = n.saturating_sub(1).saturating_sub(i);
+                while j < stop {
+                    let cur = sorted.get(j).unwrap();
+                    let nxt = sorted.get(j.saturating_add(1)).unwrap();
+                    let should_swap = match cur.period_id.cmp(&nxt.period_id) {
+                        core::cmp::Ordering::Greater => true,
+                        core::cmp::Ordering::Less => false,
+                        core::cmp::Ordering::Equal => match cur.amount.cmp(&nxt.amount) {
+                            core::cmp::Ordering::Greater => true,
+                            core::cmp::Ordering::Less => false,
+                            core::cmp::Ordering::Equal => {
+                                cur.holder.to_xdr(env).cmp(&nxt.holder.to_xdr(env))
+                                    == core::cmp::Ordering::Greater
+                            }
+                        },
+                    };
+                    if should_swap {
+                        let cur_clone = cur.clone();
+                        let nxt_clone = nxt.clone();
+                        sorted.set(j, nxt_clone);
+                        sorted.set(j.saturating_add(1), cur_clone);
+                    }
+                    j = j.saturating_add(1);
+                }
+                i = i.saturating_add(1);
+            }
+        }
+        sorted
     }
 
     fn get_acc_per_share_at_index(env: &Env, offering_id: &OfferingId, index: u32) -> i128 {

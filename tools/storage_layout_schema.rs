@@ -150,6 +150,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::TotalSharesIssued(OfferingId)", "u32", "offering"),
     ("DataKey2::MaxTotalSupplyShares(OfferingId)", "u32", "offering"),
     ("DataKey2::FaucetSeedEntry(OfferingId, u32)", "Address", "offering+index"),
+    ("DataKey2::FaucetSeedCount(OfferingId)", "u32", "offering"),
     ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
     ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
     ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
