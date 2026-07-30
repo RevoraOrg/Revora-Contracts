@@ -391,11 +391,15 @@ mod test_time_windows;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
 mod test_close_period;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
+#[cfg(test)]
+mod test_denom_migration;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
@@ -408,13 +412,9 @@ mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
 #[cfg(test)]
-mod test_accrual_reconciliation_prop;
-#[cfg(test)]
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
-#[cfg(test)]
-mod test_denom_migration;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -8534,13 +8534,9 @@ impl RevoraRevenueShare {
             return Ok(());
         }
 
-        let offering = Self::get_offering(
-            env.clone(),
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-        )
-        .ok_or(RevoraError::OfferingNotFound)?;
+        let offering =
+            Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
 
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
@@ -8554,7 +8550,8 @@ impl RevoraRevenueShare {
         };
 
         // —— Idempotency guard —————————————————————————————————————————————————
-        let idempotency_key = DataKey2::DenomMigration(offering_id.clone(), from_decimals, to_decimals);
+        let idempotency_key =
+            DataKey2::DenomMigration(offering_id.clone(), from_decimals, to_decimals);
         if env.storage().persistent().has(&idempotency_key) {
             return Ok(());
         }
@@ -8564,15 +8561,11 @@ impl RevoraRevenueShare {
         let is_upscale: bool;
         if to_decimals > from_decimals {
             let exp = to_decimals - from_decimals;
-            scale_factor = 10_i128
-                .checked_pow(exp)
-                .ok_or(RevoraError::InvalidAmount)?;
+            scale_factor = 10_i128.checked_pow(exp).ok_or(RevoraError::InvalidAmount)?;
             is_upscale = true;
         } else {
             let exp = from_decimals - to_decimals;
-            scale_factor = 10_i128
-                .checked_pow(exp)
-                .ok_or(RevoraError::InvalidAmount)?;
+            scale_factor = 10_i128.checked_pow(exp).ok_or(RevoraError::InvalidAmount)?;
             is_upscale = false;
         }
 
@@ -8589,24 +8582,20 @@ impl RevoraRevenueShare {
 
         // —— Re-scale AuditSummary.total_revenue —————————————————————————————————————————————————
         let audit_key = DataKey::AuditSummary(offering_id.clone());
-        if let Some(mut audit) = env.storage().persistent().get::<DataKey, AuditSummary>(&audit_key) {
+        if let Some(mut audit) = env.storage().persistent().get::<DataKey, AuditSummary>(&audit_key)
+        {
             audit.total_revenue = if is_upscale {
-                audit
-                    .total_revenue
-                    .checked_mul(scale_factor)
-                    .ok_or(RevoraError::InvalidAmount)?
+                audit.total_revenue.checked_mul(scale_factor).ok_or(RevoraError::InvalidAmount)?
             } else {
-                audit
-                    .total_revenue
-                    .checked_div(scale_factor)
-                    .ok_or(RevoraError::InvalidAmount)?
+                audit.total_revenue.checked_div(scale_factor).ok_or(RevoraError::InvalidAmount)?
             };
             env.storage().persistent().set(&audit_key, &audit);
         }
 
         // —— Re-scale SupplyCap if set —————————————————————————————————————————————————
         let supply_cap_key = DataKey2::SupplyCap(offering_id.clone());
-        if let Some(supply_cap) = env.storage().persistent().get::<DataKey2, i128>(&supply_cap_key) {
+        if let Some(supply_cap) = env.storage().persistent().get::<DataKey2, i128>(&supply_cap_key)
+        {
             let new_supply_cap = if is_upscale {
                 supply_cap.checked_mul(scale_factor).ok_or(RevoraError::InvalidAmount)?
             } else {
@@ -8616,10 +8605,9 @@ impl RevoraRevenueShare {
         }
 
         // —— Update PaymentTokenDecimals —————————————————————————————————————————————————
-        env.storage().persistent().set(
-            &DataKey2::PaymentTokenDecimals(offering_id.clone()),
-            &to_decimals,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey2::PaymentTokenDecimals(offering_id.clone()), &to_decimals);
 
         // —— Persist idempotency marker —————————————————————————————————————————————————
         env.storage().persistent().set(&idempotency_key, &true);

@@ -13,10 +13,7 @@ use crate::{
     AuditSummary, DataKey, DataKey2, OfferingId, RevoraError, RevoraRevenueShare,
     RevoraRevenueShareClient,
 };
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 fn make_client(env: &Env) -> RevoraRevenueShareClient {
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -37,9 +34,9 @@ fn register_offering(
         token,
         &5_000, // revenue_share_bps
         payout_asset,
-        &0,    // supply_cap (0 = no cap)
+        &0, // supply_cap (0 = no cap)
         &Symbol::new(env, ""),
-        &0,    // display_decimals
+        &0, // display_decimals
     );
 }
 
@@ -52,11 +49,8 @@ fn set_initial_decimals(
     decimals: u32,
 ) {
     // Directly write PaymentTokenDecimals + set some aggregate amounts
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
     // Set initial decimals
     client.set_payment_token_decimals(issuer, namespace, token, &decimals);
@@ -67,13 +61,8 @@ fn set_initial_decimals(
         .set(&DataKey2::DepositedRevenue(offering_id.clone()), &1_000_000_i128);
 
     // Write AuditSummary
-    let audit = AuditSummary {
-        total_revenue: 5_000_000_i128,
-        report_count: 10_u64,
-    };
-    env.storage()
-        .persistent()
-        .set(&DataKey::AuditSummary(offering_id.clone()), &audit);
+    let audit = AuditSummary { total_revenue: 5_000_000_i128, report_count: 10_u64 };
+    env.storage().persistent().set(&DataKey::AuditSummary(offering_id.clone()), &audit);
 }
 
 fn setup() -> (Env, RevoraRevenueShareClient, Address, Symbol, Address) {
@@ -100,17 +89,11 @@ fn migrate_denomination_upscale_6_to_18() {
     let (env, client, issuer, namespace, token) = setup();
     set_initial_decimals(&env, &client, &issuer, &namespace, &token, 6);
 
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
     // Verify initial state
-    assert_eq!(
-        client.get_payment_token_decimals(&issuer, &namespace, &token),
-        6
-    );
+    assert_eq!(client.get_payment_token_decimals(&issuer, &namespace, &token), 6);
     assert_eq!(
         env.storage()
             .persistent()
@@ -119,20 +102,11 @@ fn migrate_denomination_upscale_6_to_18() {
     );
 
     // Migrate from 6 to 18 decimals
-    let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let result = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
     assert!(result.is_ok(), "upscale migration should succeed");
 
     // Verify PaymentTokenDecimals updated
-    assert_eq!(
-        client.get_payment_token_decimals(&issuer, &namespace, &token),
-        18
-    );
+    assert_eq!(client.get_payment_token_decimals(&issuer, &namespace, &token), 18);
 
     // Verify DepositedRevenue re-scaled: 1_000_000 * 10^12 = 1_000_000_000_000
     let expected_deposited: i128 = 1_000_000_i128 * 10_i128.pow(12);
@@ -161,11 +135,8 @@ fn migrate_denomination_downscale_18_to_6() {
     let (env, client, issuer, namespace, token) = setup();
 
     // Write larger initial amounts (18-decimal scale)
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
     client.set_payment_token_decimals(&issuer, &namespace, &token, &18);
 
@@ -173,34 +144,17 @@ fn migrate_denomination_downscale_18_to_6() {
         .persistent()
         .set(&DataKey2::DepositedRevenue(offering_id.clone()), &1_000_000_000_000_i128);
 
-    let audit = AuditSummary {
-        total_revenue: 5_000_000_000_000_i128,
-        report_count: 10_u64,
-    };
-    env.storage()
-        .persistent()
-        .set(&DataKey::AuditSummary(offering_id.clone()), &audit);
+    let audit = AuditSummary { total_revenue: 5_000_000_000_000_i128, report_count: 10_u64 };
+    env.storage().persistent().set(&DataKey::AuditSummary(offering_id.clone()), &audit);
 
-    assert_eq!(
-        client.get_payment_token_decimals(&issuer, &namespace, &token),
-        18
-    );
+    assert_eq!(client.get_payment_token_decimals(&issuer, &namespace, &token), 18);
 
     // Migrate from 18 to 6 decimals
-    let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &18,
-        &6,
-    );
+    let result = client.try_migrate_denomination(&issuer, &namespace, &token, &18, &6);
     assert!(result.is_ok(), "downscale migration should succeed");
 
     // Verify PaymentTokenDecimals updated
-    assert_eq!(
-        client.get_payment_token_decimals(&issuer, &namespace, &token),
-        6
-    );
+    assert_eq!(client.get_payment_token_decimals(&issuer, &namespace, &token), 6);
 
     // Verify DepositedRevenue re-scaled: 1_000_000_000_000 / 10^12 = 1_000_000
     assert_eq!(
@@ -225,11 +179,8 @@ fn migrate_denomination_noop_same_decimals() {
     let (env, client, issuer, namespace, token) = setup();
     set_initial_decimals(&env, &client, &issuer, &namespace, &token, 6);
 
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
     let deposited_before = env
         .storage()
@@ -237,19 +188,12 @@ fn migrate_denomination_noop_same_decimals() {
         .get::<DataKey2, i128>(&DataKey2::DepositedRevenue(offering_id.clone()));
 
     let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &6, // same decimals
+        &issuer, &namespace, &token, &6, &6, // same decimals
     );
     assert!(result.is_ok());
 
     // State unchanged
-    assert_eq!(
-        client.get_payment_token_decimals(&issuer, &namespace, &token),
-        6
-    );
+    assert_eq!(client.get_payment_token_decimals(&issuer, &namespace, &token), 6);
     assert_eq!(
         env.storage()
             .persistent()
@@ -267,32 +211,17 @@ fn migrate_denomination_idempotent() {
     let (env, client, issuer, namespace, token) = setup();
     set_initial_decimals(&env, &client, &issuer, &namespace, &token, 6);
 
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
-    let _ = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let _ = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
 
     let deposited_after_first = env
         .storage()
         .persistent()
         .get::<DataKey2, i128>(&DataKey2::DepositedRevenue(offering_id.clone()));
 
-    let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let result = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
     assert!(result.is_ok(), "second call should succeed (no-op)");
 
     // State should be exactly the same as after the first call
@@ -304,13 +233,7 @@ fn migrate_denomination_idempotent() {
     );
 
     // Different (from, to) path should execute
-    let result2 = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &18,
-        &6,
-    );
+    let result2 = client.try_migrate_denomination(&issuer, &namespace, &token, &18, &6);
     assert!(result2.is_ok(), "different (from,to) should execute");
 }
 
@@ -334,13 +257,7 @@ fn migrate_denomination_requires_issuer() {
     let attacker = Address::generate(&env);
 
     // Without mock_all_auths on attacker, require_auth will fail
-    let result = client.try_migrate_denomination(
-        &attacker,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let result = client.try_migrate_denomination(&attacker, &namespace, &token, &6, &18);
     // Soroban's host will panic on failed require_auth, so we expect Err
     assert!(result.is_err(), "non-issuer should be rejected");
 }
@@ -357,13 +274,7 @@ fn migrate_denomination_nonexistent_offering() {
     let namespace = Symbol::new(&env, "def");
     let token = Address::generate(&env);
 
-    let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let result = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
     match result {
         Err(Ok(RevoraError::OfferingNotFound)) => {} // expected
         Err(Ok(other)) => panic!("expected OfferingNotFound, got {:?}", other),
@@ -377,10 +288,7 @@ fn migrate_denomination_nonexistent_offering() {
 fn migrate_denomination_rejects_out_of_range_from() {
     let (env, client, issuer, namespace, token) = setup();
     let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &19, // invalid
+        &issuer, &namespace, &token, &19, // invalid
         &6,
     );
     assert!(result.is_err(), "from_decimals > 18 should fail");
@@ -390,11 +298,7 @@ fn migrate_denomination_rejects_out_of_range_from() {
 fn migrate_denomination_rejects_out_of_range_to() {
     let (env, client, issuer, namespace, token) = setup();
     let result = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &19, // invalid
+        &issuer, &namespace, &token, &6, &19, // invalid
     );
     assert!(result.is_err(), "to_decimals > 18 should fail");
 }
@@ -405,34 +309,21 @@ fn migrate_denomination_rejects_out_of_range_to() {
 #[test]
 fn migrate_denomination_rescales_supply_cap() {
     let (env, client, issuer, namespace, token) = setup();
-    let offering_id = OfferingId {
-        issuer: issuer.clone(),
-        namespace: namespace.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() };
 
     // Set supply cap
-    env.storage()
-        .persistent()
-        .set(&DataKey2::SupplyCap(offering_id.clone()), &10_000_000_i128);
+    env.storage().persistent().set(&DataKey2::SupplyCap(offering_id.clone()), &10_000_000_i128);
 
     // Also set decimals
     client.set_payment_token_decimals(&issuer, &namespace, &token, &6);
 
-    let _ = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let _ = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
 
     // SupplyCap should be re-scaled
     let expected: i128 = 10_000_000_i128 * 10_i128.pow(12);
     assert_eq!(
-        env.storage()
-            .persistent()
-            .get::<DataKey2, i128>(&DataKey2::SupplyCap(offering_id.clone())),
+        env.storage().persistent().get::<DataKey2, i128>(&DataKey2::SupplyCap(offering_id.clone())),
         Some(expected)
     );
 }
@@ -446,13 +337,7 @@ fn migrate_denomination_emits_event() {
     set_initial_decimals(&env, &client, &issuer, &namespace, &token, 6);
 
     // Record events before migration
-    let _ = client.try_migrate_denomination(
-        &issuer,
-        &namespace,
-        &token,
-        &6,
-        &18,
-    );
+    let _ = client.try_migrate_denomination(&issuer, &namespace, &token, &6, &18);
 
     // Check events
     let events = env.events().all();
