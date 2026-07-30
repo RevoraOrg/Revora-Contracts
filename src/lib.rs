@@ -211,6 +211,10 @@ pub enum RevoraError {
     MaxDisputesReached = 60,
     /// The caller holds zero shares in the offering and cannot open a dispute.
     DisputeZeroShare = 61,
+    /// One or more classes required for the operation are paused by the issuer.
+    ///
+    /// Wire value: 62. Stable since v1.
+    ClassPaused = 62,
 }
 
 pub mod vesting;
@@ -1112,6 +1116,9 @@ pub enum DataKey2 {
     GovProposal(OfferingId, u32),
     /// Vote record for (offering_id, proposal_id, voter) -> bool (true=yes, false=no).
     VoteRecord(OfferingId, u32, Address),
+    /// Per-class pause flag: when true, transfers and claims involving this class are blocked.
+    /// Keyed by (OfferingId, ShareClass) -> bool.
+    ClassPauseState(OfferingId, ShareClass),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -3359,6 +3366,124 @@ impl RevoraRevenueShare {
             .unwrap_or(PauseState::NotPaused)
     }
 
+    // ── Class-level pause switches ──
+
+    /// Pause a specific share class within an offering.
+    ///
+    /// When a class is paused, any transfer or claim involving a holder that
+    /// has shares in that class is blocked.  This conservative approach
+    /// prevents the paused class's value from leaking through aggregate
+    /// operations; other holders with only unpaused classes are unaffected.
+    ///
+    /// # Authorization
+    /// Only the offering issuer may call this.
+    pub fn pause_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+    ) -> Result<(), RevoraError> {
+        issuer.require_auth();
+
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::ClassPauseState(offering_id, share_class);
+        env.storage().persistent().set(&key, &true);
+
+        env.events().publish(
+            (symbol_short!("cls_pau"), issuer, namespace, token),
+            (share_class, true),
+        );
+
+        Ok(())
+    }
+
+    /// Unpause a previously paused share class.
+    ///
+    /// # Authorization
+    /// Only the offering issuer may call this.
+    pub fn unpause_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+    ) -> Result<(), RevoraError> {
+        issuer.require_auth();
+
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::ClassPauseState(offering_id, share_class);
+        env.storage().persistent().set(&key, &false);
+
+        env.events().publish(
+            (symbol_short!("cls_unp"), issuer, namespace, token),
+            (share_class, false),
+        );
+
+        Ok(())
+    }
+
+    /// Query whether a specific class is currently paused.
+    pub fn is_class_paused(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        share_class: ShareClass,
+    ) -> bool {
+        let offering_id = OfferingId { issuer, namespace, token };
+        let key = DataKey2::ClassPauseState(offering_id, share_class);
+        env.storage().persistent().get::<_, bool>(&key).unwrap_or(false)
+    }
+
+    /// Check whether ANY class the holder has shares in is paused.
+    ///
+    /// When true, the holder's claims and transfers are blocked
+    /// conservatively to prevent value from the paused class from
+    /// leaking through aggregate operations.  Returns `false` when
+    /// all of the holder's classes are unpaused or the offering has
+    /// no multi-class configuration.
+    fn holder_any_class_paused(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+    ) -> bool {
+        let classes_key = DataKey2::OfferingClasses(offering_id.clone());
+        let classes = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<(ShareClass, ClassConfig)>>(&classes_key);
+
+        let Some(cls_vec) = classes else {
+            // No multi-class configuration — class pause doesn't apply
+            return false;
+        };
+
+        for (sc, _) in cls_vec.iter() {
+            let share: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::HolderShareClass(
+                    offering_id.clone(),
+                    holder.clone(),
+                    sc.clone(),
+                ))
+                .unwrap_or(0);
+            if share == 0 {
+                continue;
+            }
+            let pause_key =
+                DataKey2::ClassPauseState(offering_id.clone(), sc.clone());
+            let is_paused: bool =
+                env.storage().persistent().get(&pause_key).unwrap_or(false);
+            if is_paused {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Helper: block if the contract is in SoftPaused or HardPaused state.
     /// Used by reports, deposits, and all non-claim state-mutating entrypoints.
     fn require_not_paused(env: &Env) -> Result<(), RevoraError> {
@@ -5594,6 +5719,14 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
+        // Block transfers if any class on the offering is paused
+        if Self::holder_any_class_paused(&env, &offering_id, &from) {
+            return Err(RevoraError::ClassPaused);
+        }
+        if Self::holder_any_class_paused(&env, &offering_id, &to) {
+            return Err(RevoraError::ClassPaused);
+        }
+
         if from == to {
             return Ok(());
         }
@@ -7580,6 +7713,10 @@ impl RevoraRevenueShare {
             return Err(RevoraError::HolderBlacklisted);
         }
         Self::require_not_frozen(&env, &offering_id, &holder)?;
+        // Early fail-fast: block claim when any of the holder's classes is paused
+        if Self::holder_any_class_paused(&env, &offering_id, &holder) {
+            return Err(RevoraError::ClassPaused);
+        }
 
         let share_bps = Self::get_holder_share(
             env.clone(),
@@ -7635,6 +7772,10 @@ impl RevoraRevenueShare {
             }
             if Self::is_frozen(&env, &offering_id, &holder) {
                 break;
+            }
+            // Block claim when all of the holder's classes are paused
+            if Self::holder_any_class_paused(&env, &offering_id, &holder) {
+                return Err(RevoraError::ClassPaused);
             }
 
             let entry_key = DataKey::PeriodEntry(offering_id.clone(), i);

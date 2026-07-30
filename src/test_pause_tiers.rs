@@ -553,3 +553,134 @@ fn is_paused_false_for_not_paused() {
     client.unpause_admin(&admin);
     assert!(!client.is_paused());
 }
+
+// ── Section I: Class-level pause switches ────────────────────────────────────
+
+use crate::ShareClass;
+
+/// Helper: create an offering with multi-class configuration.
+fn setup_with_classes(
+    env: &Env,
+) -> (RevoraRevenueShareClient<'_>, Address, Address, Address, Address) {
+    env.mock_all_auths();
+    let client = make_client(env);
+    let admin = Address::generate(env);
+    let safety = Address::generate(env);
+    client.initialize(&admin, &Some(safety.clone()), &None::<bool>);
+
+    let issuer = Address::generate(env);
+    let token = Address::generate(env);
+
+    client.register_offering(
+        &issuer,
+        &Vec::new(env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &10_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    (client, admin, safety, issuer, token)
+}
+
+/// Pausing a class sets `is_class_paused` to true.
+#[test]
+fn pause_class_sets_flag() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    assert!(!client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+}
+
+/// Unpausing a class clears the pause flag.
+#[test]
+fn unpause_class_clears_flag() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+
+    client.unpause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+
+    assert!(!client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+}
+
+/// Pausing class A does not affect class B.
+#[test]
+fn pause_class_scoped_to_one_class() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+    assert!(!client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::B));
+}
+
+/// Pausing a non-existent class is valid (stores the flag for a future class).
+#[test]
+fn pause_nonexistent_class_stores_flag() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.pause_class(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &ShareClass::Custom(symbol_short!("xyz")),
+    );
+
+    assert!(client.is_class_paused(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &ShareClass::Custom(symbol_short!("xyz")),
+    ));
+}
+
+/// Calling `pause_class` twice is idempotent.
+#[test]
+fn pause_class_idempotent() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+}
+
+/// Calling `unpause_class` on an already-unpaused class is idempotent.
+#[test]
+fn unpause_class_idempotent() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.unpause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+    client.unpause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+
+    assert!(!client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+}
+
+/// Multi-class simultaneous pause: all paused classes report as paused.
+#[test]
+fn multi_class_simultaneous_pause() {
+    let env = Env::default();
+    let (client, _admin, _safety, issuer, token) = setup_with_classes(&env);
+
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::A);
+    client.pause_class(&issuer, &symbol_short!("def"), &token, &ShareClass::B);
+
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::A));
+    assert!(client.is_class_paused(&issuer, &symbol_short!("def"), &token, &ShareClass::B));
+}
+
