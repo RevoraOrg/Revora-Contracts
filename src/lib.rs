@@ -354,6 +354,13 @@ pub enum RevoraError {
     /// [`set_transfer_cooldown`]) has elapsed since the holder's last transfer.
     /// Wire value: 89. Stable since v1.
     TransferCooldownActive = 89,
+    /// Transfer blocked because the destination holder's jurisdiction is not in
+    /// the per-offering jurisdiction allowlist. Distinct from
+    /// [`JurisdictionDisallowed`] which covers non-transfer operations (e.g.
+    /// set_holder_share, apply_snapshot_shares).
+    ///
+    /// Wire value: 90. Stable since v1.
+    JurisdictionBlocked = 90,
 }
 
 pub mod tax_bucket;
@@ -635,6 +642,11 @@ const EVENT_AUTO_FRZ: Symbol = symbol_short!("auto_frz");
 /// Topic: `(tr_cool_set, issuer, namespace, token)`
 /// Data: `(jurisdiction: Symbol, cooldown_secs: u64)`
 const EVENT_TRANSFER_COOLDOWN_SET: Symbol = symbol_short!("tr_cool");
+
+/// Emitted when the per-offering jurisdiction allowlist is set or updated.
+/// Topic: `(jur_allow_upd, issuer, namespace, token)`
+/// Data: `(jurisdictions: Vec<Symbol>)`
+const EVENT_JUR_ALLOW_UPDATE: Symbol = symbol_short!("jur_alwup");
 
 /// ── Regulatory-limit delta event (reg_limit_delta event stream) ──
 ///
@@ -2262,6 +2274,10 @@ impl RevoraRevenueShare {
         Symbol::new(env, "jur_reject")
     }
 
+    fn jurisdiction_allowlist_update_event(env: &Env) -> Symbol {
+        Symbol::new(env, "jur_alwup")
+    }
+
     fn is_event_versioning_enabled(_env: Env) -> bool {
         true
     }
@@ -2957,6 +2973,23 @@ impl RevoraRevenueShare {
 
         Self::emit_jurisdiction_reject(env, offering_id, holder, jurisdiction, action);
         Err(RevoraError::JurisdictionDisallowed)
+    }
+
+    /// Check whether `holder`'s jurisdiction is in the offering's allowlist,
+    /// returning [`RevoraError::JurisdictionBlocked`] on rejection.
+    ///
+    /// This is the transfer-specific variant of [`require_holder_jurisdiction_allowed`]
+    /// and MUST be called in pre-transfer hooks only. Non-transfer operations
+    /// (set_holder_share, apply_snapshot_shares) use the original function
+    /// which returns [`RevoraError::JurisdictionDisallowed`].
+    fn require_holder_jurisdiction_allowed_for_transfer(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        action: Symbol,
+    ) -> Result<(), RevoraError> {
+        Self::require_holder_jurisdiction_allowed(env, offering_id, holder, action)
+            .map_err(|_| RevoraError::JurisdictionBlocked)
     }
 
     /// Return the per-offering jurisdiction migration grace period in seconds.
@@ -7083,7 +7116,7 @@ impl RevoraRevenueShare {
         }
 
         // Jurisdiction block
-        Self::require_holder_jurisdiction_allowed(
+        Self::require_holder_jurisdiction_allowed_for_transfer(
             env,
             &offering_id,
             to,
@@ -7214,7 +7247,7 @@ impl RevoraRevenueShare {
         }
 
         // Jurisdiction block
-        Self::require_holder_jurisdiction_allowed(
+        Self::require_holder_jurisdiction_allowed_for_transfer(
             env,
             &offering_id,
             to,
@@ -7448,7 +7481,7 @@ impl RevoraRevenueShare {
         }
 
         // Jurisdiction block
-        Self::require_holder_jurisdiction_allowed(
+        Self::require_holder_jurisdiction_allowed_for_transfer(
             env,
             &offering_id,
             to,
@@ -7675,7 +7708,7 @@ impl RevoraRevenueShare {
         }
 
         // Jurisdiction block
-        Self::require_holder_jurisdiction_allowed(env.clone(), &offering_id, to.clone(), symbol_short!("xfer"))?;
+        Self::require_holder_jurisdiction_allowed_for_transfer(env.clone(), &offering_id, to.clone(), symbol_short!("xfer"))?;
 
         let from_share: u32 = env
             .storage()
@@ -9450,6 +9483,75 @@ impl RevoraRevenueShare {
         };
         let key = DataKey2::TransferCooldownConfig(offering_id, jurisdiction);
         env.storage().persistent().get::<DataKey2, u64>(&key).unwrap_or(0)
+    }
+
+    /// Set the per-offering jurisdiction allowlist.
+    ///
+    /// Only the current offering issuer may call this function. An empty allowlist
+    /// disables jurisdiction gating (all jurisdictions are permitted). When non-empty,
+    /// the pre-transfer hook consults this list and rejects transfers to holders whose
+    /// jurisdiction is not present with [`RevoraError::JurisdictionBlocked`].
+    ///
+    /// Duplicate entries are silently deduplicated before storage.
+    ///
+    /// # Events
+    /// Emits [`EVENT_JUR_ALLOW_UPDATE`] on success.
+    pub fn set_jurisdiction_allowlist(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        jurisdictions: Vec<Symbol>,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let normalized = Self::normalize_jurisdictions(&env, jurisdictions);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::AllowedJurisdictions(offering_id), &normalized);
+        env.events().publish(
+            (
+                Self::jurisdiction_allowlist_update_event(&env),
+                issuer,
+                namespace,
+                token,
+            ),
+            (normalized,),
+        );
+        Ok(())
+    }
+
+    /// Return the per-offering jurisdiction allowlist in stored order.
+    ///
+    /// An empty list means jurisdiction gating is disabled — all jurisdictions
+    /// are permitted for transfers. When non-empty, only holders whose jurisdiction
+    /// appears in this list may receive shares via [`transfer_with_attestation`].
+    pub fn get_jurisdiction_allowlist(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Vec<Symbol> {
+        let offering_id = OfferingId {
+            issuer,
+            namespace,
+            token,
+        };
+        Self::get_allowed_jurisdictions_internal(&env, &offering_id)
     }
 
     /// Replace the offering's allowed jurisdiction set.

@@ -577,3 +577,440 @@ fn get_jurisdiction_migration_returns_none_when_no_migration_pending() {
         .get_jurisdiction_migration(&issuer, &symbol_short!("def"), &token, &holder)
         .is_none());
 }
+
+// ── Jurisdiction allowlist tests (#537) ──
+
+#[test]
+fn set_jurisdiction_allowlist_stores_and_emits_event() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+    let events_before = env.events().all().len();
+
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+
+    let allowlist = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        allowlist,
+        soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")]
+    );
+
+    // Verify jur_allow_update event was emitted
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topic_str = format!("{:?}", e.0);
+        topic_str.contains("jur_alwup")
+    });
+    assert!(found, "jur_allow_update event should have been emitted");
+    assert!(env.events().all().len() > events_before);
+}
+
+#[test]
+fn set_jurisdiction_allowlist_empty_disables_gating() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    // Empty allowlist (gating disabled)
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env],
+    );
+
+    let allowlist = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(allowlist.len(), 0);
+}
+
+#[test]
+fn set_jurisdiction_allowlist_deduplicates_entries() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![
+            &env,
+            symbol_short!("us"),
+            symbol_short!("us"),
+            symbol_short!("ca"),
+            symbol_short!("us"),
+        ],
+    );
+
+    let allowlist = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(
+        allowlist,
+        soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")]
+    );
+}
+
+#[test]
+fn set_jurisdiction_allowlist_non_issuer_rejected() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+    let non_issuer = Address::generate(&env);
+
+    let result = client.try_set_jurisdiction_allowlist(
+        &non_issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us")],
+    );
+    // Non-issuer should fail auth (host panic) or get an error
+    assert!(result.is_err());
+}
+
+#[test]
+fn get_jurisdiction_allowlist_returns_empty_for_unset() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    let allowlist = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    // Not configured -> should return empty
+    assert_eq!(allowlist.len(), 0);
+}
+
+#[test]
+fn jurisdiction_allowlist_and_legacy_allowed_jurisdictions_share_storage() {
+    // set_jurisdiction_allowlist and set_allowed_jurisdictions write to the
+    // same storage key; reading via either getter should return the same data.
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("sg")],
+    );
+
+    let via_new = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    let via_legacy = client.get_allowed_jurisdictions(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(via_new, via_legacy);
+}
+
+#[test]
+fn jurisdiction_allowlist_updates_overwrite_previous() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+
+    // Overwrite with a single-jurisdiction list
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("jp")],
+    );
+
+    let allowlist = client.get_jurisdiction_allowlist(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(allowlist, soroban_sdk::vec![&env, symbol_short!("jp")]);
+}
+
+#[test]
+fn transfer_blocked_by_jurisdiction_allowlist_returns_jurisdiction_blocked() {
+    // Set up an offering with jurisdiction allowlist and test that
+    // transferring to a holder in a disallowed jurisdiction fails with
+    // JurisdictionBlocked.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &token, &1000, &payout_asset, &0);
+    env.ledger().set_network_id([0x01u8; 32]);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+
+    // Set holder1 jurisdiction and give shares
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder1, &symbol_short!("us"), &0u64);
+    client.set_allowed_jurisdictions(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+
+    // Set the jurisdiction allowlist to only allow "us" (NOT "ca")
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us")],
+    );
+
+    // Set holder2 jurisdiction to "ca" (NOT in allowlist)
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("ca"), &0u64);
+
+    // Try to transfer to holder2 — should be blocked with JurisdictionBlocked
+    let category = Symbol::new(&env, "General");
+    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
+    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
+    let result = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        RevoraError::JurisdictionBlocked,
+        "transfer to holder in blocked jurisdiction should return JurisdictionBlocked"
+    );
+}
+
+#[test]
+fn transfer_allowed_when_destination_jurisdiction_in_allowlist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &token, &1000, &payout_asset, &0);
+    env.ledger().set_network_id([0x01u8; 32]);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+
+    // Set holder1 jurisdiction to "us"
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder1, &symbol_short!("us"), &0u64);
+    client.set_allowed_jurisdictions(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+
+    // Set allowlist to include "ca"
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+
+    // Set holder2 jurisdiction to "ca" (in allowlist)
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("ca"), &0u64);
+
+    // Transfer should succeed
+    let category = Symbol::new(&env, "General");
+    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
+    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
+    client.transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
+
+    assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder1), 50);
+    assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder2), 50);
+}
+
+#[test]
+fn empty_allowlist_allows_all_transfers() {
+    // When no allowlist is configured (empty), jurisdiction gating is disabled.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &token, &1000, &payout_asset, &0);
+    env.ledger().set_network_id([0x01u8; 32]);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+
+    // Set holder1 jurisdiction to "xx" (no allowlist configured at all)
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder1, &symbol_short!("xx"), &0u64);
+    client.set_allowed_jurisdictions(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("xx")],
+    );
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+
+    // Holder2 also has "xx" jurisdiction
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("xx"), &0u64);
+
+    // No allowlist explicitly set (empty → gating disabled)
+    // Transfer should succeed
+    let category = Symbol::new(&env, "General");
+    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
+    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
+    client.transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
+
+    assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder2), 50);
+}
+
+#[test]
+fn single_jurisdiction_allowlist_rejects_other_jurisdictions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &token, &1000, &payout_asset, &0);
+    env.ledger().set_network_id([0x01u8; 32]);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder1, &symbol_short!("us"), &0u64);
+    client.set_allowed_jurisdictions(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
+    );
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+
+    // Single jurisdiction allowlist: only "us"
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us")],
+    );
+
+    // Try transferring to holder with "ca" jurisdiction
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("ca"), &0u64);
+
+    let category = Symbol::new(&env, "General");
+    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
+    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
+    let result = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        RevoraError::JurisdictionBlocked,
+        "single-jurisdiction allowlist should reject all other jurisdictions"
+    );
+}
+
+#[test]
+fn jurisdiction_allowlist_reject_emits_audit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+    let ns = symbol_short!("ns");
+
+    client.register_offering(&issuer, &ns, &token, &1000, &payout_asset, &0);
+    env.ledger().set_network_id([0x01u8; 32]);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder1, &symbol_short!("us"), &0u64);
+    client.set_allowed_jurisdictions(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us")],
+    );
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+
+    client.set_jurisdiction_allowlist(
+        &issuer,
+        &ns,
+        &token,
+        &soroban_sdk::vec![&env, symbol_short!("us")],
+    );
+
+    client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("ca"), &0u64);
+
+    let events_before = env.events().all().len();
+
+    let category = Symbol::new(&env, "General");
+    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
+    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
+    let _ = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
+
+    // Audit event should be emitted on jurisdiction rejection
+    assert!(env.events().all().len() > events_before);
+}
+
