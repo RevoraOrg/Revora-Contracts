@@ -413,6 +413,8 @@ mod test_accrual_reconciliation_prop;
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
+#[cfg(test)]
+mod test_denom_migration;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -463,6 +465,10 @@ const EVENT_FREEZE_REASON_V1: Symbol = symbol_short!("frz_rsn");
 const EVENT_CLAIM_DELAY_SET_V2: Symbol = symbol_short!("dly_set2");
 const EVENT_CONCENTRATION_WARNING_V2: Symbol = symbol_short!("conc2");
 const EVENT_DECIMAL_SET: Symbol = symbol_short!("pt_dec");
+/// Emitted when stored amounts are re-scaled due to a payment token decimal migration.
+/// Topics: `(denom_mig, issuer, namespace, token)`
+/// Data: `(from_decimals: u32, to_decimals: u32, caller: Address)`
+const EVENT_DENOM_MIGRATED: Symbol = symbol_short!("den_mig");
 
 const EVENT_PROPOSAL_CREATED_V2: Symbol = symbol_short!("prop_n2");
 const EVENT_PROPOSAL_APPROVED_V2: Symbol = symbol_short!("prop_a2");
@@ -1659,6 +1665,12 @@ pub enum DataKey2 {
     GovProposal(OfferingId, u32),
     /// Vote record for (offering_id, proposal_id, voter) -> bool (true=yes, false=no).
     VoteRecord(OfferingId, u32, Address),
+
+    // ── Denomination migration (issue #denom-migration) ──
+    /// Idempotency marker for denomination migrations. Keyed by
+    /// `(offering_id, from_decimals, to_decimals)` to guarantee exactly-once
+    /// execution per distinct (from, to) path.
+    DenomMigration(OfferingId, u32, u32),
 
     // ── Deferred-distribution priority queue (issue #551) ──
     /// Priority-ordered deferred-distribution queue for an offering.
@@ -8473,8 +8485,155 @@ impl RevoraRevenueShare {
             .unwrap_or(STELLAR_CANONICAL_DECIMALS)
     }
 
-    // â”€â”€ Multi-period aggregated claims â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // —— Denomination migration ————————————————————————————————————
 
+    /// Migrate stored amounts and metadata when a payment token changes its decimal
+    /// precision. Re-scales all aggregate revenue amounts and updates the stored
+    /// `PaymentTokenDecimals` setting so that future `normalize_amount` calls produce
+    /// correct canonical values.
+    ///
+    /// # Idempotency
+    ///
+    /// Each distinct `(offering_id, from_decimals, to_decimals)` path is executed at
+    /// most once. A marker is persisted after the first successful call; subsequent
+    /// calls with the same triple return `Ok(())` with no state mutation.
+    ///
+    /// # Amounts re-scaled
+    ///
+    /// - `DepositedRevenue` (aggregate deposited total)
+    /// - `AuditSummary.total_revenue`
+    /// - `SupplyCap` (if set)
+    ///
+    /// Per-period revenues are **not** re-scaled by this function. The issuer should
+    /// close any open periods before calling `migrate_denomination` to ensure future
+    /// deposits use the new decimal precision.
+    ///
+    /// # Errors
+    /// - `RevoraError::OfferingNotFound` if the offering does not exist.
+    /// - `RevoraError::LimitReached` if either `from_decimals` or `to_decimals` exceeds 18.
+    /// - `RevoraError::ContractFrozen` if the contract is frozen.
+    /// - `RevoraError::ContractPaused` if the contract is paused.
+    pub fn migrate_denomination(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        from_decimals: u32,
+        to_decimals: u32,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        if from_decimals > MAX_TOKEN_DECIMALS || to_decimals > MAX_TOKEN_DECIMALS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        if from_decimals == to_decimals {
+            // No-op: same precision, nothing to migrate.
+            return Ok(());
+        }
+
+        let offering = Self::get_offering(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+        )
+        .ok_or(RevoraError::OfferingNotFound)?;
+
+        if offering.issuers.primary != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // —— Idempotency guard —————————————————————————————————————————————————
+        let idempotency_key = DataKey2::DenomMigration(offering_id.clone(), from_decimals, to_decimals);
+        if env.storage().persistent().has(&idempotency_key) {
+            return Ok(());
+        }
+
+        // —— Compute rescale factor —————————————————————————————————————————————————
+        let scale_factor: i128;
+        let is_upscale: bool;
+        if to_decimals > from_decimals {
+            let exp = to_decimals - from_decimals;
+            scale_factor = 10_i128
+                .checked_pow(exp)
+                .ok_or(RevoraError::InvalidAmount)?;
+            is_upscale = true;
+        } else {
+            let exp = from_decimals - to_decimals;
+            scale_factor = 10_i128
+                .checked_pow(exp)
+                .ok_or(RevoraError::InvalidAmount)?;
+            is_upscale = false;
+        }
+
+        // —— Re-scale DepositedRevenue —————————————————————————————————————————————————
+        let deposited_key = DataKey2::DepositedRevenue(offering_id.clone());
+        if let Some(deposited) = env.storage().persistent().get::<DataKey2, i128>(&deposited_key) {
+            let new_deposited = if is_upscale {
+                deposited.checked_mul(scale_factor).ok_or(RevoraError::InvalidAmount)?
+            } else {
+                deposited.checked_div(scale_factor).ok_or(RevoraError::InvalidAmount)?
+            };
+            env.storage().persistent().set(&deposited_key, &new_deposited);
+        }
+
+        // —— Re-scale AuditSummary.total_revenue —————————————————————————————————————————————————
+        let audit_key = DataKey::AuditSummary(offering_id.clone());
+        if let Some(mut audit) = env.storage().persistent().get::<DataKey, AuditSummary>(&audit_key) {
+            audit.total_revenue = if is_upscale {
+                audit
+                    .total_revenue
+                    .checked_mul(scale_factor)
+                    .ok_or(RevoraError::InvalidAmount)?
+            } else {
+                audit
+                    .total_revenue
+                    .checked_div(scale_factor)
+                    .ok_or(RevoraError::InvalidAmount)?
+            };
+            env.storage().persistent().set(&audit_key, &audit);
+        }
+
+        // —— Re-scale SupplyCap if set —————————————————————————————————————————————————
+        let supply_cap_key = DataKey2::SupplyCap(offering_id.clone());
+        if let Some(supply_cap) = env.storage().persistent().get::<DataKey2, i128>(&supply_cap_key) {
+            let new_supply_cap = if is_upscale {
+                supply_cap.checked_mul(scale_factor).ok_or(RevoraError::InvalidAmount)?
+            } else {
+                supply_cap.checked_div(scale_factor).ok_or(RevoraError::InvalidAmount)?
+            };
+            env.storage().persistent().set(&supply_cap_key, &new_supply_cap);
+        }
+
+        // —— Update PaymentTokenDecimals —————————————————————————————————————————————————
+        env.storage().persistent().set(
+            &DataKey2::PaymentTokenDecimals(offering_id.clone()),
+            &to_decimals,
+        );
+
+        // —— Persist idempotency marker —————————————————————————————————————————————————
+        env.storage().persistent().set(&idempotency_key, &true);
+
+        // —— Emit event —————————————————————————————————————————————————
+        env.events().publish(
+            (EVENT_DENOM_MIGRATED, issuer.clone(), namespace.clone(), token.clone()),
+            (from_decimals, to_decimals, issuer),
+        );
+
+        Ok(())
+    }
+
+    // —— Multi-period aggregated claims —————————————————————————————————————
     /// Deposit revenue for a specific period of an offering.
     ///
     /// # Arguments

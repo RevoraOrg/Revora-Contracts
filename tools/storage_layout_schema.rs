@@ -154,6 +154,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
     ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
     ("DataKey2::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
+    ("DataKey2::DenomMigration(OfferingId, u32, u32)", "bool", "offering+path"),
     // ── Accrual-checkpoint keys ──
     ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
     ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
