@@ -1,17 +1,11 @@
 #![cfg(test)]
 
-use crate::{EVENT_REG_LIMIT_DELTA, RevoraRevenueShareClient};
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    Address, Env, IntoVal, Symbol,
-};
+use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn setup_offering(
-    env: &Env,
-) -> (RevoraRevenueShareClient<'static>, Address, Address, Address) {
+fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Address, Address) {
     env.mock_all_auths();
     let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(env, &contract_id);
@@ -50,10 +44,7 @@ fn set_jurisdiction(
     );
 }
 
-fn find_reg_limit_events(
-    env: &Env,
-    start: u32,
-) -> Vec<(Address, Symbol, i128, i128)> {
+fn find_reg_limit_events(env: &Env, start: u32) -> Vec<(Address, Symbol, i128, i128)> {
     let mut results: Vec<(Address, Symbol, i128, i128)> = soroban_sdk::vec![env];
     let all = env.events().all();
     for i in start..all.len() {
@@ -61,8 +52,12 @@ fn find_reg_limit_events(
         if topics.len() >= 4 {
             let t0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(env);
             if t0 == EVENT_REG_LIMIT_DELTA {
-                let (holder, jurisdiction, delta_bps, new_aggregate): (Address, Symbol, i128, i128) =
-                    data.into_val(env);
+                let (holder, jurisdiction, delta_bps, new_aggregate): (
+                    Address,
+                    Symbol,
+                    i128,
+                    i128,
+                ) = data.into_val(env);
                 results.push_back((holder, jurisdiction, delta_bps, new_aggregate));
             }
         }
@@ -237,10 +232,16 @@ fn test_reg_limit_delta_multiple_holders_multiple_jurisdictions() {
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 3);
 
-    let us_sum: i128 = events.clone().into_iter().filter(|(_, j, _, _)| *j == symbol_short!("us")).map(|(_, _, d, _)| d).sum();
+    let us_sum: i128 = events
+        .clone()
+        .into_iter()
+        .filter(|(_, j, _, _)| *j == symbol_short!("us"))
+        .map(|(_, _, d, _)| d)
+        .sum();
     assert_eq!(us_sum, 5_000, "total US jurisdiction shares should be 5000 bps");
 
-    let sg_sum: i128 = events.iter().filter(|(_, j, _, _)| *j == symbol_short!("sg")).map(|(_, _, d, _)| *d).sum();
+    let sg_sum: i128 =
+        events.iter().filter(|(_, j, _, _)| *j == symbol_short!("sg")).map(|(_, _, d, _)| *d).sum();
     assert_eq!(sg_sum, 5_000, "total SG jurisdiction shares should be 5000 bps");
 }
 

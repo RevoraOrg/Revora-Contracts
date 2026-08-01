@@ -1109,6 +1109,119 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #609: Fractional-share supply-cap rounding boundary tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Fixture total_issued at cap - 1, then issue amounts producing fractional
+/// shares in both rounding modes.  Assert the final total never exceeds cap.
+#[test]
+fn supply_cap_rounding_boundary_truncation_at_cap_minus_one() {
+    let (_env, c) = client();
+
+    // Supply cap of 100 units; total issued = 99 (cap - 1).
+    // Issue 1 unit with bps=1 -> 0.0001 units (fractional share).
+    // Truncation round down → issued remains 99, never exceeds 100.
+    let cap: i128 = 100;
+    let issued_before: i128 = 99;
+    let issue_amount: i128 = 1;
+    let bps: u32 = 1;
+
+    let fractional = c.compute_share(&issue_amount, &bps, &RoundingMode::Truncation);
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap} with Truncation");
+    assert_eq!(fractional, 0, "1 unit at 1 bps truncates to 0");
+}
+
+#[test]
+fn supply_cap_rounding_boundary_roundhalfup_at_cap_minus_one() {
+    let (_env, c) = client();
+
+    // Same fixture, RoundHalfUp mode.
+    // 1 unit * 1 bps / 10000 = 0.0001 → rounds up to 1 (since > 0).
+    // But RoundHalfUp only rounds up at >= 0.5, so:
+    // 1 * 1 / 10000 = 0.0001 → NOT >= 0.5, rounds down to 0.
+    let cap: i128 = 100;
+    let issued_before: i128 = 99;
+
+    let fractional = c.compute_share(&1i128, &1u32, &RoundingMode::RoundHalfUp);
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap} with RoundHalfUp");
+    assert_eq!(fractional, 0, "RoundHalfUp: 1*1/10000=0.0001 rounds down");
+}
+
+/// At the cap boundary with a large amount just below cap, issue fractional
+/// shares.  Half-up rounding must not push one wei over the cap.
+#[test]
+fn supply_cap_rounding_half_up_boundary_guard() {
+    let (_env, c) = client();
+
+    // Use 5 BPS on amount=10_000 -> exact 5 units (no fractional).
+    // Then test amounts that produce .5 fractions.
+    let cap: i128 = 10_000;
+    let issued_before: i128 = 9_995;
+
+    // amount=1, bps=5_000 → exact 0.5 → RoundHalfUp rounds to 1
+    let fractional = c.compute_share(&1i128, &5_000u32, &RoundingMode::RoundHalfUp);
+    assert_eq!(fractional, 1, "1*5000/10000=0.5 rounds up to 1");
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap}");
+
+    // amount=1, bps=4_999 → 0.4999 → rounds down to 0
+    let fractional2 = c.compute_share(&1i128, &4_999u32, &RoundingMode::RoundHalfUp);
+    assert_eq!(fractional2, 0, "1*4999/10000=0.4999 rounds down");
+}
+
+/// Truncation at cap boundary: any fractional amount is dropped.
+#[test]
+fn supply_cap_rounding_truncation_boundary_guard() {
+    let (_env, c) = client();
+
+    let cap: i128 = 10_000;
+    let issued_before: i128 = 9_999;
+
+    // amount=1, bps=9_999 → 0.9999 → Truncation drops to 0
+    let fractional = c.compute_share(&1i128, &9_999u32, &RoundingMode::Truncation);
+    assert_eq!(fractional, 0, "1*9999/10000 truncates to 0");
+    let total = issued_before.saturating_add(fractional);
+    assert_eq!(total, 9_999);
+    assert!(total <= cap);
+
+    // amount=1, bps=10_000 → exact 1 → no rounding
+    let exact = c.compute_share(&1i128, &10_000u32, &RoundingMode::Truncation);
+    assert_eq!(exact, 1, "1*10000/10000 = 1");
+    let total2 = issued_before.saturating_add(exact);
+    assert_eq!(total2, 10_000, "total hits exact cap");
+    assert!(total2 <= cap);
+}
+
+/// Stress: iterate many fractional issuances near cap; total must never overshoot.
+#[test]
+fn supply_cap_rounding_iterated_boundary_stress() {
+    let (_env, c) = client();
+
+    let cap: i128 = 10_000;
+    let mut total: i128 = 9_900; // 100 below cap
+
+    // Issue 200 small amounts at varying BPS to simulate real usage.
+    for i in 0..200u32 {
+        let bps = (i % 100) + 1; // 1..100
+        let amount: i128 = 1;
+        let fractional_trunc = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
+        let fractional_round = c.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
+
+        total = total.saturating_add(fractional_trunc);
+        assert!(total <= cap, "iteration {i}: Truncation total {total} > cap {cap}");
+
+        total = total.saturating_add(fractional_round);
+        assert!(total <= cap, "iteration {i}: RoundHalfUp total {total} > cap {cap}");
+
+        if total >= cap {
+            break;
+        }
+    }
+}
+
 #[test]
 fn issue_610_zero_vs_max_error_code_verification() {
     // Verify that cap=0 vs cap=i128::MAX produce different error conditions.

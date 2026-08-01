@@ -262,3 +262,147 @@ fn checkpoint_compression_threshold_not_set_uses_default() {
 
     assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
 }
+
+// ── get_holder_accrued_unclaimed tests ──────────────────────────────────────
+
+#[test]
+fn accrued_unclaimed_returns_zero_for_blacklisted_holder() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    client.blacklist_add(&issuer, &symbol_short!("def"), &token, &holder);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 0, "blacklisted holder should get 0");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_for_single_period() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable, "accrued should match claimable for single period");
+    assert_eq!(accrued, 50_000, "50% of 100_000");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_after_share_change() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable, "accrued should match claimable after share change");
+    assert_eq!(accrued, 75_000, "50_000 + 25_000");
+}
+
+#[test]
+fn accrued_unclaimed_returns_zero_for_holder_with_no_share() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 0, "holder without share should get 0");
+}
+
+#[test]
+fn accrued_unclaimed_respects_partial_claim() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+
+    // Claim only first period
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &1);
+    assert_eq!(payout, 50_000, "first period claimed: 50k");
+
+    // Accrued unclaimed should now be only the second period
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 50_000, "remaining unclaimed: second period 50k");
+
+    // Match get_claimable
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable);
+}
+
+#[test]
+fn accrued_unclaimed_after_full_claim_returns_zero() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 0, "after full claim, accrued should be 0");
+}
+
+#[test]
+fn accrued_unclaimed_zero_share_does_not_erase_past_accrual() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 50_000, "accrual from when holder had 50%% share persists");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_after_partial_claim_with_share_change() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
+
+    // Claim first two periods
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert_eq!(payout, 75_000, "period 1 (50k) + period 2 (25k)");
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 25_000, "remaining: period 3 at 25%% = 25k");
+
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable);
+}

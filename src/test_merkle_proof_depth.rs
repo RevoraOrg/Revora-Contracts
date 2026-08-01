@@ -177,10 +177,7 @@ fn helper_proof_one_over_max_depth_err_proof_too_deep() {
         proof.push_back(BytesN::random(&env));
     }
     assert_eq!(proof.len(), MAX_PROOF_DEPTH + 1);
-    assert_eq!(
-        helper_verify(&env, leaf, root, &proof),
-        Err(MerkleError::ProofTooDeep)
-    );
+    assert_eq!(helper_verify(&env, leaf, root, &proof), Err(MerkleError::ProofTooDeep));
 }
 
 /// Proof of depth 100 (well above MAX_PROOF_DEPTH) → Err(ProofTooDeep).
@@ -193,10 +190,7 @@ fn helper_proof_depth_100_err_proof_too_deep() {
     for _ in 0..100 {
         proof.push_back(BytesN::random(&env));
     }
-    assert_eq!(
-        helper_verify(&env, leaf, root, &proof),
-        Err(MerkleError::ProofTooDeep)
-    );
+    assert_eq!(helper_verify(&env, leaf, root, &proof), Err(MerkleError::ProofTooDeep));
 }
 
 /// Proof of depth 0 (empty) → accepted (lower boundary).
@@ -299,9 +293,9 @@ fn contract_oversized_proof_emits_proof_reject_depth_event() {
     assert!(!all_events.is_empty(), "at least one event must be emitted");
 
     let reject_sym = symbol_short!("prf_rej_d");
-    let found = all_events.iter().any(|(_cid, topics, _data)| {
-        topics.get(0) == Some(soroban_sdk::Val::from(reject_sym))
-    });
+    let found = all_events
+        .iter()
+        .any(|(_cid, topics, _data)| topics.get(0) == Some(soroban_sdk::Val::from(reject_sym)));
     assert!(found, "prf_rej_d event must appear in the event log");
 }
 
@@ -317,9 +311,9 @@ fn contract_valid_depth_proof_no_reject_event() {
 
     let all_events = env.events().all();
     let reject_sym = symbol_short!("prf_rej_d");
-    let found = all_events.iter().any(|(_cid, topics, _data)| {
-        topics.get(0) == Some(soroban_sdk::Val::from(reject_sym))
-    });
+    let found = all_events
+        .iter()
+        .any(|(_cid, topics, _data)| topics.get(0) == Some(soroban_sdk::Val::from(reject_sym)));
     assert!(!found, "prf_rej_d must NOT be emitted for valid-depth proofs");
 }
 
