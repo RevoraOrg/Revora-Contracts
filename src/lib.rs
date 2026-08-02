@@ -552,6 +552,8 @@ const EVENT_ROYALTY_CONFIG: Symbol = symbol_short!("roy_cfg");
 const EVENT_ROYALTY_PAID: Symbol = symbol_short!("roy_paid");
 const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_INDEXED_V3: Symbol = symbol_short!("ev_idx3");
+pub const EVENT_PROOF_REJECT_DEPTH: Symbol = symbol_short!("proof_reject_depth");
+pub const MAX_PROOF_DEPTH: u32 = 32;
 const EVENT_TYPE_OFFER: Symbol = symbol_short!("offer");
 /// Emitted when a period is sealed by `close_period`.
 const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
@@ -633,6 +635,9 @@ const EVENT_LOCKUP_SET: Symbol = symbol_short!("lock_set");
 /// Emitted when a transfer is attempted while the offering has active lockup restrictions.
 /// Includes the caller, unlock timestamp, and attempted amount for indexer alerting.
 const EVENT_LOCKUP_VIOLATION: Symbol = symbol_short!("lock_viol");
+/// Emitted when a lockup schedule's taper_end_ts is extended with holder consent.
+/// Data: `(offering_id, new_taper_end_ts, attestation_digest)`.
+const EVENT_LOCKUP_EXTEND: Symbol = symbol_short!("lock_ext");
 const EVENT_PLATFORM_FEE_SET: Symbol = symbol_short!("fee_set");
 const EVENT_FRZ_SET: Symbol = symbol_short!("frz_set");
 const EVENT_FRZ_CLR: Symbol = symbol_short!("frz_clr");
@@ -2507,6 +2512,12 @@ impl RevoraRevenueShare {
                 .saturating_add(share_bps as i128);
             if new_total_shares > max_shares {
                 return Err(RevoraError::MaxTotalSupplySharesExceeded);
+            }
+            if new_total_shares == max_shares {
+                env.events().publish(
+                    (EVENT_SUPPLY_CAP_SATURATED, issuer.clone(), namespace.clone(), token.clone()),
+                    (new_total_shares, max_shares),
+                );
             }
         }
 
@@ -9065,6 +9076,12 @@ impl RevoraRevenueShare {
             if temp_total_shares > max_shares {
                 return Err(RevoraError::MaxTotalSupplySharesExceeded);
             }
+            if temp_total_shares == max_shares {
+                env.events().publish(
+                    (EVENT_SUPPLY_CAP_SATURATED, offering_id.issuer.clone(), offering_id.namespace.clone(), offering_id.token.clone()),
+                    (temp_total_shares, max_shares),
+                );
+            }
         }
 
         // Now apply the changes
@@ -9160,6 +9177,41 @@ impl RevoraRevenueShare {
             (EVENT_SNAP_SHARES_APPLIED, issuer, namespace, token),
             (snapshot_ref, start_index, batch_len, new_total_bps),
         );
+        Ok(())
+    }
+
+    /// Verify a snapshot proof while enforcing the maximum depth permitted by the
+    /// contract. Deep proofs can exhaust contract memory and gas, so the contract
+    /// rejects them early with [`RevoraError::ProofTooDeep`] and emits
+    /// [`EVENT_PROOF_REJECT_DEPTH`] when the bound is violated.
+    ///
+    /// The implementation is intentionally lightweight: it only validates the proof
+    /// length and returns `Ok(())` for proofs that fit within the hard limit.
+    /// Off-chain callers remain responsible for the actual proof verification and
+    /// root comparison logic.
+    pub fn verify_snapshot_proof(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        snapshot_ref: u64,
+        proof: Vec<BytesN<32>>,
+    ) -> Result<(), RevoraError> {
+        let proof_len = proof.len();
+        if proof_len > MAX_PROOF_DEPTH {
+            env.events().publish(
+                (
+                    EVENT_PROOF_REJECT_DEPTH,
+                    issuer.clone(),
+                    namespace.clone(),
+                    token.clone(),
+                    snapshot_ref,
+                ),
+                (proof_len, MAX_PROOF_DEPTH),
+            );
+            return Err(RevoraError::ProofTooDeep);
+        }
+
         Ok(())
     }
 
@@ -11028,7 +11080,7 @@ impl RevoraRevenueShare {
         );
 
         let n = holders.len();
-        let mut payouts: Vec<DistributionEntry> = Vec::new(env);
+        let mut payout_rows: std::vec::Vec<(u32, u32, Address, i128)> = std::vec::Vec::new();
         let mut total: i128 = 0;
 
         for i in 0..n {
@@ -11061,8 +11113,19 @@ impl RevoraRevenueShare {
                 Self::compute_share(env.clone(), period_revenue, bounded_bps, mode);
 
             total = total.saturating_add(normalized_payout);
+            payout_rows.push((bounded_bps, share_bps, holder.clone(), normalized_payout));
+        }
+
+        payout_rows.sort_by(|a, b| match b.0.cmp(&a.0) {
+            core::cmp::Ordering::Equal => a.2.cmp(&b.2),
+            other => other,
+        });
+
+        let mut payouts: Vec<DistributionEntry> = Vec::new(env);
+        for (bounded_bps, share_bps, holder, normalized_payout) in payout_rows {
+            let _ = bounded_bps;
             payouts.push_back(DistributionEntry {
-                holder: holder.clone(),
+                holder,
                 share_bps,
                 normalized_payout,
             });
@@ -12338,6 +12401,90 @@ impl RevoraRevenueShare {
         let schedule = Self::get_lockup_schedule(env.clone(), issuer, namespace, token);
         let now = env.ledger().timestamp();
         schedule.map(|s| s.calculate_unlocked_bps(now)).unwrap_or(10_000)
+    }
+
+    /// Extend the taper end timestamp of a lockup schedule with holder consent.
+    ///
+    /// Insider lockups sometimes need to be extended for regulatory or contractual
+    /// reasons.  This entrypoint pushes `taper_end_ts` forward; it may **never**
+    /// shorten an existing lockup.  The holder must sign an off-chain attestation
+    /// consenting to the extension.
+    ///
+    /// # Parameters
+    ///
+    /// * `issuer` — the offering issuer (must authorise).
+    /// * `namespace` / `token` — identify the offering.
+    /// * `holder` — the locked holder who consents to the extension.
+    /// * `new_taper_end_ts` — new taper end timestamp (must be > current `taper_end_ts`).
+    /// * `attestation` — a [`SignedAttestation`] committing to the extension parameters.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` — the extension was applied and persisted.
+    /// * `Err(RevoraError::InvalidAmount)` — `new_taper_end_ts <= current taper_end_ts`
+    ///   or no lockup schedule exists for this offering.
+    /// * `Err(RevoraError::NetworkIdMismatch)` — the attestation was produced for a
+    ///   different network.
+    ///
+    /// # Events
+    ///
+    /// Emits [`EVENT_LOCKUP_EXTEND`] with `(offering_id, new_taper_end_ts, attestation.digest)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn extend_lockup(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        new_taper_end_ts: u64,
+        attestation: SignedAttestation,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // ── Verify attestation ───────────────────────────────────────────────
+        Self::verify_attestation_digest(
+            env.clone(),
+            attestation.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            holder.clone(),
+            holder.clone(),
+            0,
+        )?;
+
+        // ── Fetch and validate existing schedule ─────────────────────────────
+        let key = DataKey2::LockupSchedule(offering_id.clone());
+        let existing: LockupSchedule =
+            env.storage().persistent().get(&key).ok_or(RevoraError::InvalidAmount)?;
+
+        // ── Monotonic extension check ───────────────────────────────────────
+        // Match on the existing variant and apply the extension.
+        let updated = match existing {
+            LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } => {
+                if new_taper_end_ts <= taper_end_ts {
+                    return Err(RevoraError::InvalidAmount);
+                }
+                LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts: new_taper_end_ts }
+            }
+        };
+
+        env.storage().persistent().set(&key, &updated);
+
+        env.events().publish(
+            (EVENT_LOCKUP_EXTEND, issuer, namespace, token),
+            (holder, new_taper_end_ts, attestation.digest),
+        );
+
+        Ok(())
     }
 
     /// Preview the total claimable amount for a holder without mutating state.

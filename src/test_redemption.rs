@@ -805,3 +805,106 @@ fn test_cliff_taper_invalid_params_rejected() {
     let res2 = client.try_set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &invalid_end);
     assert_eq!(res2, Err(Ok(RevoraError::InvalidAmount)));
 }
+
+// ── extend_lockup ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_extend_lockup_extends_taper_end_ts() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Set initial lockup: cliff at 1000, taper end at 2000.
+    let sched = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 1000,
+        cliff_bps: 2000,
+        taper_end_ts: 2000,
+    };
+    client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
+
+    // Extend taper_end_ts from 2000 to 3000.
+    let attestation = crate::SignedAttestation {
+        network_id: env.ledger().network_id(),
+        digest: env.crypto().sha256(&soroban_sdk::Bytes::new(&env)),
+    };
+    let result = client.try_extend_lockup(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &issuer,
+        &3000u64,
+        &attestation,
+    );
+    assert_eq!(result, Ok(Ok(())));
+
+    // Verify the schedule was updated.
+    let updated =
+        client.get_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token).unwrap();
+    if let crate::LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } = updated {
+        assert_eq!(cliff_ts, 1000);
+        assert_eq!(cliff_bps, 2000);
+        assert_eq!(taper_end_ts, 3000);
+    } else {
+        panic!("expected CliffTaper variant");
+    }
+}
+
+#[test]
+fn test_extend_lockup_rejects_shortening() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // Set initial lockup: taper_end_ts = 2000.
+    let sched = crate::LockupSchedule::CliffTaper {
+        cliff_ts: 1000,
+        cliff_bps: 2000,
+        taper_end_ts: 2000,
+    };
+    client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
+
+    // Attempt to shorten to 1500 is rejected.
+    let attestation = crate::SignedAttestation {
+        network_id: env.ledger().network_id(),
+        digest: env.crypto().sha256(&soroban_sdk::Bytes::new(&env)),
+    };
+    let result = client.try_extend_lockup(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &issuer,
+        &1500u64,
+        &attestation,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
+
+    // Attempt with same timestamp is also rejected.
+    let result = client.try_extend_lockup(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &issuer,
+        &2000u64,
+        &attestation,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
+}
+
+#[test]
+fn test_extend_lockup_no_schedule_rejected() {
+    let env = Env::default();
+    let (client, issuer, offering_token, ..) = setup_offering(&env);
+
+    // No lockup schedule set — extend must fail.
+    let attestation = crate::SignedAttestation {
+        network_id: env.ledger().network_id(),
+        digest: env.crypto().sha256(&soroban_sdk::Bytes::new(&env)),
+    };
+    let result = client.try_extend_lockup(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &issuer,
+        &3000u64,
+        &attestation,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
+}

@@ -13354,3 +13354,47 @@ fn test_issuer_transfer_migrates_all_configs() {
     let old_last_snap = client.get_last_snapshot_ref(&old_issuer, &ns, &token);
     assert_eq!(old_last_snap, 0);
 }
+
+#[test]
+fn set_holder_share_exactly_at_max_supply_emits_cap_sat_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payment_token, &0, &symbol_short!(""), &0);
+    client.set_max_total_supply_shares(&issuer, &symbol_short!("def"), &token, &5_000);
+
+    let events_before = env.events().all().len();
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &Address::generate(&env), &5_000);
+    let events_after = env.events().all();
+    
+    let cap_sat_sym: soroban_sdk::Val = symbol_short!("cap_sat").into_val(&env);
+    let found = events_after[events_before..].iter().any(|e| e.1.contains(cap_sat_sym));
+    assert!(found, "EVENT_SUPPLY_CAP_SATURATED must fire when total_issued == supply_cap");
+}
+
+#[test]
+fn set_holder_share_below_max_supply_does_not_emit_cap_sat_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let (payment_token, _) = create_payment_token(&env);
+
+    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payment_token, &0, &symbol_short!(""), &0);
+    client.set_max_total_supply_shares(&issuer, &symbol_short!("def"), &token, &5_000);
+
+    let events_before = env.events().all().len();
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &Address::generate(&env), &4_999);
+    let events_after = env.events().all();
+    
+    let cap_sat_sym: soroban_sdk::Val = symbol_short!("cap_sat").into_val(&env);
+    let found = events_after[events_before..].iter().any(|e| e.1.contains(cap_sat_sym));
+    assert!(!found, "EVENT_SUPPLY_CAP_SATURATED must not fire strictly below cap");
+}

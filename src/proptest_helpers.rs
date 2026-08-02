@@ -30,6 +30,21 @@
 
 use proptest::prelude::*;
 
+/// Return a reproducible shuffled copy of a slice using a deterministic local PRNG.
+/// Useful for regression tests that need to exercise many re-orderings of the same fixture.
+pub fn shuffle_vec_with_seed<T: Clone>(values: &[T], seed: u64) -> std::vec::Vec<T> {
+    let mut shuffled = values.to_vec();
+    let mut state = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0x85EBCA6B);
+
+    for index in (1..shuffled.len()).rev() {
+        state = state.rotate_left(17).wrapping_mul(0x9E3779B97F4A7C15);
+        let j = (state as usize) % (index + 1);
+        shuffled.swap(index, j);
+    }
+
+    shuffled
+}
+
 // ── Primitive strategies ─────────────────────────────────────────────────────
 
 /// Any valid basis-points value (0–10 000 inclusive).
