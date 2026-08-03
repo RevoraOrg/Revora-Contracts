@@ -413,8 +413,7 @@ fn event_indexed_v2_acc_idx_period_id_matches_reported_period() {
     for period in [1u64, 2, 3] {
         let before = env.events().all().len();
         client.report_revenue(&issuer, &ns, &token, &payout, &5_000, &period, &false);
-        let (topic, _) =
-            find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32).unwrap();
+        let (topic, _) = find_indexed_v2(&env, symbol_short!("acc_idx"), before as u32).unwrap();
         assert_eq!(
             topic.period_id, period,
             "acc_idx topic.period_id must equal the reported period_id"

@@ -7,6 +7,8 @@ use soroban_sdk::{
     Address, Env,
 };
 
+const CHECKPOINT_THRESHOLD_SMALL: u32 = 4;
+
 fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -22,6 +24,12 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
 
     client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
 
+    (env, client, issuer, token, payout_asset)
+}
+
+fn setup_offering_with_threshold(threshold: u32) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
+    let (env, client, issuer, token, payout_asset) = setup_offering();
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &threshold);
     (env, client, issuer, token, payout_asset)
 }
 
@@ -87,36 +95,241 @@ fn delay_barrier_preserves_pre_change_accrual() {
     assert_eq!(client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0), 25_000);
 }
 
-// ── holder_statement_diff tests ──
+// === Checkpoint Compression Tests ===
 
 #[test]
-fn holder_statement_diff_basic_delta_across_periods() {
+fn checkpoint_compression_folds_schedule_when_threshold_exceeded() {
+    let (env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&env);
+
+    // Set share and deposit revenue for each period to create share transitions
+    // We need more than CHECKPOINT_THRESHOLD_SMALL transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 1_000 + (i as u32 * 100);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // get_claimable should still return correct total after compression
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(claimable > 0, "claimable should be positive after compression");
+}
+
+#[test]
+fn checkpoint_compression_is_lossless_for_claimable_computation() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Before compression: compute claimable amount with many share transitions
+    let mut expected_total = 0_i128;
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 1_000 + (i as u32 * 100);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        expected_total += 10_000 * (share as i128) / 10_000;
+    }
+
+    let actual_claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(actual_claimable, expected_total, "claimable must be lossless after compression");
+}
+
+#[test]
+fn checkpoint_compression_lossless_multiple_claims_before_and_after_fold() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create enough share transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = if i <= CHECKPOINT_THRESHOLD_SMALL { 3_000 } else { 7_000 };
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // Claim all periods; the total should equal sum of (revenue * share / 10000) for each period
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    let expected = (CHECKPOINT_THRESHOLD_SMALL as i128) * 3_000 + 2 * 7_000;
+    assert_eq!(payout, expected * 10, "claim should be lossless: 3000 for first threshold periods, 7000 for last two");
+}
+
+#[test]
+fn checkpoint_threshold_exactly_reached_then_claim() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create exactly threshold share transitions
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &5_000, &i);
+    }
+
+    // Now claim all periods
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    let expected_total: i128 = (1..=CHECKPOINT_THRESHOLD_SMALL).map(|i| 5_000 * (1_000 + i as u32 * 500) as i128 / 10_000).sum();
+    assert_eq!(payout, expected_total, "claim should be correct when threshold is exactly reached");
+}
+
+#[test]
+fn checkpoint_claim_between_two_folds() {
+    let (env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&env);
+
+    // Create enough transitions to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        let share = 2_000 + (i as u32 * 200);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // Claim a few periods first
+    let first_claim = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert!(first_claim > 0, "partial claim should return positive payout");
+
+    // Get claimable for remaining periods
+    let remaining = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(remaining > 0, "remaining claimable should be positive after partial claim");
+}
+
+#[test]
+fn checkpoint_set_and_get_threshold() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let _ = payout_asset;
+
+    // Default threshold
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
+
+    // Set a custom threshold
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &500);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 500);
+
+    // Set to 0 to disable compression
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 0);
+
+    // Re-enable with a new value
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &2000);
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 2000);
+}
+
+#[test]
+fn checkpoint_compression_preserves_claimable_after_partial_claim_then_compression() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(CHECKPOINT_THRESHOLD_SMALL);
+    let holder = Address::generate(&_env);
+
+    // Create many share changes to trigger compression
+    for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    // Claim some periods before the anchor boundary is crossed
+    let partial_payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert!(partial_payout > 0, "partial claim should succeed");
+
+    // Get claimable for remaining periods should also be positive
+    let remaining = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(remaining > 0, "remaining claimable should be positive");
+
+    // Claim the rest
+    let remaining_payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    assert!(remaining_payout > 0, "remaining claim should succeed");
+
+    // Total payout should match what get_claimable returned for the remaining amount
+    assert_eq!(partial_payout + remaining_payout, partial_payout + remaining);
+}
+
+#[test]
+fn checkpoint_compression_with_zero_threshold_disables_compression() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering_with_threshold(0);
+    let holder = Address::generate(&_env);
+
+    // Even with many share changes, no compression should happen
+    for i in 1..=10 {
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+    }
+
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert!(claimable > 0, "claimable should be positive even with zero threshold");
+
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
+    assert!(payout > 0, "claim should succeed with zero threshold");
+}
+
+#[test]
+fn checkpoint_compression_threshold_not_set_uses_default() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let _ = payout_asset;
+
+    assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
+}
+
+// ── get_holder_accrued_unclaimed tests ──────────────────────────────────────
+
+#[test]
+fn accrued_unclaimed_returns_zero_for_blacklisted_holder() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    // Period 1: holder has 5_000 bps, revenue 100_000
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
-    // Period 2: holder share reduced to 2_500 bps, revenue 100_000
+    client.blacklist_add(&issuer, &symbol_short!("def"), &token, &holder);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 0, "blacklisted holder should get 0");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_for_single_period() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable, "accrued should match claimable for single period");
+    assert_eq!(accrued, 50_000, "50% of 100_000");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_after_share_change() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &2,
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
     );
-
-    // share_delta: 2_500 - 5_000 = -2_500
-    assert_eq!(delta.share_delta, -2_500);
-    // claimed_delta: period 2 accrued (5_000*100/10000 + 2_500*100/10000) - period 1 accrued (5_000*100/10000)
-    // period 1 claimable: 5_000 * 100_000 / 10_000 = 50_000
-    // period 2 claimable: 5_000*100/10000=50_000 + 2_500*100/10000=25_000 = 75_000
-    // delta = 75_000 - 50_000 = 25_000
-    assert_eq!(delta.claimed_delta, 25_000);
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable, "accrued should match claimable after share change");
+    assert_eq!(accrued, 75_000, "50_000 + 25_000");
 }
 
 #[test]
-fn holder_statement_diff_same_period_yields_zero_delta() {
+fn accrued_unclaimed_returns_zero_for_holder_with_no_share() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 0, "holder without share should get 0");
+}
+
+#[test]
+fn accrued_unclaimed_respects_partial_claim() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
@@ -124,157 +337,72 @@ fn holder_statement_diff_same_period_yields_zero_delta() {
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &2, &2,
-    );
+    // Claim only first period
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &1);
+    assert_eq!(payout, 50_000, "first period claimed: 50k");
 
-    assert_eq!(delta.share_delta, 0);
-    assert_eq!(delta.claimed_delta, 0);
+    // Accrued unclaimed should now be only the second period
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 50_000, "remaining unclaimed: second period 50k");
+
+    // Match get_claimable
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable);
 }
 
 #[test]
-fn holder_statement_diff_period_a_greater_than_b_rejected() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
-
-    let result = client.try_holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &2, &1,
-    );
-
-    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
-}
-
-#[test]
-fn holder_statement_diff_zero_period_rejected() {
+fn accrued_unclaimed_after_full_claim_returns_zero() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
-    // period_a = 0 should be rejected
-    let result = client.try_holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &0, &1,
-    );
-    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
-
-    // period_b = 0 should also be rejected (period_a > period_b wins)
-    let result2 = client.try_holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &0,
-    );
-    assert_eq!(result2, Err(Ok(RevoraError::InvalidPeriodId)));
-
-    // Both zero should be rejected
-    let result3 = client.try_holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &0, &0,
-    );
-    assert_eq!(result3, Err(Ok(RevoraError::InvalidPeriodId)));
-}
-
-#[test]
-fn holder_statement_diff_period_out_of_range_rejected() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-
-    // Only 1 period exists; period 2 is out of range
-    let result = client.try_holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &2,
-    );
-    assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
-}
-
-#[test]
-fn holder_statement_diff_holder_with_no_shares_returns_zero() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    // No shares set for this holder
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200_000, &2);
-
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &2,
-    );
-
-    assert_eq!(delta.share_delta, 0);
-    assert_eq!(delta.claimed_delta, 0);
-}
-
-#[test]
-fn holder_statement_diff_share_increase_delta_positive() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
-
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &2,
-    );
-
-    // share_delta: 5_000 - 1_000 = 4_000 (positive)
-    assert_eq!(delta.share_delta, 4_000);
-    // period 1 claimable: 1_000 * 100_000 / 10_000 = 10_000
-    // period 2 claimable (cumulative): 10_000 + 5_000 * 100_000 / 10_000 = 60_000
-    // delta = 60_000 - 10_000 = 50_000
-    assert_eq!(delta.claimed_delta, 50_000);
-}
-
-#[test]
-fn holder_statement_diff_multiple_periods_full_range() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &4);
-
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &4,
-    );
-
-    // share never changed
-    assert_eq!(delta.share_delta, 0);
-    // 4 periods * 50_000 per period = 200_000 cumulative through period 4
-    // 1 period * 50_000 = 50_000 cumulative through period 1
-    // delta = 200_000 - 50_000 = 150_000
-    assert_eq!(delta.claimed_delta, 150_000);
-}
-
-#[test]
-fn holder_statement_diff_with_claim_partially_settled() {
-    let (_env, client, issuer, token, payout_asset) = setup_offering();
-    let holder = Address::generate(&_env);
-
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
-
-    // Claim period 1 only
     client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
 
-    // Diff between periods 1-3 should still compute on full accrued amounts
-    // (held_statement_diff uses the accrual ledger, not the claim state)
-    let delta = client.holder_statement_diff(
-        &holder, &issuer, &symbol_short!("def"), &token, &1, &3,
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
     );
+    assert_eq!(accrued, 0, "after full claim, accrued should be 0");
+}
 
-    assert_eq!(delta.share_delta, 0);
-    // 3 periods * 50_000 = 150_000 cumulative through period 3
-    // 1 period * 50_000 = 50_000 cumulative through period 1
-    // delta = 100_000
-    assert_eq!(delta.claimed_delta, 100_000);
+#[test]
+fn accrued_unclaimed_zero_share_does_not_erase_past_accrual() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0);
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 50_000, "accrual from when holder had 50%% share persists");
+}
+
+#[test]
+fn accrued_unclaimed_matches_claimable_after_partial_claim_with_share_change() {
+    let (_env, client, issuer, token, payout_asset) = setup_offering();
+    let holder = Address::generate(&_env);
+
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
+
+    // Claim first two periods
+    let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);
+    assert_eq!(payout, 75_000, "period 1 (50k) + period 2 (25k)");
+
+    let accrued = client.get_holder_accrued_unclaimed(
+        &issuer, &symbol_short!("def"), &token, &holder,
+    );
+    assert_eq!(accrued, 25_000, "remaining: period 3 at 25%% = 25k");
+
+    let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(accrued, claimable);
 }

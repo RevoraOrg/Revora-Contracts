@@ -389,9 +389,9 @@ fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
     client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &42u64, &false);
 
     // The fixture helper returns canonical v2 topics — verify rv_rep shape
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
     let mut rv_rep_opt = None;
-    for f in fixtures.iter() {
+    for f in v2_fixtures.iter() {
         if f.event_type == symbol_short!("rv_rep") {
             rv_rep_opt = Some(f);
             break;
@@ -415,10 +415,10 @@ fn milestone_fixture_covers_all_canonical_event_types() {
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
-    assert_eq!(fixtures.len(), 6u32);
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
+    assert!(v2_fixtures.len() >= 16, "fixture count must be at least 16 (including rg_lim_d)");
 
-    // Check all expected event types are present
+    // Check all expected event types are present (core 6 + new rg_lim_d)
     let expected = [
         symbol_short!("offer"),
         symbol_short!("rv_init"),
@@ -426,9 +426,10 @@ fn milestone_fixture_covers_all_canonical_event_types() {
         symbol_short!("rv_rej"),
         symbol_short!("rv_rep"),
         symbol_short!("claim"),
+        symbol_short!("rg_lim_d"),
     ];
     for expected_type in expected.iter() {
-        let found = fixtures.iter().any(|f| f.event_type == *expected_type);
+        let found = v2_fixtures.iter().any(|f| f.event_type == *expected_type);
         assert!(found, "fixture must contain event_type");
     }
 }
@@ -443,12 +444,17 @@ fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &99u64);
-    for f in fixtures.iter() {
-        if f.event_type == symbol_short!("offer") || f.event_type == symbol_short!("claim") {
-            assert_eq!(f.period_id, 0u64, "non-period-scoped event must have period_id = 0");
-        } else {
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &99u64);
+    for f in v2_fixtures.iter() {
+        // Only revenue event types are period-scoped
+        if f.event_type == symbol_short!("rv_init")
+            || f.event_type == symbol_short!("rv_ovr")
+            || f.event_type == symbol_short!("rv_rej")
+            || f.event_type == symbol_short!("rv_rep")
+        {
             assert_eq!(f.period_id, 99u64, "period-scoped event must carry the requested period_id");
+        } else {
+            assert_eq!(f.period_id, 0u64, "non-period-scoped event must have period_id = 0");
         }
     }
 }

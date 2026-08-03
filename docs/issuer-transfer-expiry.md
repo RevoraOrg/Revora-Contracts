@@ -98,3 +98,66 @@ Use this to display the remaining acceptance window in UIs or off-chain tooling.
 | `replace_issuer_transfer_preserves_custom_expiry` | Replace preserves original custom expiry |
 | `get_pending_issuer_transfer_details_returns_expiry` | Details query returns correct expiry_secs |
 | `get_pending_issuer_transfer_details_returns_none_when_no_pending` | Details query returns None when no pending |
+
+## Kani Formal Verification (Issue #577)
+
+The `cancel_issuer_transfer` state machine is formally verified with
+[Kani](https://model-checking.github.io/kani/) bounded model checking.
+The harness lives in `src/kani_harness/issuer_transfer_cancel.rs`.
+
+### What is proved
+
+The proofs model the issuer-transfer state machine as pure Rust (no `Env`, no
+Soroban host) and exhaustively enumerate all reachable pre-states within the
+bounded domain.
+
+| Proof | Property |
+|---|---|
+| `proof_cancel_removes_pending_key` | After a successful cancel, `PendingIssuerTransfer` key is absent — no orphan storage. |
+| `proof_cancel_does_not_change_issuer` | `cancel_issuer_transfer` never mutates `offering.issuer` or the `OfferingIssuer` reverse-lookup. |
+| `proof_cancel_no_pending_returns_error` | Cancel with no pending transfer returns `NoTransferPending`; storage unchanged. |
+| `proof_propose_cancel_idempotent_storage` | `propose` → `cancel` leaves storage byte-for-byte equal to the pre-propose baseline. |
+| `proof_propose_expiry_clamped` | Stored `expiry_secs` is always `0` (default) or within `[MIN_EXPIRY_SECS, MAX_EXPIRY_SECS]`. |
+| `proof_double_cancel_rejected` | A second cancel returns `NoTransferPending`; no double-removal hazard. |
+| `proof_cancel_by_non_issuer_rejected` | Unauthorised callers cannot cancel; storage is unchanged. |
+| `proof_cancel_returns_correct_pending_value` | The returned `PendingTransfer` exactly matches what was stored. |
+
+### Running the proofs
+
+```bash
+# Install the Kani tool-chain (one-time)
+cargo install --locked kani-verifier
+cargo kani setup
+
+# Run all issuer-transfer-cancel proofs
+cargo kani --harness proofs::proof_cancel_removes_pending_key \
+           --harness proofs::proof_cancel_does_not_change_issuer \
+           --harness proofs::proof_cancel_no_pending_returns_error \
+           --harness proofs::proof_propose_cancel_idempotent_storage \
+           --harness proofs::proof_propose_expiry_clamped \
+           --harness proofs::proof_double_cancel_rejected \
+           --harness proofs::proof_cancel_by_non_issuer_rejected \
+           --harness proofs::proof_cancel_returns_correct_pending_value
+```
+
+The harness also compiles and runs as standard `cargo test` (concrete-input shims)
+so CI catches regressions without the Kani tool-chain:
+
+```bash
+cargo test kani_harness::issuer_transfer_cancel
+```
+
+### Security notes
+
+- **Auth modelled as precondition** — the proofs assume `caller == offering.issuer`
+  to focus on storage invariants.  Auth-failure paths (`require_auth`,
+  `require_issuer_quorum_auth`) are covered by the integration tests in `src/test.rs`
+  under the `kani_cancel_*` group.
+- **No orphan key guarantee** — the `proof_propose_cancel_idempotent_storage` proof
+  is the strongest guarantee: after any propose + cancel sequence the storage model
+  is identical to the never-proposed baseline, ruling out all possible orphan keys.
+- **Expiry not checked on cancel** — `cancel_issuer_transfer` does not enforce the
+  expiry window; the current issuer can cancel at any time regardless of how much time
+  has elapsed.  This is intentional and proved correct by
+  `proof_cancel_does_not_change_issuer` (expiry enforcement only lives in
+  `accept_issuer_transfer`).
