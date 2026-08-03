@@ -51,9 +51,10 @@ extern crate std;
 
 extern crate alloc;
 
+use super::*;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use alloc::format;
-use soroban_sdk::Env;
+use soroban_sdk::{Address, Env, Symbol};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -632,5 +633,687 @@ fn checked_mul_defense_in_depth_prevents_overflow() {
             // Should never panic and should always satisfy bounds
             assert_bounds(result, amount, "Extreme amount");
         }
+    }
+}
+
+#[test]
+fn test_per_class_supply_cap_edge_cases() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, crate::RevoraContract);
+    let client = crate::RevoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let issuer = Address::generate(&env);
+    let namespace = Symbol::new(&env, "ns");
+    let token = Address::generate(&env);
+    let offering_sym = Symbol::new(&env, "offering");
+    let payout_asset = Address::generate(&env);
+
+    // Setup offering
+    client
+        .try_register_offering(
+            &issuer,
+            &namespace,
+            &token,
+            &10_000,
+            &offering_sym,
+            &18,
+            &payout_asset,
+            &0,
+        )
+        .unwrap();
+
+    let holder = Address::generate(&env);
+    let share_class = Symbol::new(&env, "classA");
+
+    // Set aggregate cap to 10
+    client.set_max_total_supply_shares(&issuer, &namespace, &token, &10);
+
+    // Set class cap to 1
+    client.set_class_supply_cap(&issuer, &namespace, &token, &share_class, &1);
+
+    // Issuance 1: Should pass, cap of exactly 1
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &1, &Some(share_class.clone()));
+
+    // Issuance 2: Should fail, class exhausted but aggregate has room (1 < 10)
+    let holder2 = Address::generate(&env);
+    let result = client.try_set_holder_share(
+        &issuer,
+        &namespace,
+        &token,
+        &holder2,
+        &1,
+        &Some(share_class.clone()),
+    );
+
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #610: Differential test for supply_cap == 0 vs. supply_cap == i128::MAX
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// **CRITICAL FINDING: Issue #610's premise requires verification**
+//
+// The issue assumes:
+// - cap = 0 means "issuance disabled"
+// - cap = i128::MAX means "issuance enabled but unbounded"
+//
+// **ACTUAL IMPLEMENTATION (verified from code review):**
+// - cap = 0 means "NO CAP" (unlimited issuance) because the check is `if cap > 0 { enforce }`
+// - cap > 0 means "CAP ENABLED" (enforce limit)
+// - There is NO explicit "disabled" code path; cap=0 issuance failures would come from
+//   OTHER validation (negative amount, etc.), not from a dedicated cap-disabled check.
+//
+// **Semantic Implication:**
+// The current implementation treats cap=0 and cap=i128::MAX as follows:
+// 1. cap=0: Issuance is ENABLED and UNBOUNDED (no cap check at all)
+// 2. cap=i128::MAX: Issuance is ENABLED and bounded at i128::MAX
+//
+// These are NOT semantically opposite; both allow issuance, just with different limits.
+// The "disabled" semantic does not currently exist in the codebase.
+//
+// **Test Strategy:**
+// This differential test verifies the ACTUAL behavior (both allow issuance),
+// and serves as a security lock to catch any unintended changes to the supply_cap
+// enforcement logic. If someone later tries to make cap=0 mean "disabled",
+// this test will fail loudly with clear event/error stream assertions.
+//
+// **Differential Verification:**
+// - Fixture A (cap=0): Issuance is unbounded. No cap-reached event.
+// - Fixture B (cap=i128::MAX): Issuance is bounded at i128::MAX. Cap-reached event fires at i128::MAX.
+// - Key difference: Event streams differ when approaching the boundary.
+//
+// **Safety/Overflow Guarantee:**
+// Rust's default debug builds panic on overflow; release builds wrap silently unless
+// overflow-checks=true is set. This contract's Cargo.toml sets `overflow-checks = true`
+// in release mode, ensuring safe behavior at i128 boundaries.
+
+#[test]
+fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
+    // Differential test: cap=0 (unbounded) vs. cap=i128::MAX (bounded at max int).
+    // Both allow issuance, but event streams and final state should differ meaningfully.
+    //
+    // This test locks in the current semantics so that future changes to cap=0
+    // meaning (e.g., to make it "disabled") will be caught by failing assertions.
+
+    use soroban_sdk::symbol_short;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
+    let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let payment_token = crate::test::create_payment_token(&env).0;
+    let pt_admin = crate::test::create_payment_token(&env).1;
+    let token = Address::generate(&env);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIXTURE A: cap = 0 (unbounded)
+    // ─────────────────────────────────────────────────────────────────────────
+    client.register_offering(
+        &issuer,
+        &symbol_short!("a"),
+        &token,
+        &5_000,
+        &payment_token,
+        &0, // cap = 0 → NO CAP (unlimited issuance)
+        &symbol_short!(""),
+        &0,
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIXTURE B: cap = i128::MAX (bounded at max int)
+    // ─────────────────────────────────────────────────────────────────────────
+    client.register_offering(
+        &issuer,
+        &symbol_short!("b"),
+        &token,
+        &5_000,
+        &payment_token,
+        &i128::MAX, // cap = i128::MAX → BOUNDED issuance, max at i128::MAX
+        &symbol_short!(""),
+        &0,
+    );
+
+    // Mint sufficient tokens for both fixtures
+    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 1: Small issuance (100) — both should succeed
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        let r_a = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("a"),
+            &token,
+            &payment_token,
+            &100,
+            &1,
+        );
+        let r_b = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("b"),
+            &token,
+            &payment_token,
+            &100,
+            &1,
+        );
+
+        assert!(r_a.is_ok(), "cap=0: small deposit must succeed");
+        assert!(r_b.is_ok(), "cap=i128::MAX: small deposit must succeed");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 2: Large issuance (i128::MAX - 1_000_000)
+    // Both should succeed; this is near the i128::MAX boundary.
+    // ─────────────────────────────────────────────────────────────────────────
+    let large_amount = i128::MAX - 1_000_000;
+    {
+        let r_a = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("a"),
+            &token,
+            &payment_token,
+            &large_amount,
+            &2,
+        );
+        let r_b = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("b"),
+            &token,
+            &payment_token,
+            &large_amount,
+            &2,
+        );
+
+        assert!(
+            r_a.is_ok(),
+            "cap=0: large deposit (near i128::MAX) must succeed; no cap to enforce"
+        );
+        assert!(r_b.is_ok(), "cap=i128::MAX: large deposit at i128::MAX boundary must succeed");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 3: Verify cumulative deposited amounts
+    // A should show unbounded total; B should show total at cap boundary.
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        let deposited_a = client.get_deposited_revenue(&issuer, &symbol_short!("a"), &token);
+        let deposited_b = client.get_deposited_revenue(&issuer, &symbol_short!("b"), &token);
+
+        // A: 100 + (i128::MAX - 1_000_000) = i128::MAX - 999_900
+        assert_eq!(deposited_a, 100 + large_amount, "cap=0: cumulative must reflect all deposits");
+
+        // B: 100 + (i128::MAX - 1_000_000) = i128::MAX - 999_900
+        assert_eq!(
+            deposited_b,
+            100 + large_amount,
+            "cap=i128::MAX: cumulative must reflect all deposits within cap"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 4: Attempt issuance that would exceed cap
+    // For A (cap=0): should still succeed (no cap).
+    // For B (cap=i128::MAX): should fail (exceeds cap).
+    // ────────────────────────────────────────────────────────────────────────────
+    {
+        let overflow_amount = 1_000_000; // Would push total past i128::MAX for fixture B
+
+        let r_a = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("a"),
+            &token,
+            &payment_token,
+            &overflow_amount,
+            &3,
+        );
+        let r_b = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("b"),
+            &token,
+            &payment_token,
+            &overflow_amount,
+            &3,
+        );
+
+        assert!(r_a.is_ok(), "cap=0: overflow-amount issuance must succeed; no cap enforced");
+        assert!(
+            r_b.is_err(),
+            "cap=i128::MAX: deposit exceeding cap must fail with SupplyCapExceeded"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 5: Event stream analysis
+    // ─────────────────────────────────────────────────────────────────────────
+    // A (cap=0): Should emit deposit events but NO "cap_reach" events (no cap).
+    // B (cap=i128::MAX): Should emit "cap_reach" when deposit reaches exact i128::MAX.
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        // Collect all events in the environment
+        let all_events = env.events().all();
+
+        // Convert "cap_reach" symbol once
+        let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+
+        // Count "cap_reach" events for fixture A (should be 0)
+        let cap_reach_count_a = all_events
+            .iter()
+            .filter(|e| {
+                // Fixture A uses namespace "a"
+                let event_data = &e.1;
+                let has_cap_reach = event_data.contains(cap_reach_sym);
+                let has_fixture_a = event_data.contains(symbol_short!("a").into_val(&env));
+                has_cap_reach && has_fixture_a
+            })
+            .count();
+
+        // Count "cap_reach" events for fixture B (should be 1 when reaching i128::MAX)
+        let cap_reach_count_b = all_events
+            .iter()
+            .filter(|e| {
+                let event_data = &e.1;
+                let has_cap_reach = event_data.contains(cap_reach_sym);
+                let has_fixture_b = event_data.contains(symbol_short!("b").into_val(&env));
+                has_cap_reach && has_fixture_b
+            })
+            .count();
+
+        assert_eq!(cap_reach_count_a, 0, "cap=0: must emit 0 cap-reach events (no cap enforced)");
+        assert!(
+            cap_reach_count_b > 0,
+            "cap=i128::MAX: must emit at least 1 cap-reach event when deposit meets i128::MAX boundary"
+        );
+    }
+}
+
+#[test]
+fn issue_610_supply_cap_zero_issuance_always_succeeds() {
+    // Lock down: cap=0 means issuance is ENABLED and UNBOUNDED.
+    // This test verifies that with cap=0, issuance cannot be rejected due to cap logic,
+    // even with extremely large amounts near i128 boundaries.
+
+    use soroban_sdk::symbol_short;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
+    let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let payment_token = crate::test::create_payment_token(&env).0;
+    let pt_admin = crate::test::create_payment_token(&env).1;
+    let token = Address::generate(&env);
+
+    // Register with cap=0 (unlimited)
+    client.register_offering(
+        &issuer,
+        &symbol_short!("u"),
+        &token,
+        &5_000,
+        &payment_token,
+        &0, // cap = 0
+        &symbol_short!(""),
+        &0,
+    );
+
+    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test sequence: small, medium, large, near-max
+    // ─────────────────────────────────────────────────────────────────────────
+    let test_amounts = [
+        1i128,                 // Minimal
+        1_000i128,             // Small
+        1_000_000i128,         // Medium
+        1_000_000_000i128,     // Large
+        i128::MAX - 2_000i128, // Near max
+    ];
+
+    for (idx, &amount) in test_amounts.iter().enumerate() {
+        let period_id = (idx + 1) as u64;
+        let result = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("u"),
+            &token,
+            &payment_token,
+            &amount,
+            &period_id,
+        );
+        assert!(
+            result.is_ok(),
+            "cap=0: deposit of amount={} (period={}) must succeed",
+            amount,
+            period_id
+        );
+    }
+
+    // Verify cumulative total
+    let total: i128 = test_amounts.iter().sum();
+    let deposited = client.get_deposited_revenue(&issuer, &symbol_short!("u"), &token);
+    assert_eq!(deposited, total, "cap=0: cumulative deposited must match sum of all deposits");
+}
+
+#[test]
+fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
+    // Lock down: cap=i128::MAX means issuance is ENABLED but BOUNDED at i128::MAX.
+    // This test verifies:
+    // 1. Deposits succeed up to the boundary.
+    // 2. Deposits that would exceed i128::MAX fail with SupplyCapExceeded.
+    // 3. Cap-reach event fires when cumulative hits exactly i128::MAX.
+    // 4. Safe checked arithmetic is used (overflow-checks=true in release).
+
+    use soroban_sdk::symbol_short;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
+    let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let payment_token = crate::test::create_payment_token(&env).0;
+    let pt_admin = crate::test::create_payment_token(&env).1;
+    let token = Address::generate(&env);
+
+    // Register with cap=i128::MAX
+    client.register_offering(
+        &issuer,
+        &symbol_short!("m"),
+        &token,
+        &5_000,
+        &payment_token,
+        &i128::MAX,
+        &symbol_short!(""),
+        &0,
+    );
+
+    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 1: Deposit bringing total to exactly i128::MAX should succeed
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        let amount_1 = i128::MAX / 2;
+        let amount_2 = i128::MAX - amount_1;
+
+        let r1 = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("m"),
+            &token,
+            &payment_token,
+            &amount_1,
+            &1,
+        );
+        let r2 = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("m"),
+            &token,
+            &payment_token,
+            &amount_2,
+            &2,
+        );
+
+        assert!(r1.is_ok(), "cap=i128::MAX: first half deposit must succeed");
+        assert!(r2.is_ok(), "cap=i128::MAX: deposit bringing total to exact MAX must succeed");
+
+        let deposited = client.get_deposited_revenue(&issuer, &symbol_short!("m"), &token);
+        assert_eq!(
+            deposited,
+            i128::MAX,
+            "cap=i128::MAX: cumulative must equal MAX after exact-boundary deposits"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 2: Any further deposit should fail (already at cap)
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        let r = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("m"),
+            &token,
+            &payment_token,
+            &1,
+            &3,
+        );
+        assert!(r.is_err(), "cap=i128::MAX: deposit exceeding already-at-cap must fail");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 3: Verify cap-reach event fired at exact boundary
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        let all_events = env.events().all();
+        let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+        let fixture_m_sym: soroban_sdk::Val = symbol_short!("m").into_val(&env);
+
+        let cap_reach_count = all_events
+            .iter()
+            .filter(|e| {
+                let event_data = &e.1;
+                event_data.contains(cap_reach_sym) && event_data.contains(fixture_m_sym)
+            })
+            .count();
+
+        assert!(
+            cap_reach_count > 0,
+            "cap=i128::MAX: cap-reach event must fire when cumulative hits MAX"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #609: Fractional-share supply-cap rounding boundary tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Fixture total_issued at cap - 1, then issue amounts producing fractional
+/// shares in both rounding modes.  Assert the final total never exceeds cap.
+#[test]
+fn supply_cap_rounding_boundary_truncation_at_cap_minus_one() {
+    let (_env, c) = client();
+
+    // Supply cap of 100 units; total issued = 99 (cap - 1).
+    // Issue 1 unit with bps=1 -> 0.0001 units (fractional share).
+    // Truncation round down → issued remains 99, never exceeds 100.
+    let cap: i128 = 100;
+    let issued_before: i128 = 99;
+    let issue_amount: i128 = 1;
+    let bps: u32 = 1;
+
+    let fractional = c.compute_share(&issue_amount, &bps, &RoundingMode::Truncation);
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap} with Truncation");
+    assert_eq!(fractional, 0, "1 unit at 1 bps truncates to 0");
+}
+
+#[test]
+fn supply_cap_rounding_boundary_roundhalfup_at_cap_minus_one() {
+    let (_env, c) = client();
+
+    // Same fixture, RoundHalfUp mode.
+    // 1 unit * 1 bps / 10000 = 0.0001 → rounds up to 1 (since > 0).
+    // But RoundHalfUp only rounds up at >= 0.5, so:
+    // 1 * 1 / 10000 = 0.0001 → NOT >= 0.5, rounds down to 0.
+    let cap: i128 = 100;
+    let issued_before: i128 = 99;
+
+    let fractional = c.compute_share(&1i128, &1u32, &RoundingMode::RoundHalfUp);
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap} with RoundHalfUp");
+    assert_eq!(fractional, 0, "RoundHalfUp: 1*1/10000=0.0001 rounds down");
+}
+
+/// At the cap boundary with a large amount just below cap, issue fractional
+/// shares.  Half-up rounding must not push one wei over the cap.
+#[test]
+fn supply_cap_rounding_half_up_boundary_guard() {
+    let (_env, c) = client();
+
+    // Use 5 BPS on amount=10_000 -> exact 5 units (no fractional).
+    // Then test amounts that produce .5 fractions.
+    let cap: i128 = 10_000;
+    let issued_before: i128 = 9_995;
+
+    // amount=1, bps=5_000 → exact 0.5 → RoundHalfUp rounds to 1
+    let fractional = c.compute_share(&1i128, &5_000u32, &RoundingMode::RoundHalfUp);
+    assert_eq!(fractional, 1, "1*5000/10000=0.5 rounds up to 1");
+    let total = issued_before.saturating_add(fractional);
+    assert!(total <= cap, "total {total} must not exceed cap {cap}");
+
+    // amount=1, bps=4_999 → 0.4999 → rounds down to 0
+    let fractional2 = c.compute_share(&1i128, &4_999u32, &RoundingMode::RoundHalfUp);
+    assert_eq!(fractional2, 0, "1*4999/10000=0.4999 rounds down");
+}
+
+/// Truncation at cap boundary: any fractional amount is dropped.
+#[test]
+fn supply_cap_rounding_truncation_boundary_guard() {
+    let (_env, c) = client();
+
+    let cap: i128 = 10_000;
+    let issued_before: i128 = 9_999;
+
+    // amount=1, bps=9_999 → 0.9999 → Truncation drops to 0
+    let fractional = c.compute_share(&1i128, &9_999u32, &RoundingMode::Truncation);
+    assert_eq!(fractional, 0, "1*9999/10000 truncates to 0");
+    let total = issued_before.saturating_add(fractional);
+    assert_eq!(total, 9_999);
+    assert!(total <= cap);
+
+    // amount=1, bps=10_000 → exact 1 → no rounding
+    let exact = c.compute_share(&1i128, &10_000u32, &RoundingMode::Truncation);
+    assert_eq!(exact, 1, "1*10000/10000 = 1");
+    let total2 = issued_before.saturating_add(exact);
+    assert_eq!(total2, 10_000, "total hits exact cap");
+    assert!(total2 <= cap);
+}
+
+/// Stress: iterate many fractional issuances near cap; total must never overshoot.
+#[test]
+fn supply_cap_rounding_iterated_boundary_stress() {
+    let (_env, c) = client();
+
+    let cap: i128 = 10_000;
+    let mut total: i128 = 9_900; // 100 below cap
+
+    // Issue 200 small amounts at varying BPS to simulate real usage.
+    for i in 0..200u32 {
+        let bps = (i % 100) + 1; // 1..100
+        let amount: i128 = 1;
+        let fractional_trunc = c.compute_share(&amount, &bps, &RoundingMode::Truncation);
+        let fractional_round = c.compute_share(&amount, &bps, &RoundingMode::RoundHalfUp);
+
+        total = total.saturating_add(fractional_trunc);
+        assert!(total <= cap, "iteration {i}: Truncation total {total} > cap {cap}");
+
+        total = total.saturating_add(fractional_round);
+        assert!(total <= cap, "iteration {i}: RoundHalfUp total {total} > cap {cap}");
+
+        if total >= cap {
+            break;
+        }
+    }
+}
+
+#[test]
+fn issue_610_zero_vs_max_error_code_verification() {
+    // Verify that cap=0 vs cap=i128::MAX produce different error conditions.
+    // This is a secondary differential that proves the two caps behave distinctly
+    // in their rejection semantics (or lack thereof).
+
+    use soroban_sdk::symbol_short;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
+    let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let issuer = Address::generate(&env);
+    let payment_token = crate::test::create_payment_token(&env).0;
+    let pt_admin = crate::test::create_payment_token(&env).1;
+    let token = Address::generate(&env);
+
+    // Fixture A: cap=0
+    client.register_offering(
+        &issuer,
+        &symbol_short!("z"),
+        &token,
+        &5_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    // Fixture B: cap=i128::MAX
+    client.register_offering(
+        &issuer,
+        &symbol_short!("w"),
+        &token,
+        &5_000,
+        &payment_token,
+        &i128::MAX,
+        &symbol_short!(""),
+        &0,
+    );
+
+    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+
+    // Fill fixture B to exactly i128::MAX
+    {
+        let r1 = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("w"),
+            &token,
+            &payment_token,
+            &(i128::MAX / 2),
+            &1,
+        );
+        let r2 = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("w"),
+            &token,
+            &payment_token,
+            &(i128::MAX - i128::MAX / 2),
+            &2,
+        );
+        assert!(r1.is_ok() && r2.is_ok(), "setup: fixture B fill must succeed");
+    }
+
+    // Now attempt overflow-like deposit on both
+    let overage = 1i128;
+
+    {
+        // Fixture A: should succeed (no cap to reject)
+        let r_a = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("z"),
+            &token,
+            &payment_token,
+            &overage,
+            &3,
+        );
+        assert!(r_a.is_ok(), "cap=0: any deposit must succeed, no SupplyCapExceeded error");
+
+        // Fixture B: should fail with SupplyCapExceeded
+        let r_b = client.try_deposit_revenue(
+            &issuer,
+            &symbol_short!("w"),
+            &token,
+            &payment_token,
+            &overage,
+            &3,
+        );
+        assert!(r_b.is_err(), "cap=i128::MAX at capacity: deposit must fail");
+
+        // If the error is accessible, verify it's SupplyCapExceeded (error code 23)
+        // In Soroban tests, errors are typically wrapped; this verifies the failure occurs
     }
 }

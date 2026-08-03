@@ -1,6 +1,8 @@
 #![cfg(test)]
 
-use crate::{DataKey, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{
+    DataKey, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, MAX_PROOF_DEPTH,
+};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, BytesN as _},
@@ -65,6 +67,43 @@ fn finalize_snapshot_fails_when_hash_mismatch() {
     let result = client.try_finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError2::SnapshotHashMismatch))));
+}
+
+#[test]
+fn verify_snapshot_proof_accepts_proofs_at_the_depth_limit() {
+    let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
+    let proof = soroban_sdk::vec![&env];
+    for _ in 0..MAX_PROOF_DEPTH {
+        proof.push_back(BytesN::random(&env));
+    }
+
+    let result = client.try_verify_snapshot_proof(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1u64,
+        &proof,
+    );
+    assert!(result.is_ok(), "proofs at the limit must be accepted");
+}
+
+#[test]
+fn verify_snapshot_proof_rejects_proofs_above_the_depth_limit() {
+    let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
+    let proof = soroban_sdk::vec![&env];
+    for _ in 0..(MAX_PROOF_DEPTH + 1) {
+        proof.push_back(BytesN::random(&env));
+    }
+
+    let result = client.try_verify_snapshot_proof(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1u64,
+        &proof,
+    );
+    assert!(result.is_err());
+    assert!(matches!(result.err(), Some(Ok(RevoraError::ProofTooDeep))));
 }
 
 #[test]

@@ -84,13 +84,47 @@ mod tests {
             ("AdminRotationPending", RevoraError::AdminRotationPending as u32),
             ("NoAdminRotationPending", RevoraError::NoAdminRotationPending as u32),
             ("UnauthorizedRotationAccept", RevoraError::UnauthorizedRotationAccept as u32),
+            ("CloseAbortInvariantsViolated", RevoraError::CloseAbortInvariantsViolated as u32),
             ("OfferingFrozen", RevoraError::OfferingFrozen as u32),
             ("IssuerTransferExpired", RevoraError::IssuerTransferExpired as u32),
             ("ContractPaused", RevoraError::ContractPaused as u32),
             ("BlacklistSizeLimitExceeded", RevoraError::BlacklistSizeLimitExceeded as u32),
             ("AlreadyApproved", RevoraError::AlreadyApproved as u32),
             ("FaucetCooldownActive", RevoraError2::FaucetCooldownActive as u32),
+            ("TestnetOnly", RevoraError::TestnetOnly as u32),
+            ("FaucetCooldownActive", RevoraError::FaucetCooldownActive as u32),
             ("MissingReportForOverride", RevoraError::MissingReportForOverride as u32),
+            ("PeriodAlreadyClosed", RevoraError::PeriodAlreadyClosed as u32),
+            ("SnapshotNotFinalized", RevoraError::SnapshotNotFinalized as u32),
+            ("SnapshotHashMismatch", RevoraError::SnapshotHashMismatch as u32),
+            ("DisplayDecimalsOutOfRange", RevoraError::DisplayDecimalsOutOfRange as u32),
+            ("MaxTotalSupplySharesExceeded", RevoraError::MaxTotalSupplySharesExceeded as u32),
+            ("StaleConcentrationData", RevoraError::StaleConcentrationData as u32),
+            ("DisclosureUriTooLong", RevoraError::DisclosureUriTooLong as u32),
+            ("InconsistentDisclosure", RevoraError::InconsistentDisclosure as u32),
+            ("DualSigSameSigner", RevoraError::DualSigSameSigner as u32),
+            ("DualSigNotConfigured", RevoraError::DualSigNotConfigured as u32),
+            ("DisputeNotFound", RevoraError::DisputeNotFound as u32),
+            ("DisputeAlreadyOpen", RevoraError::DisputeAlreadyOpen as u32),
+            ("MaxDisputesReached", RevoraError::MaxDisputesReached as u32),
+            ("DisputeZeroShare", RevoraError::DisputeZeroShare as u32),
+            ("OracleQuoteStale", RevoraError::OracleQuoteStale as u32),
+            ("AllOraclesStale", RevoraError::AllOraclesStale as u32),
+            ("TestnetOnly", RevoraError::TestnetOnly as u32),
+            ("HolderFrozen", RevoraError::HolderFrozen as u32),
+            ("InvalidShareClass", RevoraError::InvalidShareClass as u32),
+            ("InvalidShareClassBps", RevoraError::InvalidShareClassBps as u32),
+            ("InvalidConversionRatio", RevoraError::InvalidConversionRatio as u32),
+            ("FeeExceedsHolderShare", RevoraError::FeeExceedsHolderShare as u32),
+            ("CategoryCapReached", RevoraError::CategoryCapReached as u32),
+            ("ConversionNotApproved", RevoraError::ConversionNotApproved as u32),
+            ("UnvestedConversionBlocked", RevoraError::UnvestedConversionBlocked as u32),
+            ("FreezeReasonMismatch", RevoraError::FreezeReasonMismatch as u32),
+            ("InsufficientClassBalance", RevoraError::InsufficientClassBalance as u32),
+            ("RedemptionWindowClosed", RevoraError::RedemptionWindowClosed as u32),
+            ("RedemptionWindowOverlap", RevoraError::RedemptionWindowOverlap as u32),
+            ("JurisdictionMigrationDeadlineExceeded", RevoraError::JurisdictionMigrationDeadlineExceeded as u32),
+            ("TransferCooldownActive", RevoraError::TransferCooldownActive as u32),
         ];
 
         // O(n²) uniqueness check — n is small, negligible cost.
@@ -156,6 +190,7 @@ mod tests {
         // 34: gap (reserved for future use)
         assert_eq!(RevoraError::NoAdminRotationPending as u32, 35);
         assert_eq!(RevoraError::UnauthorizedRotationAccept as u32, 36);
+        assert_eq!(RevoraError::CloseAbortInvariantsViolated as u32, 34);
         // 37–38: gaps (reserved for future use)
         // 39: TransferFailed — renumbered from 30 in v5 (was duplicate of ProposalExpired)
         assert_eq!(RevoraError::TransferFailed as u32, 39);
@@ -167,7 +202,13 @@ mod tests {
         assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
         assert_eq!(RevoraError::AlreadyApproved as u32, 46);
         assert_eq!(RevoraError2::FaucetCooldownActive as u32, 64);
+        // 62: TestnetOnly — added in v0.3.0 (faucet reset, issue #615)
+        assert_eq!(RevoraError::TestnetOnly as u32, 62);
+        // 63: FaucetCooldownActive — renumbered from 59 to avoid collision with DisputeAlreadyOpen
+        assert_eq!(RevoraError::FaucetCooldownActive as u32, 63);
         assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
+        assert_eq!(RevoraError::JurisdictionMigrationDeadlineExceeded as u32, 76);
+        assert_eq!(RevoraError::TransferCooldownActive as u32, 89);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -202,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_discriminants_within_valid_range_1_to_56() {
-        // All discriminants must be within 1..=46. Gaps are preserved for wire
+        // All discriminants must be within 1..=63. Gaps are preserved for wire
         // compatibility — do not renumber existing variants. New variants should
         // use the next available number or fill gaps intentionally.
         let all = [
@@ -253,6 +294,13 @@ mod tests {
         ];
         for v in all.iter() {
             assert!(*v >= 1 && *v <= 64, "discriminant {v} out of expected range 1..=56");
+            RevoraError::TestnetOnly as u32,
+            RevoraError::FaucetCooldownActive as u32,
+            RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
+            RevoraError::TransferCooldownActive as u32,
+        ];
+        for v in all.iter() {
+            assert!(*v >= 1 && *v <= 89, "discriminant {v} out of expected range 1..=89");
         }
     }
 
@@ -324,6 +372,10 @@ mod tests {
             RevoraError::BlacklistSizeLimitExceeded as u32,
             RevoraError::AlreadyApproved as u32,
             RevoraError2::FaucetCooldownActive as u32,
+            RevoraError::TestnetOnly as u32,
+            RevoraError::FaucetCooldownActive as u32,
+            RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
+            RevoraError::TransferCooldownActive as u32,
         ];
         for v in all.iter() {
             assert_ne!(*v, 0, "discriminant 0 is reserved for Ok; no error variant may use it");
