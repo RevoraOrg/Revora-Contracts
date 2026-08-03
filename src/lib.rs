@@ -421,6 +421,7 @@ const EVENT_BL_ADD_PINNED: Symbol = symbol_short!("bl_add_pn");
 const EVENT_BL_REM: Symbol = symbol_short!("bl_rem");
 const EVENT_WL_ADD: Symbol = symbol_short!("wl_add");
 const EVENT_WL_REM: Symbol = symbol_short!("wl_rem");
+const EVENT_DISPUTE_OPEN: Symbol = symbol_short!("dispute_open");
 
 // â”€â”€ Storage key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /// One blacklist map per offering, keyed by the offering's token address.
@@ -889,6 +890,27 @@ pub struct DisputeEntry {
     pub resolved_by: Option<Address>,
     /// Ledger timestamp when the dispute was resolved.
     pub resolved_at: Option<u64>,
+}
+
+/// Status of an on‑chain dispute.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub enum DisputeStatus {
+    Open,
+    Resolved,
+    Rejected,
+}
+
+/// On‑chain dispute record.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dispute {
+    pub id: BytesN<32>,
+    pub holder: Address,
+    pub offering_id: OfferingId,
+    pub opened_at: u64,
+    pub meta_hash: BytesN<32>,
+    pub status: DisputeStatus,
 }
 
 #[contracttype]
@@ -1684,6 +1706,10 @@ pub enum DataKey2 {
     /// Ledger timestamp of the last transfer for (offering_id, holder).
     /// Used by the cooldown check to reject premature transfers.
     HolderLastTransferTime(OfferingId, Address),
+    /// Dispute record keyed by its deterministic ID.
+    Dispute(BytesN<32>),
+    /// Number of open disputes for a holder on an offering.
+    DisputeCount(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -10164,88 +10190,6 @@ impl RevoraRevenueShare {
     /// - [`RevoraError::DisputeZeroShare`] if the holder holds zero shares.
     /// - [`RevoraError::DisputeAlreadyOpen`] if an identical dispute already exists.
     /// - [`RevoraError::MaxDisputesReached`] if the per-holder cap is exceeded.
-    pub fn open_dispute(
-        env: Env,
-        holder: Address,
-        issuer: Address,
-        namespace: Symbol,
-        token: Address,
-        severity: DisputeSeverity,
-        meta_hash: BytesN<32>,
-    ) -> Result<BytesN<32>, RevoraError> {
-        holder.require_auth();
-        Self::require_not_frozen(&env)?;
-
-        let offering_id = OfferingId { issuer, namespace, token };
-
-        // Reject holders with zero shares (not a participant)
-        let share = Self::get_holder_share(
-            env.clone(),
-            offering_id.issuer.clone(),
-            offering_id.namespace.clone(),
-            offering_id.token.clone(),
-            holder.clone(),
-        );
-        if share == 0 {
-            return Err(RevoraError::DisputeZeroShare);
-        }
-
-        // Deterministic dispute ID: sha256(issuer || namespace || token || holder || meta_hash)
-        let mut input = Bytes::new(&env);
-        input.append(&offering_id.issuer.to_xdr(&env));
-        input.append(&offering_id.namespace.to_xdr(&env));
-        input.append(&offering_id.token.to_xdr(&env));
-        input.append(&holder.to_xdr(&env));
-        input.append(&meta_hash.to_xdr(&env));
-        let dispute_id: BytesN<32> = env.crypto().sha256(&input).into();
-
-        // Reject duplicate
-        if env.storage().persistent().has(&DataKey2::Dispute(dispute_id.clone())) {
-            return Err(RevoraError::DisputeAlreadyOpen);
-        }
-
-        // Enforce spam cap per (offering_id, holder)
-        let count_key = DataKey2::DisputeCount(offering_id.clone(), holder.clone());
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-        if count >= MAX_OPEN_DISPUTES_PER_HOLDER {
-            return Err(RevoraError::MaxDisputesReached);
-        }
-
-        let opened_at = env.ledger().timestamp();
-
-        let dispute = Dispute {
-            id: dispute_id.clone(),
-            holder: holder.clone(),
-            offering_id: offering_id.clone(),
-            opened_at,
-            severity: severity.clone(),
-            meta_hash: meta_hash.clone(),
-            status: DisputeStatus::Open,
-        };
-
-        env.storage().persistent().set(&DataKey2::Dispute(dispute_id.clone()), &dispute);
-        env.storage().persistent().set(&count_key, &(count + 1));
-
-        // Track critical dispute for O(1) freeze lookups
-        if severity == DisputeSeverity::Critical {
-            let crit_key = DataKey2::CriticalDisputeCount(offering_id.clone());
-            let crit_count: u32 = env.storage().persistent().get(&crit_key).unwrap_or(0);
-            env.storage().persistent().set(&crit_key, &(crit_count + 1));
-            if crit_count == 0 {
-                env.events().publish(
-                    (EVENT_DISPUTE_FREEZE_ON,),
-                    (offering_id.clone(), holder.clone(), dispute_id.clone()),
-                );
-            }
-        }
-
-        env.events().publish(
-            (Symbol::new(&env, "dispute_open"),),
-            (dispute_id.clone(), offering_id, holder.clone(), meta_hash, severity),
-        );
-
-        Ok(dispute_id)
-    }
 
     /// Read an on-chain dispute record by its deterministic ID.
     ///
@@ -16095,3 +16039,108 @@ mod test_merkle_root_rotation;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+
+#[cfg(test)]
+mod test_dispute_open {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    fn setup_offering(env: &Env, issuer: &Address, namespace: &Symbol, token: &Address) -> RevoraRevenueShareClient {
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(env, &contract_id);
+        let payout = Address::generate(env);
+        client.register_offering(issuer, namespace, token, &5_000, &payout, &0);
+        client
+    }
+
+    #[test]
+    fn test_open_dispute_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "test");
+        let token = Address::generate(&env);
+        let holder = Address::generate(&env);
+
+        let client = setup_offering(&env, &issuer, &namespace, &token);
+        client.set_holder_share(&issuer, &namespace, &token, &holder, &1_000, &1);
+
+        let meta_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let dispute_id = client.open_dispute(&holder, &issuer, &namespace, &token, &meta_hash).unwrap();
+
+        let dispute = client.get_dispute(&dispute_id).unwrap();
+        assert_eq!(dispute.holder, holder);
+        assert_eq!(dispute.offering_id.issuer, issuer);
+        assert_eq!(dispute.meta_hash, meta_hash);
+        assert_eq!(dispute.status, DisputeStatus::Open);
+        assert_eq!(dispute.opened_at, 1_000);
+
+        let count_key = DataKey2::DisputeCount(
+            OfferingId { issuer: issuer.clone(), namespace: namespace.clone(), token: token.clone() },
+            holder.clone(),
+        );
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_open_dispute_zero_share() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "test");
+        let token = Address::generate(&env);
+        let holder = Address::generate(&env);
+
+        let client = setup_offering(&env, &issuer, &namespace, &token);
+        let meta_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_open_dispute(&holder, &issuer, &namespace, &token, &meta_hash);
+        assert_eq!(result, Err(Ok(RevoraError::DisputeZeroShare)));
+    }
+
+    #[test]
+    fn test_open_dispute_duplicate() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "test");
+        let token = Address::generate(&env);
+        let holder = Address::generate(&env);
+
+        let client = setup_offering(&env, &issuer, &namespace, &token);
+        client.set_holder_share(&issuer, &namespace, &token, &holder, &1_000, &1);
+
+        let meta_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let _ = client.open_dispute(&holder, &issuer, &namespace, &token, &meta_hash).unwrap();
+
+        let result = client.try_open_dispute(&holder, &issuer, &namespace, &token, &meta_hash);
+        assert_eq!(result, Err(Ok(RevoraError::DisputeAlreadyOpen)));
+    }
+
+    #[test]
+    fn test_open_dispute_max_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "test");
+        let token = Address::generate(&env);
+        let holder = Address::generate(&env);
+
+        let client = setup_offering(&env, &issuer, &namespace, &token);
+        client.set_holder_share(&issuer, &namespace, &token, &holder, &1_000, &1);
+
+        for i in 0..MAX_OPEN_DISPUTES_PER_HOLDER {
+            let meta = BytesN::from_array(&env, &[i as u8; 32]);
+            client.open_dispute(&holder, &issuer, &namespace, &token, &meta).unwrap();
+        }
+
+        let meta_extra = BytesN::from_array(&env, &[99u8; 32]);
+        let result = client.try_open_dispute(&holder, &issuer, &namespace, &token, &meta_extra);
+        assert_eq!(result, Err(Ok(RevoraError::MaxDisputesReached)));
+    }
+}
