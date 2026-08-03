@@ -24,8 +24,7 @@
 use core::fmt::Debug;
 
 use crate::{DataKey2, RevoraError};
-#![deny(clippy::arithmetic_side_effects)]
-
+#[deny(clippy::arithmetic_side_effects)]
 use soroban_sdk::{Address, Bytes, BytesN, Env};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -607,15 +606,12 @@ pub mod oracle_validation {
         oracle_id: &Address,
     ) -> Result<(), RevoraError> {
         let pk_key = DataKey2::OraclePubKey(oracle_id.clone());
-        let pubkey: BytesN<32> = env
-            .storage()
-            .persistent()
-            .get(&pk_key)
-            .ok_or(RevoraError::SignerKeyNotRegistered)?;
+        let pubkey: BytesN<32> =
+            env.storage().persistent().get(&pk_key).ok_or(RevoraError::SignerKeyNotRegistered)?;
 
         // Note: Soroban's ed25519_verify panics (traps) on invalid signature.
         // It does not return a Result that we can convert to RevoraError.
-        // If it fails, the contract aborts. 
+        // If it fails, the contract aborts.
         env.crypto().ed25519_verify(&pubkey, quote, sig);
         Ok(())
     }
@@ -900,9 +896,7 @@ mod tests {
 
         #[test]
         fn test_is_recoverable_error_transfer_failed() {
-            assert!(!abort_handling::is_recoverable_error(
-                &RevoraError::TransferFailed
-            ));
+            assert!(!abort_handling::is_recoverable_error(&RevoraError::TransferFailed));
         }
 
         #[test]
