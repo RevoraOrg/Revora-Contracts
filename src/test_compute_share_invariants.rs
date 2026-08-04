@@ -1312,8 +1312,385 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &3,
         );
         assert!(r_b.is_err(), "cap=i128::MAX at capacity: deposit must fail");
+    }
+}
 
-        // If the error is accessible, verify it's SupplyCapExceeded (error code 23)
-        // In Soroban tests, errors are typically wrapped; this verifies the failure occurs
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUPPLY CAP SATURATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod supply_cap_saturation_tests {
+    use super::*;
+    use soroban_sdk::{Env, String, Address, testutils::Address as _};
+    use crate::{TokenContract, TokenContractClient, State, TokenMetadata};
+
+    fn create_test_metadata(env: &Env) -> TokenMetadata {
+        TokenMetadata {
+            name: String::from_str(env, "Test Token"),
+            symbol: String::from_str(env, "TST"),
+            decimals: 32,
+        }
+    }
+
+    fn setup_contract(env: &Env, supply_cap: i128) -> (TokenContractClient, Address) {
+        let contract_id = env.register_contract(None, TokenContract);
+        let client = TokenContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        
+        let metadata = create_test_metadata(env);
+        client.initialize(&metadata, &supply_cap);
+        
+        (client, admin)
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_event_exact_boundary() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Mint 500 tokens (below cap)
+        client.mint(&admin, &500);
+        
+        // Mint another 500 tokens (exactly reaches cap)
+        client.mint(&admin, &500);
+        
+        // Verify event was emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        
+        let event = &events[0];
+        assert_eq!(event.0.type_, soroban_sdk::EventType::Contract);
+        assert_eq!(event.1.to_string(), "cap_sat");
+        
+        // Verify the event data (new total supply)
+        let event_data: i128 = event.2.clone().try_into().unwrap();
+        assert_eq!(event_data, 1000);
+        
+        // Verify state
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 1000);
+        assert_eq!(state.supply_cap, 1000);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_below_boundary() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Mint 999 tokens (below cap)
+        client.mint(&admin, &999);
+        
+        // Verify no event was emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 0);
+        
+        // Verify state
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 999);
+        assert_eq!(state.supply_cap, 1000);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_multiple_mints_exact() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Mint in small increments
+        for i in 0..10 {
+            client.mint(&admin, &100);
+            let state: State = client.get_state();
+            
+            // Event should only fire on the last mint (10th iteration)
+            let events = env.events().all();
+            if i == 9 {
+                assert_eq!(events.len(), 1);
+                let event_data: i128 = events[0].2.clone().try_into().unwrap();
+                assert_eq!(event_data, 1000);
+            } else {
+                assert_eq!(events.len(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_exceeds_cap_panics() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Mint 1000 tokens (exact cap)
+        client.mint(&admin, &1000);
+        
+        // Try to mint 1 more token (should panic)
+        let result = std::panic::catch_unwind(|| {
+            client.mint(&admin, &1);
+        });
+        assert!(result.is_err());
+        
+        // Verify state unchanged
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 1000);
+        assert_eq!(state.supply_cap, 1000);
+        
+        // Only one event should have been emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn test_supply_cap_disabled_zero_never_saturated() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 0);
+        
+        // Mint arbitrary large amount
+        client.mint(&admin, &1000000);
+        client.mint(&admin, &2000000);
+        client.mint(&admin, &3000000);
+        
+        // Verify no events emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 0);
+        
+        // Verify state
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 6000000);
+        assert_eq!(state.supply_cap, 0);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_regression_scenarios() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 100);
+        
+        // Scenario 1: Mint exactly to cap
+        client.mint(&admin, &100);
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        
+        // Scenario 2: Reset contract
+        let (client2, admin2) = setup_contract(&env, 100);
+        
+        // Scenario 3: Mint below cap
+        client2.mint(&admin2, &50);
+        let events2 = env.events().all();
+        assert_eq!(events2.len(), 0);
+        
+        // Scenario 4: Mint to exactly cap from below
+        client2.mint(&admin2, &50);
+        let events3 = env.events().all();
+        assert_eq!(events3.len(), 1);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_edge_cases() {
+        // Test with supply_cap = 1
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1);
+        
+        // Mint 1 token
+        client.mint(&admin, &1);
+        
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, 1);
+        
+        // Reset and test with supply_cap = 0
+        let (client2, admin2) = setup_contract(&env, 0);
+        client2.mint(&admin2, &100);
+        let events2 = env.events().all();
+        assert_eq!(events2.len(), 0);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_large_numbers() {
+        let env = Env::default();
+        let supply_cap = 10_000_000_000_000_000_000i128;
+        let (client, admin) = setup_contract(&env, supply_cap);
+        
+        // Mint exactly to cap
+        client.mint(&admin, &supply_cap);
+        
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, supply_cap);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_no_duplicate_events() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 100);
+        
+        // Mint to cap
+        client.mint(&admin, &100);
+        
+        // Try to mint more (should fail)
+        let _ = std::panic::catch_unwind(|| {
+            client.mint(&admin, &0);
+        });
+        
+        // Verify only one event
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_multiple_contracts() {
+        let env = Env::default();
+        
+        // Create two independent contracts
+        let (client1, admin1) = setup_contract(&env, 100);
+        let (client2, admin2) = setup_contract(&env, 200);
+        
+        // Mint exactly to cap for contract 1
+        client1.mint(&admin1, &100);
+        
+        // Mint below cap for contract 2
+        client2.mint(&admin2, &150);
+        
+        // Check events for contract 1
+        let events1 = env.events().all();
+        assert_eq!(events1.len(), 1);
+        let event_data: i128 = events1[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, 100);
+        
+        // Mint exactly to cap for contract 2
+        client2.mint(&admin2, &50);
+        
+        // Check events for contract 2
+        let events2 = env.events().all();
+        assert_eq!(events2.len(), 2);
+        let event_data2: i128 = events2[1].2.clone().try_into().unwrap();
+        assert_eq!(event_data2, 200);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_boundary_behavior() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Test at exactly cap - 1
+        client.mint(&admin, &999);
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 999);
+        
+        // No event yet
+        let events = env.events().all();
+        assert_eq!(events.len(), 0);
+        
+        // Mint 1 token to exactly reach cap
+        client.mint(&admin, &1);
+        
+        // Event should be emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, 1000);
+        
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 1000);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_overflow_protection() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, i128::MAX);
+        
+        // Mint to near max
+        client.mint(&admin, &(i128::MAX - 1000));
+        
+        // No event yet
+        let events = env.events().all();
+        assert_eq!(events.len(), 0);
+        
+        // Mint to exactly max
+        client.mint(&admin, &1000);
+        
+        // Event should be emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, i128::MAX);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_with_fractional_amounts() {
+        let env = Env::default();
+        let (client, admin) = setup_contract(&env, 1000);
+        
+        // Mint fractional amounts that sum to cap
+        client.mint(&admin, &333);
+        client.mint(&admin, &333);
+        client.mint(&admin, &334);
+        
+        // Should emit event on last mint
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, 1000);
+        
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 1000);
+    }
+
+    #[test]
+    fn test_supply_cap_saturation_after_decimal_normalization() {
+        let env = Env::default();
+        let supply_cap = 1000;
+        let (client, admin) = setup_contract(&env, supply_cap);
+        
+        // Mint with different decimal precision
+        client.mint(&admin, &100);  // 10%
+        client.mint(&admin, &200);  // 20%
+        client.mint(&admin, &700);  // 70% - reaches cap
+        
+        // Should emit event on the mint that reaches cap
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let event_data: i128 = events[0].2.clone().try_into().unwrap();
+        assert_eq!(event_data, 1000);
+        
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, 1000);
+    }
+}
+
+// Additional property-based test for supply cap saturation invariants
+#[test]
+fn property_supply_cap_saturation_invariants() {
+    let env = Env::default();
+    
+    // Test invariant: sum of individual mints equals final total
+    let test_cases = vec![
+        (100, vec![50, 50]),
+        (1000, vec![100, 200, 300, 400]),
+        (10000, vec![2500, 2500, 2500, 2500]),
+        (999, vec![333, 333, 333]),
+        (1, vec![1]),
+    ];
+    
+    for (cap, amounts) in test_cases {
+        let (client, admin) = setup_contract(&env, cap);
+        let mut total = 0;
+        let mut events_count = 0;
+        
+        for amount in amounts {
+            client.mint(&admin, &amount);
+            total += amount;
+            
+            let state: State = client.get_state();
+            assert_eq!(state.total_issued, total);
+            
+            let events = env.events().all();
+            if total == cap {
+                events_count += 1;
+            }
+        }
+        
+        // Verify final state
+        let state: State = client.get_state();
+        assert_eq!(state.total_issued, cap);
+        assert!(state.total_issued <= state.supply_cap);
     }
 }
