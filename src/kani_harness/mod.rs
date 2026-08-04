@@ -20,3 +20,12 @@ pub mod compute_share;
 ///
 /// The `#[cfg(test)]` shims run as ordinary cargo tests in CI without the Kani toolchain.
 pub mod issuer_transfer_cancel;
+
+/// Kani bounded verification harness for blacklist add/remove idempotency (Issue #575).
+///
+/// Models the per-offering blacklist as a set and proves that arbitrary bounded
+/// sequences of add/remove operations converge to the reference set semantics:
+/// adds and removes are idempotent, operations on distinct addresses commute,
+/// and the final state is always a set. Includes the add-remove-add-on-the-same-
+/// address edge case from the issue.
+pub mod blacklist_idempotency;
