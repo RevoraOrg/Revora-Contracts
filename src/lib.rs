@@ -49,6 +49,8 @@ use soroban_sdk::{
   Symbol, Vec,
 };
 
+const EVENT_SUPPLY_CAP_SATURATED: Symbol = symbol_short!("cap_sat");
+
 /// Cross-contract client trait for FX oracle integrations.
 ///
 /// Any oracle contract that implements this trait can be used in `set_fx_oracle`
@@ -18737,6 +18739,72 @@ impl RevoraRevenueShare {
 
     (v2_fixtures, v3_fixtures)
   }
+
+
+// Updated mint function with saturation event
+pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), RevoraError> {
+    to.require_auth();
+    
+    let mut state: State = env.storage().instance().get(&"state").unwrap();
+    
+    // Check supply cap
+    if state.supply_cap > 0 {
+        let new_total = state.total_issued.checked_add(amount)
+            .ok_or(RevoraError::InvalidAmount)?;
+        
+        // Reject if would exceed cap
+        if new_total > state.supply_cap {
+            return Err(RevoraError::SupplyCapExceeded);
+        }
+        
+        // Store previous total for event check
+        let previous_total = state.total_issued;
+        
+        // Update state
+        state.total_issued = new_total;
+        env.storage().instance().set(&"state", &state);
+        
+        // Emit saturation event if exactly at boundary and wasn't already saturated
+        if new_total == state.supply_cap && previous_total < state.supply_cap {
+            env.events().publish(
+                (EVENT_SUPPLY_CAP_SATURATED,),
+                (state.total_issued, state.supply_cap)
+            );
+        }
+    } else {
+        // Supply cap disabled (0 = unlimited)
+        state.total_issued = state.total_issued.checked_add(amount)
+            .ok_or(RevoraError::InvalidAmount)?;
+        env.storage().instance().set(&"state", &state);
+    }
+    
+    Ok(())
+}
+
+// Optional: Add a function to get the current saturation state
+pub fn is_supply_cap_saturated(env: Env, issuer: Address, namespace: Symbol, token: Address) -> bool {
+    let state: State = env.storage().instance().get(&"state").unwrap();
+    state.supply_cap > 0 && state.total_issued >= state.supply_cap
+}
+
+// Optional: Add a function to get the remaining supply before cap
+pub fn get_remaining_supply(env: Env, issuer: Address, namespace: Symbol, token: Address) -> i128 {
+    let state: State = env.storage().instance().get(&"state").unwrap();
+    if state.supply_cap == 0 {
+        i128::MAX // Unlimited
+    } else {
+        state.supply_cap.saturating_sub(state.total_issued)
+    }
+}
+
+// Updated State struct to include metadata
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct State {
+    pub total_issued: i128,
+    pub supply_cap: i128,
+    pub metadata: TokenMetadata,
+}
 }
 
 #[cfg(test)]
