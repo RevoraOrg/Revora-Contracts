@@ -13269,8 +13269,24 @@ fn test_offerings_page_after_issuer_transfer() {
 }
 
 
-#[test]
-fn test_issuer_transfer_migrates_all_configs() {
+// ── Issue #844: Comprehensive issuer-transfer config-migration tests ──────────
+//
+// Verifies that per-offering configs keyed by OfferingId (InvestmentConstraints,
+// ClaimDelaySecs, SnapshotConfig, LastSnapshotRef) — plus ConcentrationLimit,
+// CurrentConcentration, and RoundingMode — all follow the offering under the new
+// issuer identity after `accept_issuer_transfer` and are removed from the old key.
+
+/// Helper for config-migration tests: registers one offering and returns
+/// (env, client, old_issuer, new_issuer, ns, token, payout_asset).
+fn config_migration_setup() -> (
+    Env,
+    RevoraRevenueShareClient<'static>,
+    Address,
+    Address,
+    soroban_sdk::Symbol,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -13280,79 +13296,473 @@ fn test_issuer_transfer_migrates_all_configs() {
     let ns = symbol_short!("testns");
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
+    client.register_offering(
+        &old_issuer,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    (env, client, old_issuer, new_issuer, ns, token, payout_asset)
+}
 
-    client.register_offering(&old_issuer, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0);
+/// Happy path: all seven per-offering configs are set before transfer; every
+/// config must be readable under the new issuer and return the default under
+/// the old issuer after the transfer completes.
+#[test]
+fn test_issuer_transfer_migrates_all_configs() {
+    let (env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
 
-    // 1. Set concentration
-    client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true);
+    // 1. Set concentration limit and report current concentration.
+    client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true, &0u64);
     client.report_concentration(&old_issuer, &ns, &token, &1000);
 
-    // 2. Set rounding
+    // 2. Set rounding mode.
     client.set_rounding_mode(&old_issuer, &ns, &token, &RoundingMode::RoundHalfUp);
 
-    // 3. Set investment constraints
-    client.set_investment_constraints(&old_issuer, &ns, &token, &100, &100000);
+    // 3. Set investment constraints (min_stake=100, max_stake=100_000).
+    client.set_investment_constraints(&old_issuer, &ns, &token, &100, &100_000);
 
-    // 4. Set claim delay
+    // 4. Set claim delay (1 hour).
     client.set_claim_delay(&old_issuer, &ns, &token, &3600);
 
-    // 5. Set snapshot config & commit snapshot
+    // 5. Enable snapshot distribution and commit a snapshot reference.
     client.set_snapshot_config(&old_issuer, &ns, &token, &true);
-    let hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     client.commit_snapshot(&old_issuer, &ns, &token, &42, &hash);
 
-    // Transfer issuer
+    // Execute issuer transfer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
     client.accept_issuer_transfer(&new_issuer, &ns, &token);
 
-    // Assert under new issuer
+    // ── Assert all configs migrated to new issuer ──
+
     let conc_limit = client.get_concentration_limit(&new_issuer, &ns, &token).unwrap();
-    assert_eq!(conc_limit.max_bps, 5000);
-    assert_eq!(conc_limit.enforce, true);
+    assert_eq!(conc_limit.max_bps, 5000, "concentration max_bps must migrate");
+    assert!(conc_limit.enforce, "concentration enforce flag must migrate");
 
-    let curr_conc = client.get_current_concentration(&new_issuer, &ns, &token);
-    assert_eq!(curr_conc, 1000);
+    assert_eq!(
+        client.get_current_concentration(&new_issuer, &ns, &token),
+        1000,
+        "current concentration must migrate"
+    );
 
-    let rounding = client.get_rounding_mode(&new_issuer, &ns, &token);
-    assert_eq!(rounding, RoundingMode::RoundHalfUp);
+    assert_eq!(
+        client.get_rounding_mode(&new_issuer, &ns, &token),
+        RoundingMode::RoundHalfUp,
+        "rounding mode must migrate"
+    );
 
     let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
-    assert_eq!(inv_cons.min_stake, 100);
-    assert_eq!(inv_cons.max_stake, 100000);
+    assert_eq!(inv_cons.min_stake, 100, "investment constraints min_stake must migrate");
+    assert_eq!(inv_cons.max_stake, 100_000, "investment constraints max_stake must migrate");
 
-    let delay = client.get_claim_delay(&new_issuer, &ns, &token);
-    assert_eq!(delay, 3600);
+    assert_eq!(
+        client.get_claim_delay(&new_issuer, &ns, &token),
+        3600,
+        "claim delay must migrate"
+    );
 
-    let snap_cfg = client.get_snapshot_config(&new_issuer, &ns, &token);
-    assert_eq!(snap_cfg, true);
+    assert!(
+        client.get_snapshot_config(&new_issuer, &ns, &token),
+        "snapshot config must migrate"
+    );
 
-    let last_snap = client.get_last_snapshot_ref(&new_issuer, &ns, &token);
-    assert_eq!(last_snap, 42);
+    assert_eq!(
+        client.get_last_snapshot_ref(&new_issuer, &ns, &token),
+        42,
+        "last snapshot ref must migrate"
+    );
 
-    // Assert under old issuer they return defaults/none
-    let old_conc_limit = client.get_concentration_limit(&old_issuer, &ns, &token);
-    assert!(old_conc_limit.is_none());
+    // ── Assert old issuer key returns defaults / None ──
 
-    let old_curr_conc = client.get_current_concentration(&old_issuer, &ns, &token);
-    assert_eq!(old_curr_conc, 0);
+    assert!(
+        client.get_concentration_limit(&old_issuer, &ns, &token).is_none(),
+        "concentration limit must be absent for old issuer"
+    );
+    assert_eq!(
+        client.get_current_concentration(&old_issuer, &ns, &token),
+        0,
+        "current concentration must default to 0 for old issuer"
+    );
+    assert_eq!(
+        client.get_rounding_mode(&old_issuer, &ns, &token),
+        RoundingMode::Truncation,
+        "rounding mode must default to Truncation for old issuer"
+    );
+    assert!(
+        client.get_investment_constraints(&old_issuer, &ns, &token).is_none(),
+        "investment constraints must be absent for old issuer"
+    );
+    assert_eq!(
+        client.get_claim_delay(&old_issuer, &ns, &token),
+        0,
+        "claim delay must default to 0 for old issuer"
+    );
+    assert!(
+        !client.get_snapshot_config(&old_issuer, &ns, &token),
+        "snapshot config must default to false for old issuer"
+    );
+    assert_eq!(
+        client.get_last_snapshot_ref(&old_issuer, &ns, &token),
+        0,
+        "last snapshot ref must default to 0 for old issuer"
+    );
+}
 
-    let old_rounding = client.get_rounding_mode(&old_issuer, &ns, &token);
-    // Wait, Rust requires explicit enum match or derivation. Let's match or just compare since it derives Eq.
-    // RoundingMode::Truncation is the default, which should be returned.
-    // Wait, let's just cast to u32 if needed. RoundingMode derives PartialEq.
-    // assert_eq!(old_rounding, RoundingMode::Truncation); // Assuming Truncation is default
+/// Partial-config scenario: only InvestmentConstraints and ClaimDelaySecs are
+/// set before the transfer; unset configs must remain at their default values
+/// after the transfer and must not appear under either issuer key.
+#[test]
+fn test_issuer_transfer_partial_config_unset_configs_default() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
 
-    let old_inv_cons = client.get_investment_constraints(&old_issuer, &ns, &token);
-    assert!(old_inv_cons.is_none());
+    // Set only two of the seven configs.
+    client.set_investment_constraints(&old_issuer, &ns, &token, &500, &5000);
+    client.set_claim_delay(&old_issuer, &ns, &token, &7200);
 
-    let old_delay = client.get_claim_delay(&old_issuer, &ns, &token);
-    assert_eq!(old_delay, 0);
+    // Execute transfer.
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
 
-    let old_snap_cfg = client.get_snapshot_config(&old_issuer, &ns, &token);
-    assert_eq!(old_snap_cfg, false);
+    // Set configs must have migrated.
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 500, "min_stake must migrate when set");
+    assert_eq!(inv_cons.max_stake, 5000, "max_stake must migrate when set");
+    assert_eq!(
+        client.get_claim_delay(&new_issuer, &ns, &token),
+        7200,
+        "claim delay must migrate when set"
+    );
 
-    let old_last_snap = client.get_last_snapshot_ref(&old_issuer, &ns, &token);
-    assert_eq!(old_last_snap, 0);
+    // Unset configs must still be at defaults under new issuer.
+    assert!(
+        client.get_concentration_limit(&new_issuer, &ns, &token).is_none(),
+        "unset concentration limit must be None after transfer"
+    );
+    assert_eq!(
+        client.get_rounding_mode(&new_issuer, &ns, &token),
+        RoundingMode::Truncation,
+        "unset rounding mode must default to Truncation after transfer"
+    );
+    assert!(
+        !client.get_snapshot_config(&new_issuer, &ns, &token),
+        "unset snapshot config must default to false after transfer"
+    );
+    assert_eq!(
+        client.get_last_snapshot_ref(&new_issuer, &ns, &token),
+        0,
+        "unset snapshot ref must default to 0 after transfer"
+    );
+}
+
+/// Transfer-then-set: new issuer can update every config after accepting the
+/// transfer; values must reflect the new setting, not the pre-transfer value.
+#[test]
+fn test_issuer_transfer_then_set_config_by_new_issuer() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    // Set initial values under old issuer.
+    client.set_investment_constraints(&old_issuer, &ns, &token, &100, &1000);
+    client.set_claim_delay(&old_issuer, &ns, &token, &3600);
+    client.set_snapshot_config(&old_issuer, &ns, &token, &true);
+
+    // Transfer.
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // New issuer overwrites each config with a different value.
+    client.set_investment_constraints(&new_issuer, &ns, &token, &200, &2000);
+    client.set_claim_delay(&new_issuer, &ns, &token, &7200);
+    client.set_snapshot_config(&new_issuer, &ns, &token, &false);
+    client.set_concentration_limit(&new_issuer, &ns, &token, &3000, &false, &0u64);
+    client.set_rounding_mode(&new_issuer, &ns, &token, &RoundingMode::RoundHalfUp);
+
+    // Verify new issuer's updated values.
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 200, "new issuer can update min_stake");
+    assert_eq!(inv_cons.max_stake, 2000, "new issuer can update max_stake");
+    assert_eq!(
+        client.get_claim_delay(&new_issuer, &ns, &token),
+        7200,
+        "new issuer can update claim delay"
+    );
+    assert!(
+        !client.get_snapshot_config(&new_issuer, &ns, &token),
+        "new issuer can disable snapshot config"
+    );
+    let conc = client.get_concentration_limit(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(conc.max_bps, 3000, "new issuer can set concentration limit");
+    assert_eq!(
+        client.get_rounding_mode(&new_issuer, &ns, &token),
+        RoundingMode::RoundHalfUp,
+        "new issuer can set rounding mode"
+    );
+}
+
+/// Old-issuer exclusion: after transfer, the old issuer must not be able to
+/// update investment constraints, claim delay, or snapshot config — any such
+/// call must fail.
+#[test]
+fn test_issuer_transfer_old_issuer_cannot_set_investment_constraints() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    let result =
+        client.try_set_investment_constraints(&old_issuer, &ns, &token, &100, &1000);
+    assert!(
+        result.is_err(),
+        "old issuer must not be able to set investment constraints after transfer"
+    );
+}
+
+/// Old-issuer exclusion: old issuer must not be able to set claim delay after transfer.
+#[test]
+fn test_issuer_transfer_old_issuer_cannot_set_claim_delay() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    let result = client.try_set_claim_delay(&old_issuer, &ns, &token, &3600);
+    assert!(
+        result.is_err(),
+        "old issuer must not be able to set claim delay after transfer"
+    );
+}
+
+/// Old-issuer exclusion: old issuer must not be able to set snapshot config after transfer.
+#[test]
+fn test_issuer_transfer_old_issuer_cannot_set_snapshot_config() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    let result = client.try_set_snapshot_config(&old_issuer, &ns, &token, &true);
+    assert!(
+        result.is_err(),
+        "old issuer must not be able to set snapshot config after transfer"
+    );
+}
+
+/// Fresh-registration isolation: after a transfer the old issuer registering a
+/// new offering with the same token must start with clean defaults — no stale
+/// config keys from the previous offering must bleed into the fresh registration.
+#[test]
+fn test_issuer_transfer_old_issuer_fresh_registration_has_clean_defaults() {
+    let (_env, client, old_issuer, new_issuer, ns, token, payout_asset) =
+        config_migration_setup();
+
+    // Pre-transfer: set all configs under old issuer.
+    client.set_investment_constraints(&old_issuer, &ns, &token, &999, &9999);
+    client.set_claim_delay(&old_issuer, &ns, &token, &7200);
+    client.set_snapshot_config(&old_issuer, &ns, &token, &true);
+    client.set_concentration_limit(&old_issuer, &ns, &token, &4000, &false, &0u64);
+    client.set_rounding_mode(&old_issuer, &ns, &token, &RoundingMode::RoundHalfUp);
+
+    // Transfer to new issuer.
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // Old issuer registers a fresh offering for a different token.
+    let new_token = Address::generate(&_env);
+    client.register_offering(
+        &old_issuer,
+        &ns,
+        &new_token,
+        &500,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    // The fresh offering must have clean defaults — no contamination from the
+    // transferred offering's old storage.
+    assert!(
+        client.get_investment_constraints(&old_issuer, &ns, &new_token).is_none(),
+        "fresh offering must have no investment constraints"
+    );
+    assert_eq!(
+        client.get_claim_delay(&old_issuer, &ns, &new_token),
+        0,
+        "fresh offering must have zero claim delay"
+    );
+    assert!(
+        !client.get_snapshot_config(&old_issuer, &ns, &new_token),
+        "fresh offering must have snapshot disabled"
+    );
+    assert!(
+        client.get_concentration_limit(&old_issuer, &ns, &new_token).is_none(),
+        "fresh offering must have no concentration limit"
+    );
+    assert_eq!(
+        client.get_rounding_mode(&old_issuer, &ns, &new_token),
+        RoundingMode::Truncation,
+        "fresh offering must use default Truncation rounding"
+    );
+}
+
+/// Snapshot-ref boundary: LastSnapshotRef must survive transfer even when
+/// the snapshot reference has the maximum u64 value that fits in the test
+/// domain (large reference = 0xFFFF_FFFF_FFFF).
+#[test]
+fn test_issuer_transfer_large_snapshot_ref_preserved() {
+    let (env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    let large_ref: u64 = 0xFFFF_FFFF_FFFF;
+    client.set_snapshot_config(&old_issuer, &ns, &token, &true);
+    let hash = soroban_sdk::BytesN::from_array(&env, &[0xABu8; 32]);
+    client.commit_snapshot(&old_issuer, &ns, &token, &large_ref, &hash);
+
+    // Verify it was stored correctly before transfer.
+    assert_eq!(client.get_last_snapshot_ref(&old_issuer, &ns, &token), large_ref);
+
+    // Transfer.
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // Verify large ref migrated.
+    assert_eq!(
+        client.get_last_snapshot_ref(&new_issuer, &ns, &token),
+        large_ref,
+        "large snapshot ref must be preserved exactly after transfer"
+    );
+    assert_eq!(
+        client.get_last_snapshot_ref(&old_issuer, &ns, &token),
+        0,
+        "old issuer must show default 0 after transfer"
+    );
+}
+
+/// Investment-constraints boundary: min_stake == max_stake == 0 (both zero)
+/// is a valid configuration and must survive the transfer intact.
+#[test]
+fn test_issuer_transfer_investment_constraints_both_zero_migrates() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    client.set_investment_constraints(&old_issuer, &ns, &token, &0, &0);
+
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 0, "min_stake=0 must migrate");
+    assert_eq!(inv_cons.max_stake, 0, "max_stake=0 must migrate");
+
+    assert!(
+        client.get_investment_constraints(&old_issuer, &ns, &token).is_none(),
+        "investment constraints must be absent for old issuer after transfer"
+    );
+}
+
+/// Claim-delay boundary: zero delay (0 seconds) is a valid sentinel value
+/// and must migrate correctly rather than being silently skipped.
+#[test]
+fn test_issuer_transfer_claim_delay_zero_migrates() {
+    let (_env, client, old_issuer, new_issuer, ns, token, _payout_asset) =
+        config_migration_setup();
+
+    // First set a non-zero delay so there is definitely a storage entry.
+    client.set_claim_delay(&old_issuer, &ns, &token, &3600);
+    // Then reset it to zero — the key still exists in storage with value 0.
+    client.set_claim_delay(&old_issuer, &ns, &token, &0);
+
+    client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+
+    // Both should report 0 — either from migrated zero value or from default.
+    assert_eq!(
+        client.get_claim_delay(&new_issuer, &ns, &token),
+        0,
+        "zero claim delay must yield 0 under new issuer after transfer"
+    );
+    assert_eq!(
+        client.get_claim_delay(&old_issuer, &ns, &token),
+        0,
+        "old issuer must show 0 after transfer"
+    );
+}
+
+/// Multi-namespace isolation: configs set on one namespace must not appear on
+/// another namespace after transfer, even when the same issuer and token are used.
+#[test]
+fn test_issuer_transfer_config_isolated_across_namespaces() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+    let old_issuer = Address::generate(&env);
+    let new_issuer = Address::generate(&env);
+    let ns_a = symbol_short!("nsa");
+    let ns_b = symbol_short!("nsb");
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    // Register offerings under two namespaces.
+    client.register_offering(
+        &old_issuer,
+        &ns_a,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    client.register_offering(
+        &old_issuer,
+        &ns_b,
+        &token,
+        &2000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    // Set investment constraints only on ns_a.
+    client.set_investment_constraints(&old_issuer, &ns_a, &token, &111, &1111);
+    // Set claim delay only on ns_b.
+    client.set_claim_delay(&old_issuer, &ns_b, &token, &9999);
+
+    // Transfer ns_a only.
+    client.propose_issuer_transfer(&old_issuer, &ns_a, &token, &new_issuer);
+    client.accept_issuer_transfer(&new_issuer, &ns_a, &token);
+
+    // ns_a configs must be under new issuer.
+    let inv_cons = client.get_investment_constraints(&new_issuer, &ns_a, &token).unwrap();
+    assert_eq!(inv_cons.min_stake, 111, "ns_a investment constraints must migrate");
+    assert_eq!(inv_cons.max_stake, 1111, "ns_a investment constraints must migrate");
+
+    // ns_b configs must still be under old issuer unchanged.
+    assert_eq!(
+        client.get_claim_delay(&old_issuer, &ns_b, &token),
+        9999,
+        "ns_b claim delay must remain under old issuer"
+    );
+
+    // ns_a claim delay was not set — must be 0 for both.
+    assert_eq!(
+        client.get_claim_delay(&new_issuer, &ns_a, &token),
+        0,
+        "unset claim delay in ns_a must be 0 after migration"
+    );
 }
 
 #[test]
