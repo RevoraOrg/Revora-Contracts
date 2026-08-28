@@ -168,7 +168,7 @@ impl VestingContract {
             cliff_ts,
             start_ts,
             end_ts,
-            curve,
+            curve: curve.clone(),
             accelerated_amount: 0,
         };
         env.storage().persistent().set(&key, &schedule);
@@ -183,7 +183,7 @@ impl VestingContract {
 
         env.events().publish(
             (EVENT_VESTING_CREATED, beneficiary),
-            (total_amount, cliff_ts, start_ts, end_ts, curve),
+            (total_amount, cliff_ts, start_ts, end_ts, curve.clone()),
         );
 
         Ok(())

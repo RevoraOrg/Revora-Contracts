@@ -91,6 +91,7 @@
 
 #![allow(dead_code)]
 
+use crate::MAX_PROOF_DEPTH;
 use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
 // ── Error type ─────────────────────────────────────────────────────────────
@@ -124,7 +125,6 @@ pub enum MerkleError {
 /// The fields are intentionally `pub` so external code can inspect the ordering.
 #[derive(Clone, Debug)]
 #[contracttype]
-#[derive(Clone)]
 pub struct MerkleLeaf {
     /// The holder address.
     pub holder: Address,
@@ -235,7 +235,7 @@ pub fn build_merkle_root(env: &Env, leaves: &Vec<MerkleLeaf>) -> BytesN<32> {
 
     // ── Empty tree ──────────────────────────────────────────────────────────
     if n == 0 {
-        return env.crypto().sha256(&Bytes::new(env));
+        return env.crypto().sha256(&Bytes::new(env)).into();
     }
 
     // ── Compute leaf hashes ─────────────────────────────────────────────────
@@ -384,7 +384,7 @@ fn hash_leaf(env: &Env, leaf: &MerkleLeaf) -> BytesN<32> {
     input.push_back(0x00u8);
     input.append(&leaf.holder_xdr);
     input.append(&leaf.share_bps.to_xdr(env));
-    env.crypto().sha256(&input)
+    env.crypto().sha256(&input).into()
 }
 
 /// Internal-node hash: `SHA-256( 0x01 || min(left, right) || max(left, right) )`.
@@ -408,5 +408,5 @@ fn hash_node(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
     input.push_back(0x01u8);
     input.append(&lo);
     input.append(&hi);
-    env.crypto().sha256(&input)
+    env.crypto().sha256(&input).into()
 }

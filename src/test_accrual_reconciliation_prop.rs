@@ -1,11 +1,16 @@
 #![cfg(test)]
+extern crate alloc;
+
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use proptest::prelude::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env, Symbol,
+    Address, Env, Symbol, Vec,
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -32,7 +37,7 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 10_000_000);
 
     // Register offering with 0 claim delay → all periods immediately mature.
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payout_asset, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
 
     (env, client, issuer, token, payout_asset)
 }
@@ -107,7 +112,7 @@ fn rebalance_shares(
 ) {
     let old_bps = current_bps[changed_idx];
     current_bps[changed_idx] = new_bps;
-    client.set_holder_share(issuer, ns, token, &holders[changed_idx], &new_bps);
+    client.set_holder_share(issuer, ns, token, &holders[changed_idx], &new_bps, &1);
 
     let delta = (new_bps as i64) - (old_bps as i64);
 
@@ -124,7 +129,7 @@ fn rebalance_shares(
         let adjusted = other_share.saturating_sub(delta);
         if adjusted >= 0 && adjusted <= 10_000i64 {
             current_bps[j] = adjusted as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &(adjusted as u32));
+            client.set_holder_share(issuer, ns, token, &holders[j], &(adjusted as u32), &1);
             return;
         }
     }
@@ -140,13 +145,13 @@ fn rebalance_shares(
             // Need to reduce others; take up to `delta` from this one.
             let take = other_share.min(remainder);
             current_bps[j] = (other_share - take) as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j]);
+            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], &1);
             remainder -= take;
         } else {
             // Need to increase others; add up to `-delta`.
             let give = (10_000i64 - other_share).min(-remainder);
             current_bps[j] = (other_share + give) as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j]);
+            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], &1);
             remainder += give;
         }
     }
@@ -221,7 +226,7 @@ fn edge_single_holder_full_drain() {
     let holder = Address::generate(&env);
 
     // Single holder gets 100% share.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
     // Deposit.
     client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
@@ -268,7 +273,7 @@ proptest! {
         current_bps[0] = base_share + remainder; // holder 0 gets any rounding dust
 
         for (i, holder) in holders.iter().enumerate() {
-            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i]);
+            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i], &1);
         }
 
         // ── Running state ────────────────────────────────────────────────

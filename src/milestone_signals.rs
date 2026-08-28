@@ -33,7 +33,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -51,7 +51,16 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let token = Address::generate(env);
     let payout = Address::generate(env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
     (issuer, token, payout)
 }
 
@@ -475,8 +484,26 @@ fn milestone_audit_summary_isolated_per_offering() {
     let ns = symbol_short!("def");
 
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &ns, &token_a, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
-    client.register_offering(&issuer, &ns, &token_b, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_a,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_b,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     client.report_revenue(&issuer, &ns, &token_a, &payout, &5_000i128, &1u64, &false);
 

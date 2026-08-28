@@ -23,7 +23,7 @@ fn setup() -> (Env, RevoraRevenueShareClient, Address) {
 
 fn create_payment_token(env: &Env) -> (Address, Address) {
     let admin = Address::generate(env);
-    let token_id = env.register_stellar_asset_contract(admin.clone());
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
     (token_id, admin)
 }
 
@@ -36,7 +36,16 @@ fn setup_with_offering() -> (Env, RevoraRevenueShareClient, Address, Address, Ad
     let token = Address::generate(&env);
     let (payment_token, pt_admin) = create_payment_token(&env);
     // Register offering and fund issuer so deposit_revenue can transfer tokens
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payment_token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
     (env, client, issuer, token, payment_token, pt_admin)
 }
@@ -50,7 +59,16 @@ fn get_revenue_range_chunk_matches_full_sum() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000u32, &token, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1000u32,
+        &token,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     // Report revenue for periods 1..=10
     for p in 1u64..=10u64 {
@@ -92,7 +110,16 @@ fn get_revenue_range_chunk_inverted_range_returns_zero() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000u32, &token, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1000u32,
+        &token,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     // inverted range: from > to
     let (sum, next) = client.get_revenue_range_chunk(&issuer, &symbol_short!("def"), &token, &10u64, &1u64, &5u32);
@@ -112,7 +139,16 @@ fn get_revenue_range_chunk_cap_clamps_and_returns_next_start() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000u32, &token, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1000u32,
+        &token,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     // Report revenue for periods 1..=201 with amount 1 each
     for p in 1u64..=201u64 {
@@ -143,7 +179,16 @@ fn get_revenue_range_chunk_chunked_iteration_off_by_one_sequence() {
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1000u32, &token, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1000u32,
+        &token,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     // Report revenue for periods 1..=5 with increasing amounts for easier validation
     for p in 1u64..=5u64 {
@@ -528,7 +573,7 @@ fn get_claimable_chunk_table_driven_invariants() {
             &token,
             &holder,
             &tc.holder_share_bps,
-        );
+        &1);
 
         // Insert periods
         for p in 1..=tc.period_count {
@@ -628,7 +673,7 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);
 
     // Insert 10 periods
     for p in 1..=10u64 {
@@ -703,7 +748,7 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
 
     // Insert 10 periods
     for p in 1..=10u64 {
@@ -769,7 +814,7 @@ fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);
 
     // Set delay
     client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100);

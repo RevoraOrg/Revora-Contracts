@@ -22,7 +22,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let payout_asset = crate::test_utils::create_token(&env, &payout_asset_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0u32);
 
     (env, client, issuer, token, payout_asset)
 }
@@ -106,7 +106,7 @@ fn removing_a_jurisdiction_does_not_break_existing_holder_claims() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
 
     client.set_allowed_jurisdictions(
         &issuer,
@@ -296,7 +296,7 @@ fn claim_during_grace_period_succeeds() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
 
     // Deposit revenue
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
@@ -338,7 +338,7 @@ fn claim_after_grace_period_with_disallowed_jurisdiction_fails() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
 
     // Deposit revenue
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
@@ -383,7 +383,7 @@ fn claim_after_grace_period_with_allowed_jurisdiction_succeeds() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("uk")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
 
     // Deposit revenue
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
@@ -428,7 +428,7 @@ fn migration_into_disallowed_jurisdiction_at_exact_grace_end() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     let grace_secs = 60 * 60; // 1 hour grace
@@ -524,7 +524,7 @@ fn claim_with_no_pending_migration_succeeds_normally() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
@@ -546,7 +546,7 @@ fn migration_with_no_allowlist_never_blocks_claims() {
         &symbol_short!("us"),
         &0u64,
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     // Schedule migration into any jurisdiction

@@ -75,7 +75,7 @@ fn setup_with_offering(
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1);
 
     // Mint to issuer and deposit period 1
     token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &500_000);
@@ -232,7 +232,7 @@ fn soft_pause_register_offering_blocked() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let result =
-        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+        client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -307,7 +307,7 @@ fn hard_pause_register_offering_blocked() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let result =
-        client.try_register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+        client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
