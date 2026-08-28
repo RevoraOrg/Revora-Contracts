@@ -12,7 +12,7 @@ use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events},
-    Address, Bytes, Env, IntoVal, Vec,
+    Address, Bytes, Env, IntoVal, Symbol, Vec,
 };
 
 // ─── Existing layout-stamp tests ──────────────────────────────────────────────
@@ -56,8 +56,13 @@ fn test_migrate_storage_dry_run() {
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &true);
 
     let events = env.events().all();
-    let plan_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
+    let plan_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            topic0.to_str().contains("migration_plan")
+        })
+        .collect();
     assert!(!plan_events.is_empty(), "Walker must emit migration_plan events for dry run");
 
     client.migrate_storage_walker(&issuer, &1u32, &2u32, &true);
@@ -107,15 +112,25 @@ fn test_migration_resumes_from_cursor() {
 
     // Verify mig_resume event was emitted
     let events = env.events().all();
-    let resume_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("mig_resume")).collect();
+    let resume_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            topic0.to_str().contains("mig_resume")
+        })
+        .collect();
     assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
     let resume_val: u32 = resume_events[0].2.clone().into_val(&env);
     assert_eq!(resume_val, 5, "Resume cursor should be 5");
 
     // Verify mig_step was emitted for keys 6 through 10, meaning it resumed at 6.
-    let step_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+    let step_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            topic0.to_str().contains("mig_step")
+        })
+        .collect();
     assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
 
     // Assert the exact keys processed in the steps
@@ -434,11 +449,12 @@ fn multiple_hooks_applied_during_walker() {
 
     // Both hooks should produce mig_hook events
     let events = env.events().all();
-    let apply_events: Vec<_> = events
+    let apply_events: alloc::vec::Vec<_> = events
         .iter()
         .filter(|e| {
-            let topic_str = e.0.to_string();
-            topic_str.contains("mig_hook") && !topic_str.contains("register")
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            let s = topic0.to_str();
+            s.contains("mig_hook") && !s.contains("register")
         })
         .collect();
     // 2 hooks × 1 apply each = 2 events (register events excluded)
@@ -494,21 +510,21 @@ fn setup_migration_test() -> (Env, RevoraRevenueShareClient<'static>, Address) {
 fn migrate_storage_major_upgrade_succeeds() {
     let (_, client, admin) = setup_migration_test();
     let res = client.try_migrate_storage(&admin, &2, &0, &0);
-    assert_eq!(res, Ok(()));
+    assert_eq!(res, Ok(Ok(())));
 }
 
 #[test]
 fn migrate_storage_minor_upgrade_succeeds() {
     let (_, client, admin) = setup_migration_test();
     let res = client.try_migrate_storage(&admin, &1, &1, &0);
-    assert_eq!(res, Ok(()));
+    assert_eq!(res, Ok(Ok(())));
 }
 
 #[test]
 fn migrate_storage_patch_upgrade_succeeds() {
     let (_, client, admin) = setup_migration_test();
     let res = client.try_migrate_storage(&admin, &1, &0, &24);
-    assert_eq!(res, Ok(()));
+    assert_eq!(res, Ok(Ok(())));
 }
 
 #[test]
@@ -544,7 +560,7 @@ fn migrate_storage_minor_downgrade_rejected() {
 #[test]
 fn migrate_storage_patch_revert_rejected() {
     let (_, client, admin) = setup_migration_test();
-    client.migrate_storage(&admin, &1, &0, &30).unwrap();
+    client.migrate_storage(&admin, &1, &0, &30);
     let res = client.try_migrate_storage(&admin, &1, &0, &25);
     match res {
         Err(Ok(RevoraError::MigrationDowngradeNotAllowed)) => {}
@@ -555,9 +571,9 @@ fn migrate_storage_patch_revert_rejected() {
 #[test]
 fn migrate_storage_upgrade_then_upgrade_again() {
     let (_, client, admin) = setup_migration_test();
-    client.migrate_storage(&admin, &1, &1, &0).unwrap();
+    client.migrate_storage(&admin, &1, &1, &0);
     let res = client.try_migrate_storage(&admin, &2, &0, &0);
-    assert_eq!(res, Ok(()));
+    assert_eq!(res, Ok(Ok(())));
 }
 
 #[test]
@@ -646,8 +662,13 @@ fn migrate_storage_emits_event() {
     client.migrate_storage(&admin, &2, &0, &0).unwrap();
 
     let events = env.events().all();
-    let migrate_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("migrate")).collect();
+    let migrate_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            topic0.to_str().contains("migrate")
+        })
+        .collect();
     assert!(!migrate_events.is_empty(), "expected migrate event to be emitted");
 }
 
@@ -700,8 +721,13 @@ fn contract_version_compatible_emits_downgrade_reject_event() {
     let _ = client.try_set_testnet_mode(&true);
 
     let events = env.events().all();
-    let reject_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("downgrade_reject")).collect();
+    let reject_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
+            topic0.to_str().contains("downgrade_reject")
+        })
+        .collect();
     assert!(!reject_events.is_empty(), "expected downgrade_reject event");
 }
 
