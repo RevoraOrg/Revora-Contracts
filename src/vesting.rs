@@ -1,8 +1,9 @@
 //! # Token Vesting Core — `vesting.rs`
 //!
-//! Minimal stub implementation that compiles cleanly under the current build.
-//! The full vesting flow is disabled pending a re-implementation; only the
-//! types, storage keys, and a handful of read-only helpers remain.
+//! Token vesting schedules and deterministic fixed-point vesting curves.
+//!
+//! Schedule writes include a curve. Legacy schedules that predate the curve
+//! field are converted to `Linear` by the migration helper below.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
@@ -42,11 +43,14 @@ pub struct VestingOfferingId {
 pub enum VestingCurve {
     Linear,
     Cliff,
-    /// Graded quarterly vesting curve with milestone timestamps and per-milestone BPS.
+    /// Graded vesting curve with milestone timestamps and per-milestone BPS.
     /// Each tuple is (timestamp, bps) and milestones must be strictly monotonic
     /// with total BPS summing to 10000.
     Graded(Vec<(u64, u32)>),
-    Step(u32),
+    /// Discrete vesting buckets; value is the bucket duration in seconds.
+    Step(u64),
+    /// Back-loaded curve using the fixed-point exponent `k_num / k_den`.
+    Exponential(u32, u32),
 }
 
 /// A single vesting tranche for a beneficiary.
@@ -87,6 +91,8 @@ pub enum VestingError {
     AlreadyAccelerated = 107,
     /// Acceleration bps must not exceed 10000.
     InvalidAccelerationBps = 108,
+    /// Curve parameters are invalid or cannot be evaluated safely.
+    InvalidCurveParameters = 109,
 }
 
 /// Shared schema version for vesting events.
@@ -146,6 +152,7 @@ impl VestingContract {
                 return Err(VestingError::InvalidTimestamps);
             }
         }
+        validate_curve(&curve)?;
 
         let key = VestingKey::Schedule(beneficiary.clone());
         if env.storage().persistent().has(&key) {
@@ -161,6 +168,7 @@ impl VestingContract {
             cliff_ts,
             start_ts,
             end_ts,
+            curve,
             accelerated_amount: 0,
         };
         env.storage().persistent().set(&key, &schedule);
@@ -407,6 +415,148 @@ pub fn migrate_offering_schedules(
     Ok(migrated)
 }
 
+/// Convert a legacy schedule into the versioned representation.
+///
+/// Legacy deployments had no curve field; their behavior was linear. This
+/// helper is intentionally pure so migration callers can validate and persist
+/// the converted value atomically in their own transaction.
+pub fn migrate_legacy_schedule(
+    legacy: LegacyVestingSchedule,
+) -> Result<VestingSchedule, VestingError> {
+    if legacy.total_amount <= 0 {
+        return Err(VestingError::InvalidAmount);
+    }
+    if legacy.start_ts < legacy.cliff_ts || legacy.end_ts <= legacy.start_ts {
+        return Err(VestingError::InvalidTimestamps);
+    }
+    Ok(VestingSchedule {
+        issuer: legacy.issuer,
+        beneficiary: legacy.beneficiary,
+        token: legacy.token,
+        total_amount: legacy.total_amount,
+        cliff_ts: legacy.cliff_ts,
+        start_ts: legacy.start_ts,
+        end_ts: legacy.end_ts,
+        curve: VestingCurve::Linear,
+        accelerated_amount: legacy.accelerated_amount,
+    })
+}
+
+/// The pre-curve schedule layout used by legacy deployments.
+#[derive(Clone)]
+pub struct LegacyVestingSchedule {
+    pub issuer: Address,
+    pub beneficiary: Address,
+    pub token: Address,
+    pub total_amount: i128,
+    pub cliff_ts: u64,
+    pub start_ts: u64,
+    pub end_ts: u64,
+    pub accelerated_amount: i128,
+}
+
+/// Validate curve parameters before they are persisted.
+fn validate_curve(curve: &VestingCurve) -> Result<(), VestingError> {
+    if let VestingCurve::Step(period_secs) = curve {
+        if *period_secs == 0 {
+            return Err(VestingError::InvalidCurveParameters);
+        }
+    }
+    if let VestingCurve::Exponential(_, k_den) = curve {
+        if *k_den == 0 {
+            return Err(VestingError::InvalidCurveParameters);
+        }
+    }
+    Ok(())
+}
+
+/// Evaluate a curve and return the vested amount.
+///
+/// All intermediate values use checked i128 fixed-point arithmetic with scale
+/// 1e18. Exponential curves support rational exponents with bounded parameters;
+/// no floating point is used.
+pub fn evaluate_curve(
+    curve: &VestingCurve,
+    elapsed: u64,
+    duration: u64,
+    total: i128,
+) -> Result<i128, VestingError> {
+    if total <= 0 || duration == 0 {
+        return Err(VestingError::InvalidCurveParameters);
+    }
+    validate_curve(curve)?;
+    let elapsed = elapsed.min(duration);
+    let linear = (elapsed as i128)
+        .checked_mul(1_000_000_000_000_000_000_i128)
+        .and_then(|v| v.checked_div(duration as i128))
+        .ok_or(VestingError::InvalidCurveParameters)?;
+    let fraction = match curve {
+        VestingCurve::Linear | VestingCurve::Cliff | VestingCurve::Graded(_) => linear,
+        VestingCurve::Step(period_secs) => {
+            let period = *period_secs;
+            let buckets = duration
+                .checked_add(period.checked_sub(1).ok_or(VestingError::InvalidCurveParameters)?)
+                .and_then(|v| v.checked_div(period))
+                .ok_or(VestingError::InvalidCurveParameters)?;
+            let completed = elapsed / period;
+            completed
+                .checked_mul(1_000_000_000_000_000_000_u64)
+                .and_then(|v| v.checked_div(buckets))
+                .unwrap_or(1_000_000_000_000_000_000_u64)
+                .min(1_000_000_000_000_000_000) as i128
+        }
+        VestingCurve::Exponential(k_num, k_den) => {
+            // Evaluate x^(k_num/k_den) by finding the greatest fixed-point y
+            // whose y^k_den <= x^k_num. The bounded search is deterministic,
+            // monotonic, and uses checked i128 arithmetic only.
+            if *k_num > 32 || *k_den > 32 || (*k_num == 0 && *k_den == 0) {
+                return Err(VestingError::InvalidCurveParameters);
+            }
+            let target = fixed_pow(linear, *k_num)?;
+            let mut low = 0_i128;
+            let mut high = 1_000_000_000_000_000_000_i128;
+            for _ in 0..60 {
+                let mid = low.checked_add(high).ok_or(VestingError::InvalidCurveParameters)? / 2;
+                if fixed_pow(mid, *k_den)? <= target {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            low
+        }
+    };
+    total
+        .checked_mul(fraction)
+        .and_then(|v| v.checked_div(1_000_000_000_000_000_000_i128))
+        .ok_or(VestingError::InvalidCurveParameters)
+}
+
+fn fixed_pow(mut value: i128, exponent: u32) -> Result<i128, VestingError> {
+    let scale = 1_000_000_000_000_000_000_i128;
+    if exponent == 0 {
+        return Ok(scale);
+    }
+    let mut result = scale;
+    let mut remaining = exponent;
+    while remaining > 0 {
+        if remaining % 2 == 1 {
+            result = result
+                .checked_mul(value)
+                .and_then(|v| v.checked_div(scale))
+                .ok_or(VestingError::InvalidCurveParameters)?;
+        }
+        remaining /= 2;
+        if remaining > 0 {
+            value = value
+                .checked_mul(value)
+                .and_then(|v| v.checked_div(scale))
+                .ok_or(VestingError::InvalidCurveParameters)?;
+        }
+    }
+    Ok(result)
+}
+
 /// Helper: compute total vested tokens at a given timestamp.
 fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
     let base_vested = match &schedule.curve {
@@ -429,28 +579,22 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
                     .unwrap_or(0)
             }
         }
-        _ => {
-            // Linear / Cliff / Step: all use the same time-proportional logic.
-            if now >= schedule.cliff_ts {
-                if now >= schedule.end_ts {
-                    schedule.total_amount
-                } else if now > schedule.start_ts {
-                    let elapsed = (now - schedule.start_ts) as i128;
-                    let duration = (schedule.end_ts - schedule.start_ts) as i128;
-                    if duration == 0 {
-                        schedule.total_amount
-                    } else {
-                        schedule
-                            .total_amount
-                            .checked_mul(elapsed)
-                            .map(|m| m / duration)
-                            .unwrap_or(0)
-                    }
-                } else {
-                    0
-                }
-            } else {
+        VestingCurve::Linear
+        | VestingCurve::Cliff
+        | VestingCurve::Step(_)
+        | VestingCurve::Exponential(_, _) => {
+            if now < schedule.cliff_ts || now <= schedule.start_ts {
                 0
+            } else if now >= schedule.end_ts {
+                schedule.total_amount
+            } else {
+                evaluate_curve(
+                    &schedule.curve,
+                    now - schedule.start_ts,
+                    schedule.end_ts - schedule.start_ts,
+                    schedule.total_amount,
+                )
+                .unwrap_or(0)
             }
         }
     };
@@ -475,3 +619,65 @@ fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64
 }
 
 use soroban_sdk::contracterror;
+
+#[cfg(test)]
+mod tests {
+    use super::{evaluate_curve, VestingCurve, VestingError};
+
+    const SCALE: i128 = 1_000_000_000_000_000_000;
+
+    #[test]
+    fn linear_is_backward_compatible() {
+        assert_eq!(evaluate_curve(&VestingCurve::Linear, 0, 100, 1_000).unwrap(), 0);
+        assert_eq!(evaluate_curve(&VestingCurve::Linear, 50, 100, 1_000).unwrap(), 500);
+        assert_eq!(evaluate_curve(&VestingCurve::Linear, 100, 100, 1_000).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn step_vests_only_completed_buckets() {
+        let curve = VestingCurve::Step(10);
+        assert_eq!(evaluate_curve(&curve, 9, 100, 1_000).unwrap(), 0);
+        assert_eq!(evaluate_curve(&curve, 10, 100, 1_000).unwrap(), 100);
+        assert_eq!(evaluate_curve(&curve, 99, 100, 1_000).unwrap(), 900);
+        assert_eq!(evaluate_curve(&curve, 100, 100, 1_000).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn exponential_is_back_loaded_without_floats() {
+        let curve = VestingCurve::Exponential(2, 1);
+        assert_eq!(evaluate_curve(&curve, 50, 100, SCALE).unwrap(), 250_000_000_000_000_000);
+        assert_eq!(evaluate_curve(&curve, 100, 100, SCALE).unwrap(), SCALE);
+    }
+
+    #[test]
+    fn exponential_linear_ratio_is_compatible() {
+        let curve = VestingCurve::Exponential(1, 1);
+        assert_eq!(evaluate_curve(&curve, 37, 100, 10_000).unwrap(), 3_700);
+    }
+
+    #[test]
+    fn elapsed_is_clamped_at_end() {
+        let curve = VestingCurve::Step(10);
+        assert_eq!(evaluate_curve(&curve, 1_000, 100, 1_000).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn invalid_curve_parameters_are_rejected() {
+        assert_eq!(
+            evaluate_curve(&VestingCurve::Step(0), 1, 10, 100),
+            Err(VestingError::InvalidCurveParameters)
+        );
+        assert_eq!(
+            evaluate_curve(&VestingCurve::Exponential(1, 0), 1, 10, 100),
+            Err(VestingError::InvalidCurveParameters)
+        );
+        assert_eq!(
+            evaluate_curve(&VestingCurve::Exponential(33, 1), 1, 10, 100),
+            Err(VestingError::InvalidCurveParameters)
+        );
+        assert_eq!(
+            evaluate_curve(&VestingCurve::Exponential(0, 0), 1, 10, 100),
+            Err(VestingError::InvalidCurveParameters)
+        );
+    }
+}
