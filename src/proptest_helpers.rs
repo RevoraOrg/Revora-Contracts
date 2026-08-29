@@ -20,7 +20,7 @@
 ///     fn fuzz_register_offering(bps in arb_valid_bps(), &None) {
 ///         let env = Env::default();
 ///         env.mock_all_auths();
-///         let client = make_client(&env);
+///         let client = make_client(&env.clone());
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
 ///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &symbol_short!(""), &0);

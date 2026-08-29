@@ -16,7 +16,7 @@ fn test_namespace_isolation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -57,7 +57,7 @@ fn test_same_issuer_different_namespaces() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -79,7 +79,7 @@ fn test_same_issuer_different_namespaces() {
 fn test_cross_namespace_blacklist_isolation() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -109,7 +109,7 @@ fn test_cross_namespace_blacklist_isolation() {
 fn test_unregistered_namespace_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -124,7 +124,7 @@ fn test_unregistered_namespace_fails() {
 fn test_unauthorized_issuer_access_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer_real = Address::generate(&env);
     let issuer_attacker = Address::generate(&env);
@@ -158,7 +158,7 @@ fn test_unauthorized_issuer_access_fails() {
 fn test_transfer_maintains_namespace_isolation() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -191,7 +191,7 @@ fn test_transfer_maintains_namespace_isolation() {
 fn test_duplicate_registration_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -211,7 +211,7 @@ fn test_duplicate_registration_fails() {
 fn test_aggregation_across_namespaces() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token1 = Address::generate(&env);
@@ -242,7 +242,7 @@ fn test_aggregation_across_namespaces() {
 fn test_blacklist_precedence_over_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -287,7 +287,7 @@ fn test_blacklist_precedence_over_whitelist() {
 fn test_blacklist_unaffected_by_whitelist_removal() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -316,7 +316,7 @@ fn test_blacklist_unaffected_by_whitelist_removal() {
 fn test_blacklist_removal_doesnt_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -344,7 +344,7 @@ fn test_blacklist_removal_doesnt_whitelist() {
 fn test_blacklist_add_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -370,7 +370,7 @@ fn test_blacklist_add_idempotent() {
 fn test_blacklist_remove_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -397,7 +397,7 @@ fn test_blacklist_remove_idempotent() {
 fn test_mixed_sequence_with_share_updates() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -466,7 +466,7 @@ fn test_mixed_sequence_with_share_updates() {
 fn test_whitelist_only_mode() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -522,7 +522,7 @@ fn test_whitelist_only_mode() {
 fn test_blacklist_only_mode() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -578,7 +578,7 @@ fn test_blacklist_only_mode() {
 fn test_complex_add_remove_sequence() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -625,7 +625,7 @@ fn test_complex_add_remove_sequence() {
 fn test_multiple_investors_precedence() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -701,7 +701,7 @@ fn test_multiple_investors_precedence() {
 fn test_whitelist_disable_changes_eligibility() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -762,7 +762,7 @@ fn test_whitelist_disable_changes_eligibility() {
 fn test_no_lists_all_eligible() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);

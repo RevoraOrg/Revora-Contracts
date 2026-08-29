@@ -42,7 +42,7 @@ fn setup_offering_with_payment_token(
 ) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payment_token, _pt_admin) = create_payment_token(&env);

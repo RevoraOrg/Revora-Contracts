@@ -36,7 +36,7 @@ fn test_blacklist_add_pinned_persists_meta() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
@@ -110,7 +110,7 @@ fn test_blacklist_add_pinned_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
@@ -163,7 +163,7 @@ fn test_blacklist_add_pinned_two_entries_different_hashes() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor_a = Address::generate(&env);
@@ -218,7 +218,7 @@ fn test_blacklist_remove_cleans_up_meta() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
@@ -266,7 +266,7 @@ fn test_blacklist_remove_many_cleans_up_meta() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor_a = Address::generate(&env);
@@ -306,7 +306,7 @@ fn test_regular_blacklist_add_has_no_meta() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor = Address::generate(&env);

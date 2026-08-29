@@ -367,7 +367,7 @@ fn set_holder_share_reg_limit_delta_gas_budget() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for set_holder_share (with reg_limit_delta): {}", cost);
+    // std::println!("CPU cost for set_holder_share (with reg_limit_delta): {}", cost);
     assert!(
         cost <= REG_LIMIT_DELTA_GAS_BUDGET,
         "Gas budget exceeded: {} > {}",
@@ -400,7 +400,7 @@ fn transfer_reg_limit_delta_gas_budget() {
     );
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for transfer (2 reg_limit_delta events): {}", cost);
+    // std::println!("CPU cost for transfer (2 reg_limit_delta events): {}", cost);
     assert!(
         cost <= TRANSFER_REG_LIMIT_DELTA_GAS_BUDGET,
         "Gas budget exceeded: {} > {}",
@@ -420,7 +420,7 @@ fn set_holder_share_no_jurisdiction_gas_budget() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for set_holder_share (no jurisdiction): {}", cost);
+    // std::println!("CPU cost for set_holder_share (no jurisdiction): {}", cost);
     // The no-jurisdiction path skips reg_limit_delta entirely, so it should be cheaper
     assert!(
         cost <= REG_LIMIT_DELTA_GAS_BUDGET,

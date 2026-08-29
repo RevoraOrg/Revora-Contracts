@@ -81,7 +81,7 @@ fn event_position(env: &Env, sym: Symbol) -> Option<u32> {
 #[test]
 fn milestone_event_ordering_offer_before_rev_rep() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -111,7 +111,7 @@ fn milestone_event_ordering_offer_before_rev_rep() {
 #[test]
 fn milestone_period_id_must_be_strictly_increasing() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -172,7 +172,7 @@ fn milestone_period_id_must_be_strictly_increasing() {
 #[test]
 fn milestone_period_id_zero_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     assert!(
@@ -198,7 +198,7 @@ fn milestone_period_id_zero_rejected() {
 #[test]
 fn milestone_audit_summary_accumulates_correctly() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -220,7 +220,7 @@ fn milestone_audit_summary_accumulates_correctly() {
 #[test]
 fn milestone_audit_summary_not_updated_on_rejected_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -240,7 +240,7 @@ fn milestone_audit_summary_not_updated_on_rejected_report() {
 #[test]
 fn milestone_concentration_enforcement_blocks_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -263,7 +263,7 @@ fn milestone_concentration_enforcement_blocks_revenue_report() {
 #[test]
 fn milestone_concentration_at_limit_allows_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -279,7 +279,7 @@ fn milestone_concentration_at_limit_allows_revenue_report() {
 #[test]
 fn milestone_concentration_warning_does_not_block_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -299,7 +299,7 @@ fn milestone_concentration_warning_does_not_block_report() {
 #[test]
 fn milestone_concentration_warning_event_emitted() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, _payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -316,7 +316,7 @@ fn milestone_concentration_warning_event_emitted() {
 #[test]
 fn milestone_concentration_one_bps_over_limit_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -331,7 +331,7 @@ fn milestone_concentration_one_bps_over_limit_rejected() {
 #[test]
 fn milestone_concentration_testnet_mode_bypasses_enforcement() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -358,7 +358,7 @@ fn milestone_concentration_testnet_mode_bypasses_enforcement() {
 #[test]
 fn milestone_blacklist_snapshot_captured_at_report_time() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
     let investor = Address::generate(&env);
@@ -382,7 +382,7 @@ fn milestone_blacklist_snapshot_captured_at_report_time() {
 #[test]
 fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -410,7 +410,7 @@ fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
 #[test]
 fn milestone_fixture_covers_all_canonical_event_types() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -439,7 +439,7 @@ fn milestone_fixture_covers_all_canonical_event_types() {
 #[test]
 fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -465,7 +465,7 @@ fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
 #[test]
 fn milestone_audit_summary_isolated_per_offering() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
 
     let issuer = Address::generate(&env);

@@ -97,7 +97,7 @@ fn setup_with_offering(
 #[test]
 fn get_pause_state_default_is_not_paused() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     assert_eq!(client.get_pause_state(), PauseState::NotPaused);
     assert!(!client.is_paused());
 }

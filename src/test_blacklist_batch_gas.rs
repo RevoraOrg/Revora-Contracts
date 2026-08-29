@@ -13,7 +13,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 fn blacklist_add_many_gas_bound_worst_case() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);

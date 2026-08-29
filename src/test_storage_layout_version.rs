@@ -901,7 +901,7 @@ fn test_vesting_xdr_roundtrip_graded() {
         0,
         1_000,
         50_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         2_000_000,
         100_000,
     );
@@ -916,7 +916,7 @@ fn test_vesting_xdr_roundtrip_step() {
         86_400,    // 1 day cliff
         86_400,    // start = cliff
         2_592_000, // 30 day end
-        VestingCurve::Step { steps: 12 },
+        VestingCurve::Step(12),
         10_000_000,
         500_000,
     );
@@ -988,7 +988,7 @@ fn test_vesting_storage_roundtrip_with_acceleration() {
         500,
         1_000,
         10_000,
-        VestingCurve::Graded { step_secs: 7_200 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (7200_u64, 10000_u32)]),
         5_000_000,
         250_000, // pre-accelerated
     );
@@ -1004,8 +1004,8 @@ fn test_vesting_legacy_bytes_migration_all_curves() {
     let curves = vec![
         VestingCurve::Linear,
         VestingCurve::Cliff,
-        VestingCurve::Graded { step_secs: 3600 },
-        VestingCurve::Step { steps: 12 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
+        VestingCurve::Step(12),
     ];
 
     for curve in curves {
@@ -1054,7 +1054,7 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
 
     // Round-trip
     let bytes: Bytes = schedule.to_xdr(&env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes);
+    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes).unwrap();
 
     // Verify compute_vested at various timestamps
     let test_times = [0u64, 500, 1_000, 2_500, 5_000, 7_500, 10_000, 12_000];
@@ -1089,7 +1089,7 @@ fn test_vesting_byte_level_determinism() {
         1_000,
         5_000,
         100_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         1_000_000,
         0,
     );
@@ -1098,7 +1098,7 @@ fn test_vesting_byte_level_determinism() {
         1_000,
         5_000,
         100_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         1_000_000,
         0,
     );
@@ -1122,7 +1122,7 @@ fn test_vesting_compute_with_accelerated_after_roundtrip() {
     );
 
     let bytes: Bytes = schedule.to_xdr(&env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes);
+    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes).unwrap();
 
     // After cliff but before start: only accelerated amount is vested
     let vested_before_start = compute_vested(&schedule, 150);

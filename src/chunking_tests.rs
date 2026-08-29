@@ -46,7 +46,7 @@ fn get_revenue_range_chunk_matches_full_sum() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -88,7 +88,7 @@ fn get_revenue_range_chunk_inverted_range_returns_zero() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -108,7 +108,7 @@ fn get_revenue_range_chunk_cap_clamps_and_returns_next_start() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -139,7 +139,7 @@ fn get_revenue_range_chunk_chunked_iteration_off_by_one_sequence() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -187,7 +187,7 @@ fn pending_periods_page_and_claimable_chunk_consistent() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -315,7 +315,7 @@ impl ChunkInvariantTestCase {
 fn get_claimable_chunk_table_driven_invariants() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -502,7 +502,7 @@ fn get_claimable_chunk_table_driven_invariants() {
         // Reset environment for each test case
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let token = Address::generate(&env);
         let holder = Address::generate(&env);
@@ -608,7 +608,7 @@ fn get_claimable_chunk_table_driven_invariants() {
 fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -683,7 +683,7 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
 fn get_claimable_chunk_sum_matches_full_claimable() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -749,7 +749,7 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
 fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);

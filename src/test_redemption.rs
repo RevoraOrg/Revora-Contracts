@@ -335,7 +335,7 @@ fn request_redemption_duplicate() {
 fn request_redemption_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
@@ -550,7 +550,7 @@ fn fulfill_redemption_non_issuer_rejected() {
 fn redemption_events_emitted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
