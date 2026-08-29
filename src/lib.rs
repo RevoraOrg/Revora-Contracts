@@ -9753,6 +9753,7 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
+        Self::assert_storage_layout_compatible(&env)?;
         if env.storage().persistent().get::<DataKey, bool>(&DataKey::Frozen).unwrap_or(false) {
             return Err(RevoraError::ContractFrozen);
         }
@@ -15706,6 +15707,8 @@ impl RevoraRevenueShare {
     ) -> Result<(), MigrationError> {
         // Must be gated by the issuer initiating the migration
         issuer.require_auth();
+
+        Self::assert_storage_layout_compatible(&env)?;
 
         let key = MigrationDataKey::LastMigrationCompletedAt(issuer.clone());
         let last_migration: u32 = env.storage().persistent().get(&key).unwrap_or(0);
