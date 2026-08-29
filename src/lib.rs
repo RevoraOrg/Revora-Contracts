@@ -413,6 +413,8 @@ mod test_accrual_reconciliation_prop;
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
+#[cfg(test)]
+mod test_holder_share_sum_invariant;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -2487,15 +2489,16 @@ impl RevoraRevenueShare {
         // Check max total supply shares cap
         let max_shares_key = DataKey2::MaxTotalSupplyShares(offering_id.clone());
         let max_shares: i128 = env.storage().persistent().get(&max_shares_key).unwrap_or(0);
+        let old_share: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+            .unwrap_or(0);
+            
         if max_shares > 0 {
             let total_shares_key = DataKey2::TotalSharesIssued(offering_id.clone());
             let current_total_shares: i128 =
                 env.storage().persistent().get(&total_shares_key).unwrap_or(0);
-            let old_share: u32 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
-                .unwrap_or(0);
             let new_total_shares = current_total_shares
                 .saturating_sub(old_share as i128)
                 .saturating_add(share_bps as i128);

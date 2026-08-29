@@ -409,6 +409,7 @@ Accepted ranges and rejection semantics:
 | `supply_cap` | `register_offering` | >= 0 | `InvalidAmount` |
 | `revenue_share_bps` | `register_offering` | 0–10000 (testnet: any) | `InvalidRevenueShareBps` |
 | `share_bps` | `set_holder_share` | 0–10000 | `InvalidShareBps` |
+| `sum(share_bps)` | `set_holder_share` | 0–10000 per offering | `InvalidShareBps` |
 | `amount` | `report_revenue` | ≥ 0 | `InvalidAmount` |
 | `amount` | `deposit_revenue` | > 0 | `InvalidAmount` |
 | `amount` | `deposit_revenue_with_snapshot` | > 0 | `InvalidAmount` |
