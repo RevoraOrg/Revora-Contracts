@@ -52,11 +52,7 @@ fn fiscal_year_config_default_and_roundtrip() {
     let ns = symbol_short!("def");
 
     // Default is January (1).
-    assert_eq!(
-        client.get_fiscal_year_start(&issuer, &ns, &token),
-        1,
-        "default should be January",
-    );
+    assert_eq!(client.get_fiscal_year_start(&issuer, &ns, &token), 1, "default should be January",);
 
     // Set to April (4).
     client.set_fiscal_year_start(&issuer, &ns, &token, &4);
