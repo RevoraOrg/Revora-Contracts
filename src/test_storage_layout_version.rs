@@ -60,7 +60,7 @@ fn test_migrate_storage_dry_run() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            topic0.to_str().contains("migration_plan")
+            topic0.to_string().to_str().contains("migration_plan")
         })
         .collect();
     assert!(!plan_events.is_empty(), "Walker must emit migration_plan events for dry run");
@@ -116,7 +116,7 @@ fn test_migration_resumes_from_cursor() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            topic0.to_str().contains("mig_resume")
+            topic0.to_string().to_str().contains("mig_resume")
         })
         .collect();
     assert_eq!(resume_events.len(), 1, "Must emit exactly one mig_resume event");
@@ -128,7 +128,7 @@ fn test_migration_resumes_from_cursor() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            topic0.to_str().contains("mig_step")
+            topic0.to_string().to_str().contains("mig_step")
         })
         .collect();
     assert_eq!(step_events.len(), 5, "Should only process 5 remaining keys (6-10)");
@@ -213,8 +213,8 @@ fn register_hook_identity_succeeds() {
 
     // Verify the hook was registered via events
     let events = env.events().all();
-    let hook_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("mig_hook")).collect();
+    let hook_events: alloc::vec::Vec<_> =
+        events.iter().filter(|e| e.0.to_string().to_str().contains("mig_hook")).collect();
     assert!(!hook_events.is_empty(), "must emit mig_hook event on registration");
 
     // Verify get_registered_hooks returns the hook
@@ -395,11 +395,11 @@ fn migrate_storage_walker_applies_hooks() {
     // Verify both mig_step and mig_hook events were emitted
     let events = env.events().all();
     let step_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("mig_step")).collect();
+        events.iter().filter(|e| e.0.to_string().to_str().contains("mig_step")).collect();
     assert!(!step_events.is_empty(), "must emit mig_step event");
 
-    let hook_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("mig_hook")).collect();
+    let hook_events: alloc::vec::Vec<_> =
+        events.iter().filter(|e| e.0.to_string().to_str().contains("mig_hook")).collect();
     assert!(!hook_events.is_empty(), "must emit mig_hook event for each registered hook");
 }
 
@@ -419,14 +419,14 @@ fn migrate_storage_walker_dry_run_applies_hooks_as_plan() {
     // Verify migration_plan events were emitted for hooks
     let events = env.events().all();
     let plan_events: Vec<_> =
-        events.iter().filter(|e| e.0.to_string().contains("migration_plan")).collect();
+        events.iter().filter(|e| e.0.to_string().to_str().contains("migration_plan")).collect();
     assert!(!plan_events.is_empty(), "must emit migration_plan events for hooks in dry run");
 
     // Verify no mig_hook events in dry_run mode
-    let hook_events: Vec<_> = events
+    let hook_events: alloc::vec::Vec<_> = events
         .iter()
-        .filter(|e| e.0.to_string().contains("mig_hook"))
-        .filter(|e| !e.0.to_string().contains("register")) // registration events still fire
+        .filter(|e| e.0.to_string().to_str().contains("mig_hook"))
+        .filter(|e| !e.0.to_string().to_str().contains("register")) // registration events still fire
         .collect();
     // Only the register event should be mig_hook, not the apply
     assert_eq!(hook_events.len(), 0, "no apply events in dry run");
@@ -453,7 +453,7 @@ fn multiple_hooks_applied_during_walker() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            let s = topic0.to_str();
+            let s = topic0.to_string().to_str();
             s.contains("mig_hook") && !s.contains("register")
         })
         .collect();
@@ -666,7 +666,7 @@ fn migrate_storage_emits_event() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            topic0.to_str().contains("migrate")
+            topic0.to_string().to_str().contains("migrate")
         })
         .collect();
     assert!(!migrate_events.is_empty(), "expected migrate event to be emitted");
@@ -725,7 +725,7 @@ fn contract_version_compatible_emits_downgrade_reject_event() {
         .iter()
         .filter(|e| {
             let topic0: Symbol = e.1.get(0).unwrap().into_val(&env);
-            topic0.to_str().contains("downgrade_reject")
+            topic0.to_string().to_str().contains("downgrade_reject")
         })
         .collect();
     assert!(!reject_events.is_empty(), "expected downgrade_reject event");
