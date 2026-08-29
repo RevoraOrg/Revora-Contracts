@@ -165,6 +165,9 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
     ("DataKey2::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
     ("DataKey2::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
+    // ── Dividend accrual ledger (#div-accrual) ──
+    ("DataKey2::ReportAccPerShareE18(OfferingId)", "i128", "offering"),
+    ("DataKey2::HolderReportLedger(OfferingId, Address)", "HolderReportAccrual", "offering+holder"),
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),

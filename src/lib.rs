@@ -413,6 +413,8 @@ mod test_accrual_reconciliation_prop;
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
+#[cfg(test)]
+mod test_dividend_accrual_ledger;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -458,6 +460,14 @@ const EVENT_REV_DEP_SNAP_V2: Symbol = symbol_short!("rev_snp2");
 const EVENT_CLAIM_V2: Symbol = symbol_short!("claim2");
 const EVENT_SHARE_SET_V2: Symbol = symbol_short!("sh_set2");
 const EVENT_ACC_UPD: Symbol = symbol_short!("acc_upd");
+/// Emitted by `report_revenue` when the per-offering report-time accrual index advances.
+///
+/// Topic:  `(rpt_acc_u, issuer, namespace, token)`
+/// Data:   `(period_id: u64, new_report_acc_e18: i128, total_share_bps: u32)`
+///
+/// Indexers can replay these events to reconstruct each holder's pending
+/// dividend balance without querying per-period storage.
+const EVENT_REPORT_ACC_UPD: Symbol = symbol_short!("rpt_acc_u");
 const EVENT_FREEZE_V2: Symbol = symbol_short!("frz2");
 const EVENT_FREEZE_REASON_V1: Symbol = symbol_short!("frz_rsn");
 const EVENT_CLAIM_DELAY_SET_V2: Symbol = symbol_short!("dly_set2");
@@ -1219,6 +1229,28 @@ pub struct HolderAccrualState {
     pub accrued_owed: i128,
 }
 
+/// Per-holder checkpoint for the report-time dividend accrual ledger.
+///
+/// Stored under `DataKey2::HolderReportLedger(offering_id, holder)`.
+///
+/// `last_report_acc_e18` is the value of `ReportAccPerShareE18` at the time
+/// this holder's share was last settled.  On the next settlement the delta
+/// `(current_global - last_report_acc_e18) * share_bps / SCALE` is added to
+/// `accrued_owed` and `last_report_acc_e18` is advanced to the current global.
+///
+/// This gives an O(1)-per-holder baseline that is immutable between settlements:
+/// a partial claim or re-claim reads `accrued_owed` directly rather than
+/// re-walking every revenue period.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolderReportAccrual {
+    /// Global `ReportAccPerShareE18` snapshot captured at the last settlement.
+    pub last_report_acc_e18: i128,
+    /// Frozen dividend balance (in the offering's canonical token unit) that
+    /// has been crystallised by previous `set_holder_share` calls.
+    pub accrued_owed: i128,
+}
+
 /// Read-only per-period statement row for a holder.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -1684,6 +1716,27 @@ pub enum DataKey2 {
     /// Ledger timestamp of the last transfer for (offering_id, holder).
     /// Used by the cooldown check to reject premature transfers.
     HolderLastTransferTime(OfferingId, Address),
+
+    // ── Dividend accrual ledger (#div-accrual) ──────────────────────────────
+    //
+    // Report-time global accumulator: advances on every accepted `report_revenue`
+    // call using `(normalized_amount * ACCRUAL_SCALE_E18) / total_share_bps`.
+    // Indexed by `ReportAccPerShareE18` so any holder holding `bps` shares at
+    // report time will eventually receive `delta * bps / SCALE` tokens.
+    //
+    // Per-holder checkpoint: `HolderReportLedger` stores the global accumulator
+    // value at the time the holder's share was last settled together with the
+    // frozen `accrued_owed` balance.  Settled lazily on every `set_holder_share`
+    // call so partial-claim and re-claim computations read a stable baseline
+    // rather than rederiving the full period history on every query.
+    /// Global report-time cumulative accrual per 1 bps of holder share, scaled
+    /// by 1e18.  Monotonically non-decreasing; advanced by `report_revenue` for
+    /// every accepted initial or override report when `total_share_bps > 0`.
+    ReportAccPerShareE18(OfferingId),
+    /// Per-holder checkpoint for the report-time dividend accrual ledger.
+    /// Stores the last-seen global accumulator value and the frozen `accrued_owed`
+    /// balance that was crystallised at the most recent `set_holder_share` call.
+    HolderReportLedger(OfferingId, Address),
 }
 
 /// Maximum number of offerings returned in a single page.
@@ -2563,6 +2616,10 @@ impl RevoraRevenueShare {
             .persistent()
             .set(&DataKey::HolderShare(offering_id.clone(), holder.clone()), &share_bps);
         env.storage().persistent().set(&total_key, &new_total);
+        // Settle report-time accrual before overwriting the old share so that
+        // the frozen `accrued_owed` reflects dividends earned at `old_share`.
+        // This is the O(1) settlement that keeps partial-claim math trivial.
+        Self::settle_holder_report_accrual(env, &offering_id, &holder, old_share);
         Self::record_holder_share_transition(env, &offering_id, &holder, old_share, share_bps);
 
         // Emit regulatory-limit delta for the jurisdiction aggregate.
@@ -2909,6 +2966,118 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .set(&DataKey2::HolderAccrualState(offering_id.clone(), holder.clone()), &state);
+    }
+
+    // ── Report-time dividend accrual ledger helpers ───────────────────────────
+
+    /// Advance the per-offering report-time accrual index after a successful
+    /// `report_revenue` call and emit an `rpt_acc_u` event for indexers.
+    ///
+    /// The delta is `(normalized_amount * ACCRUAL_SCALE_E18) / total_share_bps`.
+    /// When `total_share_bps == 0` or `amount == 0` the index is unchanged (no-op).
+    ///
+    /// # Security
+    /// - Only called from the non-event-only branch of `report_revenue_internal`
+    ///   after the report has been durably written to storage.
+    /// - Uses saturating arithmetic throughout; overflow produces `i128::MAX`
+    ///   rather than a panic or wrap-around.
+    fn advance_report_accrual_index(
+        env: &Env,
+        offering_id: &OfferingId,
+        normalized_amount: i128,
+        period_id: u64,
+    ) {
+        if normalized_amount == 0 {
+            return;
+        }
+        let total_share_bps_key = DataKey::HolderShareTotal(offering_id.clone());
+        let total_share_bps: u32 =
+            env.storage().persistent().get(&total_share_bps_key).unwrap_or(0);
+        if total_share_bps == 0 {
+            return;
+        }
+
+        // delta = normalized_amount * 1e18 / total_share_bps
+        let delta_e18 = normalized_amount
+            .checked_mul(ACCRUAL_SCALE_E18)
+            .unwrap_or(i128::MAX)
+            .checked_div(total_share_bps as i128)
+            .unwrap_or(0);
+
+        if delta_e18 == 0 {
+            return;
+        }
+
+        let key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let next = current.saturating_add(delta_e18);
+        env.storage().persistent().set(&key, &next);
+
+        env.events().publish(
+            (
+                EVENT_REPORT_ACC_UPD,
+                offering_id.issuer.clone(),
+                offering_id.namespace.clone(),
+                offering_id.token.clone(),
+            ),
+            (period_id, next, total_share_bps),
+        );
+    }
+
+    /// Settle a holder's pending dividend from the report-time accrual index
+    /// into their `HolderReportAccrual.accrued_owed` balance.
+    ///
+    /// Must be called **before** `share_bps` is changed so the delta is
+    /// computed against the holder's current (old) share, producing an
+    /// immutable accrual baseline that subsequent partial claims read from.
+    ///
+    /// # Algorithm
+    /// ```text
+    /// pending = (global_report_acc - holder.last_report_acc) * old_share / SCALE
+    /// holder.accrued_owed += pending
+    /// holder.last_report_acc = global_report_acc
+    /// ```
+    ///
+    /// # Idempotency
+    /// If `global_report_acc == holder.last_report_acc` (no new reports since
+    /// the last settlement) the function is a cheap read-only no-op.
+    fn settle_holder_report_accrual(
+        env: &Env,
+        offering_id: &OfferingId,
+        holder: &Address,
+        old_share_bps: u32,
+    ) {
+        let global_key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let global_acc: i128 = env.storage().persistent().get(&global_key).unwrap_or(0);
+
+        let ledger_key = DataKey2::HolderReportLedger(offering_id.clone(), holder.clone());
+        let mut ledger: HolderReportAccrual = env
+            .storage()
+            .persistent()
+            .get(&ledger_key)
+            .unwrap_or(HolderReportAccrual {
+                last_report_acc_e18: global_acc,
+                accrued_owed: 0,
+            });
+
+        if global_acc <= ledger.last_report_acc_e18 || old_share_bps == 0 {
+            // Nothing to settle; advance the checkpoint to current global.
+            ledger.last_report_acc_e18 = global_acc;
+            env.storage().persistent().set(&ledger_key, &ledger);
+            return;
+        }
+
+        let delta_e18 = global_acc.saturating_sub(ledger.last_report_acc_e18);
+        // pending = delta_e18 * old_share_bps / ACCRUAL_SCALE_E18
+        let pending = delta_e18
+            .checked_mul(old_share_bps as i128)
+            .unwrap_or(i128::MAX)
+            .checked_div(ACCRUAL_SCALE_E18)
+            .unwrap_or(0);
+
+        ledger.accrued_owed = ledger.accrued_owed.saturating_add(pending);
+        ledger.last_report_acc_e18 = global_acc;
+        env.storage().persistent().set(&ledger_key, &ledger);
     }
 
     fn normalize_jurisdictions(env: &Env, jurisdictions: Vec<Symbol>) -> Vec<Symbol> {
@@ -5722,6 +5891,22 @@ impl RevoraRevenueShare {
         // and when amount == 0. Rejected duplicates (rv_rej) never reach this point (early return).
         if !event_only {
             Self::update_and_emit_accrual_index(&env, &offering_id, amount, period_id);
+
+            // Advance the report-time dividend accrual ledger (O(1) per report).
+            // Uses the same decimal normalisation as deposit_revenue so amounts are
+            // comparable across both ledgers.  `actual_override` and `actual_initial`
+            // are true only when a report was durably written; both-false paths
+            // (below-threshold, rejected duplicate) already returned early above.
+            if actual_initial || actual_override {
+                let decimals = Self::get_payment_token_decimals(
+                    env.clone(),
+                    offering_id.issuer.clone(),
+                    offering_id.namespace.clone(),
+                    offering_id.token.clone(),
+                );
+                let normalized = Self::normalize_amount(amount, decimals);
+                Self::advance_report_accrual_index(&env, &offering_id, normalized, period_id);
+            }
         }
 
         Ok(())
@@ -12533,6 +12718,84 @@ impl RevoraRevenueShare {
     }
 
     // ââ Fiscal year configuration âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    /// Return the total pending dividend balance for `holder` as recorded by
+    /// the report-time accrual ledger.
+    ///
+    /// This is distinct from `get_holder_accrued_unclaimed` (which uses the
+    /// deposit-time ledger).  The report-time ledger is updated by every
+    /// accepted `report_revenue` call and is settled into a per-holder
+    /// `accrued_owed` checkpoint on every `set_holder_share` call.
+    ///
+    /// ### Formula
+    ///
+    /// ```text
+    /// unsettled = (global_report_acc - holder.last_report_acc) * current_share / SCALE
+    /// total     = holder.accrued_owed + unsettled
+    /// ```
+    ///
+    /// ### Returns
+    ///
+    /// `i128` — the total amount currently pending for this holder across all
+    /// reported (but not necessarily deposited) revenue periods.  Returns `0`
+    /// for blacklisted holders.
+    ///
+    /// ### Gas
+    ///
+    /// O(1) — reads three storage keys regardless of the number of periods.
+    pub fn get_holder_pending_report_accrual(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> i128 {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if Self::is_blacklisted(env.clone(), issuer, namespace, token, holder.clone()) {
+            return 0;
+        }
+
+        let global_key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let global_acc: i128 = env.storage().persistent().get(&global_key).unwrap_or(0);
+
+        let ledger_key = DataKey2::HolderReportLedger(offering_id.clone(), holder.clone());
+        let ledger: HolderReportAccrual = env
+            .storage()
+            .persistent()
+            .get(&ledger_key)
+            .unwrap_or(HolderReportAccrual {
+                last_report_acc_e18: global_acc,
+                accrued_owed: 0,
+            });
+
+        // Unsettled portion since last share-change settlement.
+        let unsettled = if global_acc > ledger.last_report_acc_e18 {
+            let current_share: u32 = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            if current_share == 0 {
+                0
+            } else {
+                let delta = global_acc.saturating_sub(ledger.last_report_acc_e18);
+                delta
+                    .checked_mul(current_share as i128)
+                    .unwrap_or(i128::MAX)
+                    .checked_div(ACCRUAL_SCALE_E18)
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+
+        ledger.accrued_owed.saturating_add(unsettled)
+    }
 
     /// Set the fiscal year start month for an offering.
     ///
