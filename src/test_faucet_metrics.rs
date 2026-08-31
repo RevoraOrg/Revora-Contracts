@@ -26,7 +26,7 @@ use soroban_sdk::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
