@@ -846,7 +846,8 @@ fn assert_schedules_eq(a: &VestingSchedule, b: &VestingSchedule) {
 /// all fields match.
 fn assert_xdr_roundtrip(env: &Env, schedule: &VestingSchedule) {
     let bytes: Bytes = schedule.to_xdr(env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(env, &bytes).unwrap();
+    let decoded: VestingSchedule =
+        VestingSchedule::from_xdr(env, &bytes).expect("valid vesting schedule XDR");
     assert_schedules_eq(schedule, &decoded);
 }
 
@@ -1081,7 +1082,8 @@ fn test_vesting_compute_functions_preserved_after_roundtrip() {
 
     // Round-trip
     let bytes: Bytes = schedule.to_xdr(&env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes).unwrap();
+    let decoded: VestingSchedule =
+        VestingSchedule::from_xdr(&env, &bytes).expect("valid vesting schedule XDR");
 
     // Verify compute_vested at various timestamps
     let test_times = [0u64, 500, 1_000, 2_500, 5_000, 7_500, 10_000, 12_000];
@@ -1149,7 +1151,8 @@ fn test_vesting_compute_with_accelerated_after_roundtrip() {
     );
 
     let bytes: Bytes = schedule.to_xdr(&env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(&env, &bytes).unwrap();
+    let decoded: VestingSchedule =
+        VestingSchedule::from_xdr(&env, &bytes).expect("valid vesting schedule XDR");
 
     // After cliff but before start: only accelerated amount is vested
     let vested_before_start = compute_vested(&schedule, 150);

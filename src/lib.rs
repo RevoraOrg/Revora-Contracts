@@ -393,6 +393,8 @@ mod test_claim_transfer_fail;
 mod test_compute_share_invariants;
 #[cfg(test)]
 mod test_duplicates;
+#[cfg(test)]
+mod test_epoch_boundary_report;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
@@ -420,7 +422,7 @@ mod test_faucet_seed;
 #[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
-mod test_compute_share_decomposition_prop;
+mod test_reg_limit_delta;
 #[cfg(test)]
 mod test_tax_year;
 #[cfg(test)]
@@ -736,12 +738,6 @@ const EVENT_SNAP_FINALIZATION_CONFIG: Symbol = symbol_short!("snap_fnc");
 /// Off-chain indexers can use this event to detect and alert on oversized-proof
 /// submission attempts.  Because the check fires before any hashing, the contract
 /// incurs no additional compute cost from the malicious payload.
-const EVENT_PROOF_REJECT_DEPTH: Symbol = symbol_short!("prf_rej_d");
-const EVENT_FREEZE_OFFERING: Symbol = symbol_short!("frz_off");
-const EVENT_UNFREEZE_OFFERING: Symbol = symbol_short!("ufrz_off");
-const EVENT_PROPOSAL_CREATED: Symbol = symbol_short!("prop_new");
-const EVENT_FREEZE: Symbol = symbol_short!("freeze");
-
 // ── Governance event constants (issue #557, #559) ──
 const EVENT_GOV_PROP_CREATED: Symbol = symbol_short!("gov_new");
 const EVENT_GOV_VOTE_CAST: Symbol = symbol_short!("gov_vote");
@@ -10533,37 +10529,9 @@ impl RevoraRevenueShare {
         }
 
         let mut payouts: Vec<DistributionEntry> = Vec::new(env);
-        // Sort payout rows: highest bounded_bps first, then holder address asc.
-        // Selection sort on the soroban Vec (no alloc available in this crate).
-        let m = payout_rows.len();
-        let mut used: [bool; 256] = [false; 256];
-        for _ in 0..m {
-            let mut best: u32 = u32::MAX;
-            let mut best_bps: u32 = 0;
-            for j in 0..m {
-                if used[j as usize] {
-                    continue;
-                }
-                let row = payout_rows.get(j).unwrap();
-                let better = best == u32::MAX
-                    || row.0 > best_bps
-                    || (row.0 == best_bps
-                        && Self::addr_lt(env, &row.2, &payout_rows.get(best).unwrap().2));
-                if better {
-                    best = j;
-                    best_bps = row.0;
-                }
-            }
-            if best != u32::MAX {
-                used[best as usize] = true;
-                let row = payout_rows.get(best).unwrap();
-                let _ = row.0;
-                payouts.push_back(DistributionEntry {
-                    holder: row.2.clone(),
-                    share_bps: row.1,
-                    normalized_payout: row.3,
-                });
-            }
+        for (bounded_bps, share_bps, holder, normalized_payout) in payout_rows {
+            let _ = bounded_bps;
+            payouts.push_back(DistributionEntry { holder, share_bps, normalized_payout });
         }
 
         PreflightCloseResult {
@@ -15311,7 +15279,6 @@ impl RevoraRevenueShare {
         proof: Vec<BytesN<32>>,
     ) -> Result<bool, RevoraError> {
         use crate::merkle_helpers::verify_merkle_proof as merkle_verify_proof;
-        use crate::MAX_PROOF_DEPTH;
 
         // Depth-bound check with event emission on failure.
         // This mirrors the check inside `merkle_verify_proof` but also emits the
@@ -15815,8 +15782,6 @@ pub fn get_indexer_fixture_topics(
 }
 }
 
-#[cfg(test)]
-mod proptest_helpers;
 #[cfg(test)]
 mod test_deferred_priority;
 #[cfg(test)]

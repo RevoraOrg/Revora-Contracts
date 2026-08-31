@@ -83,11 +83,6 @@ fn setup_offering_with_contract_id(
     (env, client, issuer, offering_token, payment_token, contract_id)
 }
 
-fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
-    let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
-    (env, client, issuer, token, payment_token)
-}
-
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,

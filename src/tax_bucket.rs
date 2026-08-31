@@ -145,7 +145,7 @@ pub fn update_tax_year_accumulator(
     capital_gains: i128,
     return_of_capital: i128,
 ) {
-    let year_key = DataKey3::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
+    let year_key = DataKey2::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
     let mut summary: TaxYearSummary = env
         .storage()
         .persistent()
