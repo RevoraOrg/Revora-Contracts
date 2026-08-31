@@ -247,8 +247,8 @@ proptest! {
 
         prop_assert_eq!(
             actual, expected,
-            "decomposition identity failed: amount={amount}, bps={bps}, mode={mode:?} \
-             → actual={actual}, expected={expected}"
+            "decomposition identity failed: amount={}, bps={}, mode={:?} \
+             → actual={}, expected={}", amount, bps, mode, actual, expected
         );
 
         // Clamp invariant must hold independently of the identity.
@@ -256,8 +256,8 @@ proptest! {
         let hi = core::cmp::max(0_i128, amount);
         prop_assert!(
             actual >= lo && actual <= hi,
-            "clamp invariant violated: amount={amount}, bps={bps}, mode={mode:?}, \
-             result={actual}, expected range=[{lo}, {hi}]"
+            "clamp invariant violated: amount={}, bps={}, mode={:?}, \
+             result={}, expected range=[{}, {}]", amount, bps, mode, actual, lo, hi
         );
     }
 
@@ -289,22 +289,22 @@ proptest! {
             prop_assert_eq!(
                 reconstruction.checked_add(dust).unwrap_or(i128::MAX),
                 product,
-                "rounding dust invariant failed: amount={amount}, bps={bps}, mode={mode:?}, \
-                 result={result}, dust={dust}, product={product}"
+                "rounding dust invariant failed: amount={}, bps={}, mode={:?}, \
+                 result={}, dust={}, product={}", amount, bps, mode, result, dust, product
             );
 
             // |rounding_dust| < 10_000 (unless amount=0 or bps=0, where dust must be 0)
             if amount != 0 && bps != 0 {
                 prop_assert!(
                     dust.abs() < 10_000,
-                    "dust magnitude too large: amount={amount}, bps={bps}, mode={mode:?}, \
-                     dust={dust}"
+                    "dust magnitude too large: amount={}, bps={}, mode={:?}, \
+                     dust={}", amount, bps, mode, dust
                 );
             } else {
                 prop_assert_eq!(
                     dust, 0,
-                    "dust must be zero when amount=0 or bps=0: amount={amount}, bps={bps}, \
-                     mode={mode:?}, dust={dust}"
+                    "dust must be zero when amount=0 or bps=0: amount={}, bps={}, \
+                     mode={:?}, dust={}", amount, bps, mode, dust
                 );
             }
         }
@@ -331,13 +331,13 @@ proptest! {
             prop_assert!(
                 rhu >= trunc,
                 "RoundHalfUp must be >= Truncation for positive amounts: \
-                 amount={amount}, bps={bps}, trunc={trunc}, rhu={rhu}"
+                 amount={}, bps={}, trunc={}, rhu={}", amount, bps, trunc, rhu
             );
         } else if amount < 0 {
             prop_assert!(
                 rhu <= trunc,
                 "RoundHalfUp must be <= Truncation for negative amounts: \
-                 amount={amount}, bps={bps}, trunc={trunc}, rhu={rhu}"
+                 amount={}, bps={}, trunc={}, rhu={}", amount, bps, trunc, rhu
             );
         }
         // When amount == 0, both should be 0.
@@ -361,12 +361,12 @@ proptest! {
         prop_assert!(
             result <= 0,
             "negative amount must produce non-positive result: \
-             amount={amount}, bps={bps}, mode={mode:?}, result={result}"
+             amount={}, bps={}, mode={:?}, result={}", amount, bps, mode, result
         );
         prop_assert!(
             result >= amount,
             "result must not be more negative than amount: \
-             amount={amount}, bps={bps}, mode={mode:?}, result={result}"
+             amount={}, bps={}, mode={:?}, result={}", amount, bps, mode, result
         );
     }
 
@@ -386,7 +386,7 @@ proptest! {
         let result = client.compute_share(&amount, &bps, &mode);
         prop_assert_eq!(
             result, 0,
-            "over-bps guard failed: amount={amount}, bps={bps}, mode={mode:?}, result={result}"
+            "over-bps guard failed: amount={}, bps={}, mode={:?}, result={}", amount, bps, mode, result
         );
     }
 }

@@ -15,7 +15,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let token = Address::generate(env);
     let payout = Address::generate(env);
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
     (issuer, token, payout)
 }
 

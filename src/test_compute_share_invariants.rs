@@ -54,9 +54,17 @@ extern crate alloc;
 use super::*;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use alloc::format;
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{Address, Env, Symbol, testutils::{Address as _, Events as _}};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+
+fn create_payment_token(env: &Env) -> (Address, Address) {
+    let admin = Address::generate(env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    (token, admin)
+}
 
 fn client() -> (Env, RevoraRevenueShareClient<'static>) {
     let env = Env::default();
@@ -655,16 +663,16 @@ fn test_per_class_supply_cap_edge_cases() {
 
     // Setup offering
     client
-        .try_register_offering(
-            &issuer,
-            &namespace,
-            &token,
-            &10_000,
-            &offering_sym,
-            &18,
-            &payout_asset,
-            &0,
-        )
+        .try_register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &namespace,
+        &token,
+        &10_000,
+        &offering_sym,
+        &18,
+        &payout_asset,
+        &0)
         .unwrap();
 
     let holder = Address::generate(&env);
@@ -749,23 +757,24 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
     let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
 
     let issuer = Address::generate(&env);
-    let payment_token = crate::test::create_payment_token(&env).0;
-    let pt_admin = crate::test::create_payment_token(&env).1;
+    let payment_token = create_payment_token(&env).0;
+    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIXTURE A: cap = 0 (unbounded)
     // ─────────────────────────────────────────────────────────────────────────
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("a"),
         &token,
         &5_000,
         &payment_token,
-        &0, // cap = 0 → NO CAP (unlimited issuance)
-        &symbol_short!(""),
         &0,
-    );
+        // cap = 0 → NO CAP (unlimited issuance)
+        &symbol_short!(""),
+        &0);
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIXTURE B: cap = i128::MAX (bounded at max int)
@@ -782,7 +791,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
     );
 
     // Mint sufficient tokens for both fixtures
-    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test 1: Small issuance (100) — both should succeed
@@ -948,23 +957,24 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
     let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
 
     let issuer = Address::generate(&env);
-    let payment_token = crate::test::create_payment_token(&env).0;
-    let pt_admin = crate::test::create_payment_token(&env).1;
+    let payment_token = create_payment_token(&env).0;
+    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
 
     // Register with cap=0 (unlimited)
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("u"),
         &token,
         &5_000,
         &payment_token,
-        &0, // cap = 0
-        &symbol_short!(""),
         &0,
-    );
+        // cap = 0
+        &symbol_short!(""),
+        &0);
 
-    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test sequence: small, medium, large, near-max
@@ -1018,23 +1028,23 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
     let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
 
     let issuer = Address::generate(&env);
-    let payment_token = crate::test::create_payment_token(&env).0;
-    let pt_admin = crate::test::create_payment_token(&env).1;
+    let payment_token = create_payment_token(&env).0;
+    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
 
     // Register with cap=i128::MAX
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("m"),
         &token,
         &5_000,
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
 
-    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test 1: Deposit bringing total to exactly i128::MAX should succeed
@@ -1236,35 +1246,35 @@ fn issue_610_zero_vs_max_error_code_verification() {
     let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
 
     let issuer = Address::generate(&env);
-    let payment_token = crate::test::create_payment_token(&env).0;
-    let pt_admin = crate::test::create_payment_token(&env).1;
+    let payment_token = create_payment_token(&env).0;
+    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
 
     // Fixture A: cap=0
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("z"),
         &token,
         &5_000,
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
 
     // Fixture B: cap=i128::MAX
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("w"),
         &token,
         &5_000,
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
 
-    crate::test::mint_tokens(&env, &payment_token, &pt_admin, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
 
     // Fill fixture B to exactly i128::MAX
     {

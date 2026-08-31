@@ -3,7 +3,7 @@
 use crate::{BlacklistEntryMeta, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::Events,
+    testutils::{Address as _, Events},
     Address, BytesN, Env, Vec,
 };
 
@@ -20,7 +20,7 @@ fn setup_offering(
     ns: &soroban_sdk::Symbol,
 ) {
     client.initialize(issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(issuer, ns, token, &1000u32, token, &0_i128);
+    client.register_offering(issuer, &Vec::new(&env), &1u32, ns, token, &1000u32, token, &0_i128, &symbol_short!(""), &0u32);
 }
 
 /// Helper to create a deterministic 32-byte hash for testing.

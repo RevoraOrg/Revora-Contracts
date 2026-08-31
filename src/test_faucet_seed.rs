@@ -47,7 +47,7 @@ use soroban_sdk::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -69,7 +69,7 @@ fn register_offering(
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
     (issuer, ns, token)
 }
 
@@ -238,7 +238,7 @@ fn faucet_seeds_differ_between_distinct_offerings() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &ns2, &token2, &5_000, &payout2, &0);
+    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
 
     let requester = Address::generate(&env);
     let seeds1 = client.faucet_seed_holders(&requester, &issuer1, &ns1, &token1, &3);
@@ -518,7 +518,7 @@ fn faucet_reset_does_not_affect_other_offerings() {
     let token_b = Address::generate(&env);
     let payout_b = Address::generate(&env);
     let ns_b = symbol_short!("ns2");
-    client.register_offering(&issuer_b, &ns_b, &token_b, &5_000, &payout_b, &0);
+    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &ns_b, &token_b, &5_000, &payout_b, &0, &symbol_short!(""), &0u32);
 
     let requester = Address::generate(&env);
 

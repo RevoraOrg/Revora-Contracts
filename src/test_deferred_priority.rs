@@ -27,16 +27,16 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol,
     let payout_asset = Address::generate(&env);
     let namespace = symbol_short!("ns");
 
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &5000,
         &payout_asset,
         &0,
         &symbol_short!("USD"),
-        &2,
-    );
+        &2);
 
     (env, client, issuer, namespace, token)
 }
@@ -334,16 +334,16 @@ fn queues_are_isolated_per_offering() {
     let token2 = Address::generate(&env);
     let namespace2 = symbol_short!("ns2");
     let payout_asset2 = Address::generate(&env);
-    client.register_offering(
-        &issuer2,
+    client.register_offering(&issuer2,
+        &Vec::new(&env),
+        &1u32,
         &namespace2,
         &token2,
         &3000,
         &payout_asset2,
         &0,
         &symbol_short!("EUR"),
-        &2,
-    );
+        &2);
 
     // Enqueue entries in each offering
     client.enqueue_deferred(&issuer1, &namespace1, &token1, &100, &1, &11);

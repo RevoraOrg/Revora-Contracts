@@ -32,16 +32,16 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
         &payout,
         &0,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
     (env, contract_id, issuer, token, payout)
 }
 

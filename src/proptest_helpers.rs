@@ -23,12 +23,21 @@
 ///         let client = make_client(&env.clone());
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
-///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &symbol_short!(""), &0);
+///         client.register_offering(
+///             &issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &bps,
+///             &token, &0, &symbol_short!(""), &0,
+///         );
 ///     }
 /// }
 /// ```
 
 use proptest::prelude::*;
+extern crate alloc;
+
+use alloc::vec::Vec;
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, Address, Env, Symbol,
+};
 
 /// Return a reproducible shuffled copy of a slice using a deterministic local PRNG.
 /// Useful for regression tests that need to exercise many re-orderings of the same fixture.
@@ -173,7 +182,7 @@ pub enum TestOperation {
 // ── Operation strategies ─────────────────────────────────────────────────────
 
 /// Strategy for a single valid `RegisterOffering` operation.
-pub fn arb_register_offering(, &None) -> impl Strategy<Value = TestOperation> {
+pub fn arb_register_offering() -> impl Strategy<Value = TestOperation> {
     (arb_valid_bps(), 0i128..=1_000_000_000i128)
         .prop_map(|(bps, supply_cap)| TestOperation::RegisterOffering { bps, supply_cap })
 }
@@ -221,7 +230,7 @@ pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
 /// Strategy for any single valid operation (uniform distribution across all variants).
 pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
     prop_oneof![
-        arb_register_offering(, &None),
+        arb_register_offering(),
         arb_report_revenue(),
         arb_deposit_revenue(),
         arb_set_holder_share(),

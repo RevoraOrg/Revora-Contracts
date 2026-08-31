@@ -22,7 +22,7 @@ use crate::{EventIndexTopicV2, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _},
-    Address, Env, IntoVal, Symbol,
+    Address, Env, IntoVal, Symbol, Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
     (env, client, issuer, ns, token, payout)
 }
 
@@ -206,10 +206,10 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
@@ -244,10 +244,10 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2);
     let before = env.events().all().len();
@@ -274,8 +274,8 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
     let payout_a = Address::generate(&env);
     let payout_b = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token_a, &2500, &payout_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer, &ns, &token_b, &2500, &payout_b, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout_a, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout_b, &0, &symbol_short!(""), &0);
 
     let before_a = env.events().all().len();
     client.report_revenue(&issuer, &ns, &token_a, &payout_a, &10_000, &1, &false);

@@ -67,7 +67,7 @@ fn write_offering_classes(
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .set(&DataKey2::OfferingClasses(offering_id), &classes);
+            .set(&DataKey3::OfferingClasses(offering_id), &classes);
     });
 }
 
@@ -90,7 +90,7 @@ fn write_class_share(
         env.storage()
             .persistent()
             .set(
-                &DataKey2::HolderShareClass(offering_id, holder.clone(), sc.clone()),
+                &DataKey3::HolderShareClass(offering_id, holder.clone(), sc.clone()),
                 &bps,
             );
     });
@@ -156,7 +156,7 @@ fn set_share(
     holder: &Address,
     bps: u32,
 ) {
-    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps);
+    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1);
 }
 
 // ── Same-class transfers succeed ──────────────────────────────────────────────

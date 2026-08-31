@@ -66,7 +66,16 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address)
     let token = Address::generate(env);
     let ns = symbol_short!("def");
     let payout = Address::generate(env);
-    client.register_offering(&issuer, &Vec::new(env), &1u32, &ns, &token, &1_000, &payout, &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &Vec::new(env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0);
     (client, issuer, token)
 }
 
@@ -78,7 +87,7 @@ fn set_share(
     holder: &Address,
     bps: u32,
 ) {
-    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps);
+    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1);
 }
 
 /// Read the `HolderShareTotal` for the default offering directly from storage.
@@ -689,9 +698,18 @@ fn share_total_invariant_after_transfer() {
     let to = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    client2.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0);
-    client2.set_holder_share(&issuer, &ns, &token, &from, &4_000);
-    client2.set_holder_share(&issuer, &ns, &token, &to, &2_000);
+    client2.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0);
+    client2.set_holder_share(&issuer, &ns, &token, &from, &4_000, &1);
+    client2.set_holder_share(&issuer, &ns, &token, &to, &2_000, &1);
 
     let total_before = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_before, 6_000);
@@ -1111,12 +1129,30 @@ fn transfer_does_not_affect_other_offerings() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &1_000, &payout, &0);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &1_000, &payout, &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_a,
+        &1_000,
+        &payout,
+        &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_b,
+        &1_000,
+        &payout,
+        &0);
 
     // Set shares in both offerings
-    client.set_holder_share(&issuer, &ns, &token_a, &from, &4_000);
-    client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000);
+    client.set_holder_share(&issuer, &ns, &token_a, &from, &4_000, &1);
+    client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000, &1);
 
     // Transfer on offering A only
     client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &attest(&env),
