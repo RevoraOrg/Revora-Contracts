@@ -203,3 +203,28 @@ pub fn rollover_distribution(
 
     TaxBucketResult { return_of_capital, capital_gains }
 }
+
+/// Taxation bucket for a revenue-share distribution.
+///
+/// Revenue-share distributions have different tax treatments:
+/// - `Ordinary` — ordinary taxable income (dividends, interest, etc.)
+/// - `Capital` — capital gains (profit from sale of securities)
+/// - `ReturnOfCapital` — return of capital (non-taxable distribution)
+/// - `Custom(Symbol)` — a jurisdiction-specific or custom bucket identifier.
+///
+/// The bucket is tagged on `report_revenue` so downstream indexers and tax
+/// engines can categorize each disbursement without out-of-band annotation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaxBucket {
+    Ordinary,
+    Capital,
+    ReturnOfCapital,
+    Custom(Symbol),
+}
+
+impl Default for TaxBucket {
+    fn default() -> Self {
+        TaxBucket::Ordinary
+    }
+}
