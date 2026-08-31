@@ -47,7 +47,7 @@ use soroban_sdk::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -316,12 +316,11 @@ fn faucet_large_count_succeeds() {
     assert_eq!(seeds.len(), 100);
 }
 
-
 // ── faucet_reset helpers ──────────────────────────────────────────────────────
 
 /// Full setup with admin exposed: env + client (testnet enabled) + offering + admin.
-fn setup_with_admin(
-) -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address, Address) {
+fn setup_with_admin() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address, Address)
+{
     let env = Env::default();
     env.mock_all_auths();
     let client = make_client(&env);
@@ -420,10 +419,7 @@ fn faucet_reset_succeeds_with_no_prior_seeds() {
     let seed = make_seed(&env);
 
     let result = client.try_faucet_reset(&admin, &issuer, &ns, &token, &seed);
-    assert!(
-        result.is_ok(),
-        "faucet_reset must succeed even when no seeds have been generated"
-    );
+    assert!(result.is_ok(), "faucet_reset must succeed even when no seeds have been generated");
 }
 
 #[test]
@@ -435,10 +431,7 @@ fn faucet_reset_emits_fct_rst_event() {
     client.faucet_reset(&admin, &issuer, &ns, &token, &seed);
 
     let events = env.events().all();
-    assert!(
-        events.len() > before,
-        "faucet_reset must emit at least one event"
-    );
+    assert!(events.len() > before, "faucet_reset must emit at least one event");
     // Verify the last event has the fct_rst topic.
     let last = events.last().expect("at least one event");
     // The first topic element is the event symbol.
@@ -501,10 +494,7 @@ fn faucet_reset_allows_requester_to_seed_again_without_cooldown_block() {
 
     // Now seed must succeed again.
     let third = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
-    assert!(
-        third.is_ok(),
-        "seed after faucet_reset + elapsed cooldown must succeed"
-    );
+    assert!(third.is_ok(), "seed after faucet_reset + elapsed cooldown must succeed");
 }
 
 #[test]
@@ -550,11 +540,7 @@ fn faucet_reset_does_not_affect_other_offerings() {
 
     // Offering-B can still re-seed (it was not reset).
     let seeds_b_after = client.faucet_seed_holders(&requester_b, &issuer_b, &ns_b, &token_b, &3);
-    assert_eq!(
-        seeds_b_after.len(),
-        3,
-        "offering-B seeds must be unaffected by offering-A reset"
-    );
+    assert_eq!(seeds_b_after.len(), 3, "offering-B seeds must be unaffected by offering-A reset");
 }
 
 #[test]
@@ -590,10 +576,7 @@ fn faucet_reset_seed_param_is_echoed_in_event() {
     // Walk events emitted during this call; find the fct_rst event.
     let new_events = events.slice(before_len as u32..events.len() as u32);
     let found = new_events.iter().any(|(topics, _data)| {
-        topics
-            .get::<soroban_sdk::Symbol>(0)
-            .map(|s| s == symbol_short!("fct_rst"))
-            .unwrap_or(false)
+        topics.get::<soroban_sdk::Symbol>(0).map(|s| s == symbol_short!("fct_rst")).unwrap_or(false)
     });
     assert!(found, "fct_rst event must be emitted by faucet_reset");
 }

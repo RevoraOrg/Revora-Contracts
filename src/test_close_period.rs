@@ -1,5 +1,7 @@
 #![cfg(test)]
 use super::*;
+use crate::proptest_helpers::shuffle_vec_with_seed;
+use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     token, Address, Env,
@@ -82,6 +84,93 @@ fn setup_offering_with_contract_id(
 fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
     (env, client, issuer, token, payment_token)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn close_period_preflight_is_deterministic_across_shuffled_holders(
+        seed in any::<u64>(),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let payment_token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
+        let ns = symbol_short!("ns");
+
+        client.register_offering(
+            &issuer,
+            &Vec::from_array(&env, []),
+            &1u32,
+            &ns,
+            &token,
+            &10_000u32,
+            &payment_token,
+            &0i128,
+            &symbol_short!(""),
+            &0u32,
+        );
+
+        let holder_a = Address::generate(&env);
+        let holder_b = Address::generate(&env);
+        let holder_c = Address::generate(&env);
+        let holder_d = Address::generate(&env);
+        let holder_e = Address::generate(&env);
+
+        client.set_holder_share(&issuer, &ns, &token, &holder_a, &3_000u32);
+        client.set_holder_share(&issuer, &ns, &token, &holder_b, &2_500u32);
+        client.set_holder_share(&issuer, &ns, &token, &holder_c, &1_500u32);
+        client.set_holder_share(&issuer, &ns, &token, &holder_d, &1_000u32);
+        client.set_holder_share(&issuer, &ns, &token, &holder_e, &2_000u32);
+
+        mint(&env, &payment_token, &issuer, 10_000_000);
+        client.deposit_revenue(&issuer, &ns, &token, &payment_token, &10_000_000i128, &1u64);
+
+        let base_holders = std::vec![
+            holder_a.clone(),
+            holder_b.clone(),
+            holder_c.clone(),
+            holder_d.clone(),
+            holder_e.clone(),
+            holder_a.clone(),
+        ];
+
+        let mut baseline: Option<PreflightCloseResult> = None;
+        for iteration in 0..512u64 {
+            let shuffled = shuffle_vec_with_seed(&base_holders, seed.wrapping_add(iteration));
+            let mut soroban_holders = Vec::new(&env);
+            for holder in shuffled.iter() {
+                soroban_holders.push_back(holder.clone());
+            }
+
+            let result = RevoraRevenueShare::preflight_close_period(
+                env.clone(),
+                OfferingId {
+                    issuer: issuer.clone(),
+                    namespace: ns.clone(),
+                    token: token.clone(),
+                },
+                1u64,
+                soroban_holders,
+            )
+            .unwrap();
+
+            if let Some(ref expected) = baseline {
+                prop_assert_eq!(result.payouts, expected.payouts);
+                prop_assert_eq!(result.total_distributed, expected.total_distributed);
+            } else {
+                baseline = Some(result);
+            }
+        }
+    }
 }
 
 #[test]

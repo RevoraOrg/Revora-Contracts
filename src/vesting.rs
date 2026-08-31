@@ -62,6 +62,7 @@ pub struct VestingSchedule {
     pub end_ts: u64,
     pub curve: VestingCurve,
     pub accelerated_amount: i128,
+    pub cliff_secs: u64,
 }
 
 /// Errors produced by the vesting module.
@@ -87,6 +88,8 @@ pub enum VestingError {
     AlreadyAccelerated = 107,
     /// Acceleration bps must not exceed 10000.
     InvalidAccelerationBps = 108,
+    /// Vesting cliff period has not been reached yet.
+    VestingCliffNotReached = 109,
 }
 
 /// Shared schema version for vesting events.
@@ -113,6 +116,7 @@ impl VestingContract {
         start_ts: u64,
         end_ts: u64,
         curve: VestingCurve,
+        cliff_secs: u64,
     ) -> Result<(), VestingError> {
         issuer.require_auth();
 
@@ -161,7 +165,9 @@ impl VestingContract {
             cliff_ts,
             start_ts,
             end_ts,
+            curve,
             accelerated_amount: 0,
+            cliff_secs,
         };
         env.storage().persistent().set(&key, &schedule);
         env.storage().persistent().set(&VestingKey::Claimed(beneficiary.clone()), &0_i128);
@@ -232,6 +238,9 @@ impl VestingContract {
         let already_claimed: i128 = env.storage().persistent().get(&claimed_key).unwrap_or(0_i128);
 
         let now = env.ledger().timestamp();
+        if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
+            return Err(VestingError::VestingCliffNotReached);
+        }
         if now < schedule.cliff_ts {
             return Err(VestingError::NothingToClaimYet);
         }
@@ -293,10 +302,11 @@ impl VestingContract {
         holder: Address,
         at_ts: u64,
     ) -> u32 {
-        let schedule: VestingSchedule = match env.storage().persistent().get(&VestingKey::Schedule(holder)) {
-            Some(s) => s,
-            None => return 0,
-        };
+        let schedule: VestingSchedule =
+            match env.storage().persistent().get(&VestingKey::Schedule(holder)) {
+                Some(s) => s,
+                None => return 0,
+            };
 
         if schedule.issuer != offering_id.issuer || schedule.token != offering_id.token {
             return 0;
@@ -408,6 +418,10 @@ pub fn migrate_offering_schedules(
 
 /// Helper: compute total vested tokens at a given timestamp.
 fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
+    if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
+        return 0;
+    }
+
     let base_vested = match &schedule.curve {
         VestingCurve::Graded(milestones) => {
             if now < schedule.cliff_ts {
