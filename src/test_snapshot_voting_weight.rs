@@ -37,16 +37,16 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &5_000,
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
 
     (env, client, issuer, token)

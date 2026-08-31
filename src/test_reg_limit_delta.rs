@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -14,16 +14,16 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
     let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(env, &payout).mint(&admin, &1_000_000);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(
-        &admin,
+    client.register_offering(&admin,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
         &1_000,
         &payout,
         &0,
         &symbol_short!(""),
-        &0,
-    );
+        &0);
     (client, admin, token, payout)
 }
 
@@ -78,7 +78,7 @@ fn test_reg_limit_delta_emitted_on_set_holder_share() {
     set_jurisdiction(&client, &issuer, &token, &holder, symbol_short!("us"));
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 1, "exactly one reg_limit_delta event expected");
@@ -98,10 +98,10 @@ fn test_reg_limit_delta_emitted_on_zeroing_share() {
     let holder = Address::generate(&env);
 
     set_jurisdiction(&client, &issuer, &token, &holder, symbol_short!("us"));
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1);
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 1);
@@ -119,7 +119,7 @@ fn test_no_reg_limit_delta_without_jurisdiction() {
     let holder = Address::generate(&env);
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 0, "no reg_limit_delta without jurisdiction");
@@ -136,7 +136,7 @@ fn test_reg_limit_delta_on_transfer_different_jurisdictions() {
     set_jurisdiction(&client, &issuer, &token, &from, symbol_short!("us"));
     set_jurisdiction(&client, &issuer, &token, &to, symbol_short!("sg"));
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
     client.transfer_with_attestation(
@@ -178,7 +178,7 @@ fn test_reg_limit_delta_on_transfer_same_jurisdiction() {
     set_jurisdiction(&client, &issuer, &token, &from, symbol_short!("us"));
     set_jurisdiction(&client, &issuer, &token, &to, symbol_short!("us"));
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
     client.transfer_with_attestation(
@@ -225,9 +225,9 @@ fn test_reg_limit_delta_multiple_holders_multiple_jurisdictions() {
     set_jurisdiction(&client, &issuer, &token, &holder_sg, symbol_short!("sg"));
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_us1, &3_000);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_us2, &2_000);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_sg, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_us1, &3_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_us2, &2_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_sg, &5_000, &1);
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 3);
@@ -255,7 +255,7 @@ fn test_transfer_from_no_jurisdiction_to_jurisdiction() {
 
     set_jurisdiction(&client, &issuer, &token, &to, symbol_short!("us"));
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
     client.transfer_with_attestation(
@@ -286,7 +286,7 @@ fn test_transfer_both_no_jurisdiction_no_events() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
     client.transfer_with_attestation(
@@ -313,7 +313,7 @@ fn test_reg_limit_delta_event_data_shape() {
     set_jurisdiction(&client, &issuer, &token, &holder, symbol_short!("uk"));
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1);
 
     let all = env.events().all();
     for i in before..all.len() {
@@ -364,10 +364,10 @@ fn set_holder_share_reg_limit_delta_gas_budget() {
     set_jurisdiction(&client, &issuer, &token, &holder, symbol_short!("us"));
 
     let cpu_before = env.budget().cpu_instruction_cost();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for set_holder_share (with reg_limit_delta): {}", cost);
+    // std::println!("CPU cost for set_holder_share (with reg_limit_delta): {}", cost);
     assert!(
         cost <= REG_LIMIT_DELTA_GAS_BUDGET,
         "Gas budget exceeded: {} > {}",
@@ -386,7 +386,7 @@ fn transfer_reg_limit_delta_gas_budget() {
 
     set_jurisdiction(&client, &issuer, &token, &from, symbol_short!("us"));
     set_jurisdiction(&client, &issuer, &token, &to, symbol_short!("sg"));
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let cpu_before = env.budget().cpu_instruction_cost();
     client.transfer_with_attestation(
@@ -400,7 +400,7 @@ fn transfer_reg_limit_delta_gas_budget() {
     );
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for transfer (2 reg_limit_delta events): {}", cost);
+    // std::println!("CPU cost for transfer (2 reg_limit_delta events): {}", cost);
     assert!(
         cost <= TRANSFER_REG_LIMIT_DELTA_GAS_BUDGET,
         "Gas budget exceeded: {} > {}",
@@ -417,10 +417,10 @@ fn set_holder_share_no_jurisdiction_gas_budget() {
     let holder = Address::generate(&env);
 
     let cpu_before = env.budget().cpu_instruction_cost();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
-    std::println!("CPU cost for set_holder_share (no jurisdiction): {}", cost);
+    // std::println!("CPU cost for set_holder_share (no jurisdiction): {}", cost);
     // The no-jurisdiction path skips reg_limit_delta entirely, so it should be cheaper
     assert!(
         cost <= REG_LIMIT_DELTA_GAS_BUDGET,

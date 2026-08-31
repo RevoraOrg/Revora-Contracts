@@ -43,7 +43,7 @@ fn setup() -> Ctx {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2_500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2_500, &payout, &0, &symbol_short!(""), &0u32);
     Ctx { env, client, admin, issuer, ns, token, payout }
 }
 
@@ -156,7 +156,7 @@ fn fee_plus_holder_aggregate_at_exactly_10000_is_allowed() {
     let holder = Address::generate(&c.env);
 
     // Aggregate holder share = 7_000; fee 3_000 → sum exactly 10_000 bps.
-    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000);
+    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000, &1);
     c.client.set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &3_000, &treasury);
 
     let model = c.client.get_offering_platform_fee(&c.issuer, &c.ns, &c.token);
@@ -170,7 +170,7 @@ fn fee_plus_holder_aggregate_over_10000_is_rejected() {
     let holder = Address::generate(&c.env);
 
     // Aggregate holder share = 7_000; fee 3_001 → sum 10_001 bps → rejected.
-    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000);
+    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000, &1);
     let res = c.client.try_set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &3_001, &treasury);
     assert_eq!(res, Err(Ok(RevoraError::FeeExceedsHolderShare)));
 

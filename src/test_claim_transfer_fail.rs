@@ -234,7 +234,7 @@ fn setup_claim_fail() -> (
         &symbol_short!(""),
         &0,
     );
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1);
 
     // Mint to issuer and deposit — transfer direction is issuer→contract, not yet failing
     fail_token.mint(&issuer, &1_000_000);
@@ -404,8 +404,8 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
 
     let holder2 = Address::generate(&env);
     // Give holder2 a share (adjust holder1 to 50% too)
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder2, &5_000);
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder2, &5_000, &1);
 
     // Deposit period 2 while fail mode is temporarily off
     let dummy = Address::generate(&env);
@@ -447,17 +447,17 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (token_b_id, token_b) = deploy_failing_token(&env);
     token_b.mint(&issuer, &1_000_000);
 
-    revora.register_offering(
-        &issuer,
+    revora.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
         &token_b_id,
         &0,
         &symbol_short!(""),
-        &0,
-    );
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
+        &0);
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000, &1);
 
     // Mint payout tokens to the issuer so they can deposit revenue
     soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);

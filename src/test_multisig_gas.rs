@@ -29,7 +29,7 @@
 //!
 //! ## Budget measurement
 //!
-//! `env.budget().cpu_instruction_count()` and `env.budget().mem_bytes_count()`
+//! `env.budget().cpu_instruction_cost()` and `env.budget().mem_bytes_count()`
 //! return cumulative totals since env creation. Tests snapshot the counters
 //! before and after `execute_action` to isolate the delta for that call.
 //!

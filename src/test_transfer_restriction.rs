@@ -21,7 +21,7 @@ fn setup_test() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Ad
     let namespace = symbol_short!("ns");
 
     client.initialize(&admin, &None, &None);
-    client.register_offering(&issuer, &namespace, &token, &10_000, &payout_asset, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
 
     (env, client, admin, issuer, token, namespace)
 }
@@ -79,15 +79,15 @@ fn test_counter_decrements_on_zero_share() {
     client.set_holder_category(&admin, &holder2, &category);
 
     // Add holder1, count should be 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // Remove holder1, count should be 0
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &0);
+    client.set_holder_share(&issuer, &namespace, &token, &holder1, &0, &1);
     assert_eq!(client.get_category_holder_count(&category), 0);
 
     // Add holder2, should succeed, count should be 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder2, &100);
+    client.set_holder_share(&issuer, &namespace, &token, &holder2, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 }
 
@@ -101,19 +101,19 @@ fn test_holder_share_oscillation() {
     client.set_holder_category(&admin, &holder, &category);
 
     // 0 -> 100: count becomes 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &100);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // 100 -> 200: count remains 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &200);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &200, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // 200 -> 0: count becomes 0
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &0);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &0, &1);
     assert_eq!(client.get_category_holder_count(&category), 0);
 
     // 0 -> 50: count becomes 1 again
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &50);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &50, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 }
 
@@ -125,25 +125,25 @@ fn test_multiple_offerings_single_holder() {
 
     let token2 = Address::generate(&env);
     let payout_asset2 = Address::generate(&env);
-    client.register_offering(&issuer, &namespace, &token2, &10_000, &payout_asset2, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token2, &10_000, &payout_asset2, &0, &symbol_short!(""), &0u32);
 
     client.set_transfer_restriction(&admin, &category, &1);
     client.set_holder_category(&admin, &holder, &category);
 
     // Add to offering 1: count becomes 1
-    client.set_holder_share(&issuer, &namespace, &token1, &holder, &100);
+    client.set_holder_share(&issuer, &namespace, &token1, &holder, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // Add to offering 2: count remains 1
-    client.set_holder_share(&issuer, &namespace, &token2, &holder, &100);
+    client.set_holder_share(&issuer, &namespace, &token2, &holder, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // Remove from offering 1: count remains 1
-    client.set_holder_share(&issuer, &namespace, &token1, &holder, &0);
+    client.set_holder_share(&issuer, &namespace, &token1, &holder, &0, &1);
     assert_eq!(client.get_category_holder_count(&category), 1);
 
     // Remove from offering 2: count becomes 0
-    client.set_holder_share(&issuer, &namespace, &token2, &holder, &0);
+    client.set_holder_share(&issuer, &namespace, &token2, &holder, &0, &1);
     assert_eq!(client.get_category_holder_count(&category), 0);
 }
 
@@ -158,7 +158,7 @@ fn test_unrestricted_category_holder() {
     client.set_holder_category(&admin, &holder, &unrestricted_cat);
 
     // Should succeed as holder is not in a restricted category
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &100);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &100, &1);
     assert_eq!(client.get_category_holder_count(&restricted_cat), 0);
     assert_eq!(client.get_category_holder_count(&unrestricted_cat), 0); // Not tracked
 }
@@ -172,7 +172,7 @@ fn test_holder_with_no_category() {
     client.set_transfer_restriction(&admin, &category, &1);
 
     // Holder has no category, should succeed
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &100);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &100, &1);
     assert_eq!(client.get_category_holder_count(&category), 0);
 }
 
@@ -182,8 +182,8 @@ fn test_setting_share_to_zero_for_uncategorized_holder() {
     let holder = Address::generate(&env);
 
     // Give a share, then remove it. Should not panic or error.
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &100);
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &0);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &100, &1);
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &0, &1);
 
     // Check that no counters were affected
     let any_category = symbol_short!("any");

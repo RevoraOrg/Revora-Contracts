@@ -21,7 +21,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol, Vec};
 
 use crate::{
     EventIndexTopicV2, EventIndexTopicV3, RevoraRevenueShare, RevoraRevenueShareClient, VoteChoice,
@@ -40,7 +40,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
     (env, client, issuer, ns, token, payout)
 }
 
@@ -205,7 +205,7 @@ fn vote_v3_carries_correct_weight_from_snapshot() {
     let voter = Address::generate(&env);
 
     // Set holder share and commit snapshot so the weight is pinned.
-    client.set_holder_share(&issuer, &ns, &token, &voter, &3000_u32);
+    client.set_holder_share(&issuer, &ns, &token, &voter, &3000_u32, &1);
     let snapshot_ref: u64 = 1;
     client.apply_snapshot_shares(
         &issuer,
@@ -303,7 +303,7 @@ fn register_offering_emits_v2_and_v3_indexed_events() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
     let events = env.events().all();
 
     assert!(events.len() > before + 2, "expected at least 3 events (offer_reg, ev_idx2, ev_idx3)");
@@ -325,7 +325,7 @@ fn report_revenue_emits_v2_and_v3_indexed_events() {
 #[test]
 fn claim_emits_v2_and_v3_indexed_events() {
     let (env, client, issuer, ns, token, payout) = setup();
-    client.set_holder_share(&issuer, &ns, &token, &issuer, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &issuer, &10_000, &1);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &1_000, &1);
 
     let before = env.events().all().len();
@@ -371,7 +371,7 @@ fn v2_and_v3_fixtures_have_parallel_structure() {
 fn v2_only_subscribers_still_receive_v2_events() {
     let (env, client, issuer, token, ns, payout) = setup();
 
-    client.register_offering(&issuer, &ns, &token, &1_000, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
 
     // V2 events are still emitted alongside V3
     let events = env.events().all();
@@ -430,7 +430,7 @@ fn report_revenue_event_emission_gas_budget() {
         let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &false);
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
-        std::println!("CPU cost without v2 compat: {}", cost);
+        // std::println!("CPU cost without v2 compat: {}", cost);
         assert!(
             cost <= EVENT_EMISSION_GAS_BUDGET,
             "Gas budget exceeded: {} > {}",
@@ -446,7 +446,7 @@ fn report_revenue_event_emission_gas_budget() {
         let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &true);
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
-        std::println!("CPU cost with v2 compat: {}", cost);
+        // std::println!("CPU cost with v2 compat: {}", cost);
         assert!(
             cost <= EVENT_EMISSION_GAS_BUDGET,
             "Gas budget exceeded: {} > {}",
