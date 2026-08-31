@@ -20,7 +20,7 @@ use crate::merkle_helpers::{
 };
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, testutils::BytesN as _, Address, BytesN, Env, Vec,
+    symbol_short, testutils::Address as _, testutils::BytesN as _, testutils::Events as _, Address, BytesN, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ fn helper_proof_depth_zero_accepted() {
 #[test]
 fn contract_proof_at_max_depth_ok_true() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let (leaf, root, proof) = build_proof_chain(&env, MAX_PROOF_DEPTH);
 
@@ -224,7 +224,7 @@ fn contract_proof_at_max_depth_ok_true() {
 #[test]
 fn contract_valid_depth_wrong_root_ok_false() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let holder = Address::generate(&env);
     let leaf = make_leaf_hash(&env, &holder, 5_000);
@@ -239,7 +239,7 @@ fn contract_valid_depth_wrong_root_ok_false() {
 #[test]
 fn contract_proof_one_over_max_depth_err_proof_too_deep() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let leaf = BytesN::random(&env);
     let root = BytesN::random(&env);
@@ -257,7 +257,7 @@ fn contract_proof_one_over_max_depth_err_proof_too_deep() {
 #[test]
 fn contract_proof_depth_100_err_proof_too_deep() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let leaf = BytesN::random(&env);
     let root = BytesN::random(&env);
@@ -278,7 +278,7 @@ fn contract_proof_depth_100_err_proof_too_deep() {
 #[test]
 fn contract_oversized_proof_emits_proof_reject_depth_event() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let leaf = BytesN::random(&env);
     let root = BytesN::random(&env);
@@ -303,7 +303,7 @@ fn contract_oversized_proof_emits_proof_reject_depth_event() {
 #[test]
 fn contract_valid_depth_proof_no_reject_event() {
     let env = make_env();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let (leaf, root, proof) = build_proof_chain(&env, MAX_PROOF_DEPTH);
 

@@ -105,7 +105,7 @@ pub enum TransferError {
 /// - `caller == storage.offering.issuer` (issuer auth).
 /// - `new_issuer != 0` (valid address).
 /// - `new_issuer != caller` (self-transfer would be a no-op / not useful; contract
-///    allows it but we model the general case).
+///   allows it but we model the general case).
 pub fn model_propose(
     storage: &mut StorageModel,
     caller: AddrId,

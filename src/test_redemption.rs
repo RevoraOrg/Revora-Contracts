@@ -27,15 +27,17 @@ fn setup_offering(
     let payment_token = env.register_stellar_asset_contract_v2(payment_admin.clone());
     let holder = Address::generate(env);
 
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &1_000,
         &payment_token.address(),
         &0,
-    );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000);
+        &symbol_short!(""),
+        &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
 
     // Mint to issuer, then deposit revenue so contract has a balance
     token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &1_000_000);
@@ -335,7 +337,7 @@ fn request_redemption_duplicate() {
 fn request_redemption_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
@@ -452,7 +454,7 @@ fn fulfill_redemption_zero_share() {
     client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
 
     // Clear holder share before fulfill
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0, &1);
 
     let result = client.try_fulfill_redemption(
         &issuer,
@@ -550,7 +552,7 @@ fn fulfill_redemption_non_issuer_rejected() {
 fn redemption_events_emitted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
@@ -560,15 +562,17 @@ fn redemption_events_emitted() {
     let payment_token = env.register_stellar_asset_contract_v2(payment_admin.clone());
     let holder = Address::generate(&env);
 
-    client.register_offering(
-        &issuer,
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token,
         &1_000,
         &payment_token.address(),
         &0,
-    );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000);
+        &symbol_short!(""),
+        &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
     token::StellarAssetClient::new(&env, &payment_token.address()).mint(&issuer, &1_000_000);
     client.deposit_revenue(
         &issuer,

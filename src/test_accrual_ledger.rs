@@ -22,7 +22,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let payout_asset = crate::test_utils::create_token(&env, &payout_asset_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0u32);
 
     (env, client, issuer, token, payout_asset)
 }
@@ -38,10 +38,10 @@ fn claim_uses_historical_share_for_unclaimed_periods() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
@@ -53,9 +53,9 @@ fn zeroing_share_does_not_burn_already_accrued_claims() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1);
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
     assert_eq!(payout, 50_000);
@@ -66,9 +66,9 @@ fn get_claimable_uses_historical_share_schedule() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
     assert_eq!(client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder), 50_000);
@@ -80,12 +80,12 @@ fn delay_barrier_preserves_pre_change_accrual() {
     let holder = Address::generate(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     env.ledger().with_mut(|li| li.timestamp = 1_050);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
     env.ledger().with_mut(|li| li.timestamp = 1_100);
@@ -106,7 +106,7 @@ fn checkpoint_compression_folds_schedule_when_threshold_exceeded() {
     // We need more than CHECKPOINT_THRESHOLD_SMALL transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 1_000 + (i as u32 * 100);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
@@ -124,7 +124,7 @@ fn checkpoint_compression_is_lossless_for_claimable_computation() {
     let mut expected_total = 0_i128;
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 1_000 + (i as u32 * 100);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
         expected_total += 10_000 * (share as i128) / 10_000;
     }
@@ -141,7 +141,7 @@ fn checkpoint_compression_lossless_multiple_claims_before_and_after_fold() {
     // Create enough share transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = if i <= CHECKPOINT_THRESHOLD_SMALL { 3_000 } else { 7_000 };
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
@@ -158,7 +158,7 @@ fn checkpoint_threshold_exactly_reached_then_claim() {
 
     // Create exactly threshold share transitions
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500));
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500), &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &5_000, &i);
     }
 
@@ -176,7 +176,7 @@ fn checkpoint_claim_between_two_folds() {
     // Create enough transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 2_000 + (i as u32 * 200);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
@@ -217,7 +217,7 @@ fn checkpoint_compression_preserves_claimable_after_partial_claim_then_compressi
 
     // Create many share changes to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300));
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300), &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
@@ -244,7 +244,7 @@ fn checkpoint_compression_with_zero_threshold_disables_compression() {
 
     // Even with many share changes, no compression should happen
     for i in 1..=10 {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100));
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100), &1);
         client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
     }
 
@@ -270,7 +270,7 @@ fn accrued_unclaimed_returns_zero_for_blacklisted_holder() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     client.blacklist_add(&issuer, &symbol_short!("def"), &token, &holder);
@@ -286,7 +286,7 @@ fn accrued_unclaimed_matches_claimable_for_single_period() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     let accrued = client.get_holder_accrued_unclaimed(
@@ -302,9 +302,9 @@ fn accrued_unclaimed_matches_claimable_after_share_change() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
     let accrued = client.get_holder_accrued_unclaimed(
@@ -333,7 +333,7 @@ fn accrued_unclaimed_respects_partial_claim() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
 
@@ -357,7 +357,7 @@ fn accrued_unclaimed_after_full_claim_returns_zero() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
 
     client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
@@ -373,9 +373,9 @@ fn accrued_unclaimed_zero_share_does_not_erase_past_accrual() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1);
 
     let accrued = client.get_holder_accrued_unclaimed(
         &issuer, &symbol_short!("def"), &token, &holder,
@@ -388,9 +388,9 @@ fn accrued_unclaimed_matches_claimable_after_partial_claim_with_share_change() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
 
