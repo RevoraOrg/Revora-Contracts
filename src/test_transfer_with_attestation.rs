@@ -225,7 +225,7 @@ fn zero_shares_rejected() {
 fn unknown_offering_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let from = Address::generate(&env);
@@ -686,7 +686,7 @@ fn minimum_granularity_one_bps() {
 fn share_total_invariant_after_transfer() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     // Re-create with a known contract_id so we can inspect storage
     let client2 = RevoraRevenueShareClient::new(&env, &contract_id);
@@ -1119,7 +1119,7 @@ fn multiple_transfers_from_same_holder() {
 fn transfer_does_not_affect_other_offerings() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);

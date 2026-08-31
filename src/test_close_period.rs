@@ -243,7 +243,7 @@ fn close_period_zero_period_id_rejected() {
 fn close_period_unknown_offering_returns_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -497,7 +497,7 @@ fn setup_dual_sig_offering(
 #[test]
 fn set_dual_sig_config_enables_mode() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Single-sig close_period should now fail with DualSigNotConfigured.
@@ -508,7 +508,7 @@ fn set_dual_sig_config_enables_mode() {
 #[test]
 fn close_period_dual_sig_happy_path() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
@@ -520,7 +520,7 @@ fn close_period_dual_sig_happy_path() {
 #[test]
 fn close_period_dual_sig_same_signer_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Both sig_a and sig_b are the issuer — must be rejected.
@@ -533,7 +533,7 @@ fn close_period_dual_sig_same_signer_rejected() {
 fn close_period_dual_sig_not_configured() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let co_issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -563,7 +563,7 @@ fn close_period_dual_sig_not_configured() {
 fn close_period_dual_sig_unauthorized_signer_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     let attacker = Address::generate(&env);
@@ -576,7 +576,7 @@ fn close_period_dual_sig_unauthorized_signer_rejected() {
 #[test]
 fn close_period_dual_sig_emits_event() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     env.ledger().with_mut(|l| l.timestamp = 2_000);
@@ -590,7 +590,7 @@ fn close_period_dual_sig_emits_event() {
 #[test]
 fn close_period_dual_sig_double_close_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // First close succeeds.
@@ -604,7 +604,7 @@ fn close_period_dual_sig_double_close_rejected() {
 #[test]
 fn close_period_dual_sig_zero_period_id_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &0, &issuer, &co_issuer);
@@ -615,7 +615,7 @@ fn close_period_dual_sig_zero_period_id_rejected() {
 fn close_period_dual_sig_unknown_offering_returns_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let co_issuer = Address::generate(&env);
     let token = Address::generate(&env);

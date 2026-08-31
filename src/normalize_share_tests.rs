@@ -15,7 +15,7 @@ fn make_client(env: &Env) -> crate::RevoraRevenueShareClient<'_> {
 fn decimals_bounds_and_default() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -51,7 +51,7 @@ fn decimals_bounds_and_default() {
 #[test]
 fn normalize_and_compute_integration() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     // 6-decimal
     let n6 = client.normalize_amount(&1_000_000_i128, &6u32).unwrap();
@@ -75,7 +75,7 @@ fn normalize_and_compute_integration() {
 #[test]
 fn normalize_overflow_and_zero() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     for d in 0..=crate::MAX_TOKEN_DECIMALS {
         assert_eq!(client.normalize_amount(&0_i128, &d).unwrap(), 0_i128);
@@ -93,7 +93,7 @@ fn normalize_overflow_and_zero() {
 #[test]
 fn compute_share_edgecases() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let s = client.compute_share(&1_000_000_i128, &10_001u32, &RoundingMode::Truncation);
     assert_eq!(s, 0_i128);

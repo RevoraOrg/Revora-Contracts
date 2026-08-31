@@ -102,7 +102,7 @@ proptest! {
         let ns = symbol_short!("def");
 
         setup_offering(&env, &issuer, &token, &ns);
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
 
         // Prebuild a stable pool of 256 addresses.
         // Duplicates/overlaps are intentionally produced because u8 values are mapped by index.

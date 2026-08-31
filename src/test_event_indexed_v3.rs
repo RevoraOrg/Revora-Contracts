@@ -430,7 +430,7 @@ fn report_revenue_event_emission_gas_budget() {
         let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &false);
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
-        std::println!("CPU cost without v2 compat: {}", cost);
+        // std::println!("CPU cost without v2 compat: {}", cost);
         assert!(
             cost <= EVENT_EMISSION_GAS_BUDGET,
             "Gas budget exceeded: {} > {}",
@@ -446,7 +446,7 @@ fn report_revenue_event_emission_gas_budget() {
         let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &true);
         let cpu_after = env.budget().cpu_instruction_cost();
         let cost = cpu_after - cpu_before;
-        std::println!("CPU cost with v2 compat: {}", cost);
+        // std::println!("CPU cost with v2 compat: {}", cost);
         assert!(
             cost <= EVENT_EMISSION_GAS_BUDGET,
             "Gas budget exceeded: {} > {}",

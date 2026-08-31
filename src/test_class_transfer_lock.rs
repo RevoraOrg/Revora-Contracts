@@ -608,7 +608,7 @@ fn no_classes_configured_still_allows_transfers() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_network_id([0x01u8; 32]);
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");

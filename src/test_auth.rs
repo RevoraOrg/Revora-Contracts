@@ -118,7 +118,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
 #[ignore = "not-admin check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn pause_admin_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (admin, _safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     let attacker = Address::generate(&env);
@@ -132,7 +132,7 @@ fn pause_admin_unauthorized() {
 #[ignore = "not-admin check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn unpause_admin_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (admin, _safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     client.pause_admin(&admin);
@@ -147,7 +147,7 @@ fn unpause_admin_unauthorized() {
 #[ignore = "not-safety check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn pause_safety_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     let attacker = Address::generate(&env);
@@ -161,7 +161,7 @@ fn pause_safety_unauthorized() {
 #[ignore = "not-safety check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn unpause_safety_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     client.pause_safety(&safety);
@@ -181,7 +181,7 @@ fn unpause_safety_unauthorized() {
 #[test]
 fn set_admin_missing_auth() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     assert!(client.try_set_admin(&admin).is_err());
     assert!(client.get_admin().is_none());
@@ -192,7 +192,7 @@ fn set_admin_missing_auth() {
 fn set_admin_success() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.set_admin(&admin);
     assert_eq!(client.get_admin(), Some(admin));
@@ -205,7 +205,7 @@ fn set_admin_success() {
 fn set_admin_twice_returns_limit_reached() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.set_admin(&admin);
 
@@ -227,7 +227,7 @@ fn set_admin_twice_returns_limit_reached() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn set_testnet_mode_missing_auth() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_set_testnet_mode(&true).is_err());
     assert!(!client.is_testnet_mode());
@@ -238,7 +238,7 @@ fn set_testnet_mode_missing_auth() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn set_platform_fee_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_set_platform_fee(&1_000).is_err());
     assert_eq!(client.get_platform_fee(), 0);
@@ -249,7 +249,7 @@ fn set_platform_fee_missing_auth_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn freeze_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_freeze().is_err());
     assert!(!client.is_frozen());
@@ -260,7 +260,7 @@ fn freeze_missing_auth_no_mutation() {
 #[test]
 fn freeze_offering_wrong_caller_returns_not_authorized() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // setup_offering calls mock_all_auths, inherited for the whole test.
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
@@ -278,7 +278,7 @@ fn freeze_offering_wrong_caller_returns_not_authorized() {
 fn freeze_offering_nonexistent_returns_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.set_admin(&issuer);
@@ -293,7 +293,7 @@ fn freeze_offering_nonexistent_returns_offering_not_found() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn freeze_offering_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, _safety) = init_admin_safety(&env, &client);
     let (issuer, token) = setup_offering(&env, &client);
 
@@ -312,7 +312,7 @@ fn freeze_offering_missing_auth_no_mutation() {
 #[test]
 fn unfreeze_offering_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (admin, _safety) = init_admin_safety(&env, &client);
     // setup_offering enables mock_all_auths for the rest of this test.
     let (issuer, token) = setup_offering(&env, &client);
@@ -336,7 +336,7 @@ fn unfreeze_offering_missing_auth_no_mutation() {
 #[test]
 fn unfreeze_offering_by_issuer_succeeds() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (_admin, _safety) = init_admin_safety(&env, &client);
     let (issuer, token) = setup_offering(&env, &client);
 
@@ -361,7 +361,7 @@ fn unfreeze_offering_by_issuer_succeeds() {
 #[test]
 fn set_holder_share_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let holder = Address::generate(&env);
@@ -384,7 +384,7 @@ fn set_holder_share_wrong_issuer_no_mutation() {
 #[test]
 fn set_concentration_limit_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -409,7 +409,7 @@ fn set_concentration_limit_wrong_issuer_no_mutation() {
 #[test]
 fn set_rounding_mode_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -431,7 +431,7 @@ fn set_rounding_mode_wrong_issuer_no_mutation() {
 #[test]
 fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -453,7 +453,7 @@ fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
 #[test]
 fn set_claim_delay_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -476,7 +476,7 @@ fn set_claim_delay_wrong_issuer_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn set_offering_metadata_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let meta: SdkString = SdkString::from_str(&env, "ipfs://QmExampleHash");
@@ -502,7 +502,7 @@ fn set_offering_metadata_wrong_issuer_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn deposit_revenue_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let payment_token = Address::generate(&env);
@@ -527,7 +527,7 @@ fn deposit_revenue_wrong_issuer_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn report_revenue_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -553,7 +553,7 @@ fn report_revenue_wrong_issuer_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn register_offering_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -587,7 +587,7 @@ fn register_offering_missing_auth_no_mutation() {
 #[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn blacklist_add_wrong_caller_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let investor = Address::generate(&env);
@@ -616,7 +616,7 @@ fn blacklist_remove_wrong_caller_no_mutation() {
     // Per contract design: any authenticated address can manage blacklists.
     // With mock_all_auths, attacker's auth is satisfied, so remove succeeds.
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -641,7 +641,7 @@ fn blacklist_remove_wrong_caller_no_mutation() {
 #[test]
 fn blacklist_add_remove_by_issuer_succeeds() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 
@@ -663,7 +663,7 @@ fn blacklist_add_remove_by_issuer_succeeds() {
 #[test]
 fn cross_offering_confusion_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -694,7 +694,7 @@ fn cross_offering_confusion_wrong_issuer_no_mutation() {
 #[test]
 fn cross_offering_concentration_limit_wrong_issuer() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -725,7 +725,7 @@ fn cross_offering_concentration_limit_wrong_issuer() {
 #[test]
 fn cross_namespace_confusion_wrong_namespace() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -761,7 +761,7 @@ fn cross_namespace_confusion_wrong_namespace() {
 #[ignore = "require_auth causes non-unwinding panic in no_std; use mock_all_auths to test auth paths"]
 fn claim_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let holder = Address::generate(&env);
     let token = Address::generate(&env);
     let issuer = Address::generate(&env);
@@ -775,7 +775,7 @@ fn claim_missing_auth_no_mutation() {
 #[test]
 fn claim_holder_with_zero_share_returns_no_pending_claims() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client); // enables mock_all_auths
     let holder = Address::generate(&env);
 
@@ -789,7 +789,7 @@ fn claim_holder_with_zero_share_returns_no_pending_claims() {
 #[test]
 fn claim_blacklisted_holder_returns_holder_blacklisted() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -812,7 +812,7 @@ fn claim_blacklisted_holder_returns_holder_blacklisted() {
 #[test]
 fn register_offering_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let admin = Address::generate(&env);
     client.set_admin(&admin);
@@ -839,7 +839,7 @@ fn register_offering_blocked_when_frozen() {
 #[test]
 fn set_holder_share_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -865,7 +865,7 @@ fn set_holder_share_blocked_when_frozen() {
 #[test]
 fn blacklist_add_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 
@@ -886,7 +886,7 @@ fn blacklist_add_blocked_when_frozen() {
 #[test]
 fn set_concentration_limit_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
 
     client.freeze();
@@ -911,7 +911,7 @@ fn set_concentration_limit_blocked_when_frozen() {
 #[test]
 fn set_claim_delay_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
 
     client.freeze();
@@ -937,7 +937,7 @@ fn set_claim_delay_blocked_when_frozen() {
 #[test]
 fn get_admin_before_initialize_returns_none() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     assert!(client.get_admin().is_none());
 }
 
@@ -945,7 +945,7 @@ fn get_admin_before_initialize_returns_none() {
 #[test]
 fn is_paused_before_initialize_returns_false() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     assert!(!client.is_paused());
 }
 
@@ -953,7 +953,7 @@ fn is_paused_before_initialize_returns_false() {
 #[test]
 fn is_frozen_before_initialize_returns_false() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     assert!(!client.is_frozen());
 }
 
@@ -966,7 +966,7 @@ fn is_frozen_before_initialize_returns_false() {
 #[test]
 fn register_offering_invalid_bps_returns_typed_error() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -992,7 +992,7 @@ fn register_offering_invalid_bps_returns_typed_error() {
 #[test]
 fn set_holder_share_invalid_bps_returns_typed_error() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -1021,7 +1021,7 @@ fn set_holder_share_invalid_bps_returns_typed_error() {
 #[test]
 fn issuer_can_configure_offering_settings() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -1072,7 +1072,7 @@ fn issuer_can_configure_offering_settings() {
 #[test]
 fn two_issuers_independent_settings() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -1104,7 +1104,7 @@ fn two_issuers_independent_settings() {
 #[test]
 fn blacklist_add_then_remove_clears_investor() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 

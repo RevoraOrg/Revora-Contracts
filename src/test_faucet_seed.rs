@@ -77,8 +77,7 @@ fn register_offering(
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token)
@@ -91,7 +90,7 @@ fn faucet_rejected_when_testnet_mode_is_false() {
     // Default state: testnet_mode is not set → false.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
 
@@ -103,7 +102,7 @@ fn faucet_rejected_when_testnet_mode_is_false() {
 fn faucet_rejected_after_testnet_mode_disabled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     client.set_testnet_mode(&false); // disable
     let requester = Address::generate(&env);
@@ -117,7 +116,7 @@ fn faucet_rejected_after_testnet_mode_disabled() {
 fn faucet_returns_offering_not_found_for_unknown_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
 
     let fake_issuer = Address::generate(&env);
@@ -133,7 +132,7 @@ fn faucet_returns_offering_not_found_for_unknown_offering() {
 fn faucet_rejects_requests_within_the_cooldown_window() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
@@ -153,7 +152,7 @@ fn faucet_rejects_requests_within_the_cooldown_window() {
 fn faucet_allows_request_after_cooldown_elapsed() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
@@ -324,8 +323,7 @@ fn setup_with_admin() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbo
 {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let client = make_client(&env.clone());
     let admin = enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token, admin)
@@ -348,7 +346,7 @@ fn faucet_reset_rejected_when_testnet_mode_is_false() {
     // testnet_mode must be enabled for faucet_reset to succeed.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // Initialize without enabling testnet mode.
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
@@ -367,7 +365,7 @@ fn faucet_reset_rejected_when_testnet_mode_is_false() {
 fn faucet_reset_rejected_after_testnet_mode_disabled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     // Disable testnet mode after initial setup.

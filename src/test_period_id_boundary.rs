@@ -82,7 +82,7 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
 fn report_revenue_zero_period_id_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -181,7 +181,7 @@ fn deposit_revenue_zero_period_id_rejected() {
 fn report_revenue_period_id_one_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -196,7 +196,7 @@ fn report_revenue_period_id_one_accepted() {
 fn report_revenue_period_id_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -218,7 +218,7 @@ fn report_revenue_period_id_max_rejected() {
 fn report_revenue_period_id_near_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -337,7 +337,7 @@ fn deposit_revenue_duplicate_next_period_rejected() {
 fn report_revenue_duplicate_without_override_no_state_change() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -361,7 +361,7 @@ fn report_revenue_duplicate_without_override_no_state_change() {
 fn report_revenue_duplicate_with_override_updates_state() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -388,7 +388,7 @@ fn report_revenue_duplicate_with_override_updates_state() {
 fn negative_amount_rejected_before_period_id_check() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -404,7 +404,7 @@ fn negative_amount_rejected_before_period_id_check() {
 fn zero_amount_accepted_by_report_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
@@ -437,7 +437,7 @@ fn zero_amount_rejected_by_deposit_revenue() {
 #[test]
 fn report_revenue_wrong_issuer_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let attacker = Address::generate(&env);
@@ -483,7 +483,7 @@ fn deposit_revenue_wrong_issuer_rejected() {
 fn period_id_isolated_across_offerings() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -539,7 +539,7 @@ fn period_id_isolated_across_offerings() {
 fn report_revenue_period_id_isolated_across_offerings() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);
@@ -568,7 +568,7 @@ fn report_revenue_period_id_isolated_across_offerings() {
 fn frozen_contract_rejects_report_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -587,7 +587,7 @@ fn frozen_contract_rejects_report_revenue() {
 fn frozen_contract_rejects_deposit_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);

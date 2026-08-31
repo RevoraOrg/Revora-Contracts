@@ -645,7 +645,7 @@ fn test_large_beneficiary_count() {
 fn get_whitelist_returns_all_approved_investors() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -669,7 +669,7 @@ fn get_whitelist_returns_all_approved_investors() {
 fn get_whitelist_empty_before_any_add() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -705,7 +705,7 @@ fn get_whitelist_empty_before_any_add() {
 fn whitelist_double_add_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -722,7 +722,7 @@ fn whitelist_double_add_is_idempotent() {
 fn whitelist_remove_nonexistent_is_idempotent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -739,7 +739,7 @@ fn whitelist_remove_nonexistent_is_idempotent() {
 fn whitelist_is_scoped_per_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -757,7 +757,7 @@ fn whitelist_is_scoped_per_offering() {
 fn whitelist_removing_from_one_offering_does_not_affect_another() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -779,7 +779,7 @@ fn whitelist_removing_from_one_offering_does_not_affect_another() {
 fn whitelist_add_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -795,7 +795,7 @@ fn whitelist_add_emits_event() {
 fn whitelist_remove_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -814,7 +814,7 @@ fn whitelist_remove_emits_event() {
 fn whitelist_enabled_only_includes_whitelisted_investors() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -850,7 +850,7 @@ fn whitelist_enabled_only_includes_whitelisted_investors() {
 fn whitelist_disabled_includes_all_non_blacklisted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let token = Address::generate(&env);
     let inv_a = Address::generate(&env);
     let inv_b = Address::generate(&env);
@@ -885,7 +885,7 @@ fn whitelist_disabled_includes_all_non_blacklisted() {
 fn blacklist_overrides_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -933,7 +933,7 @@ fn blacklist_overrides_whitelist() {
 #[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
 fn whitelist_add_requires_auth() {
     let env = Env::default(); // no mock_all_auths
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let bad_actor = Address::generate(&env);
     let issuer = bad_actor.clone();
 
@@ -948,7 +948,7 @@ fn whitelist_add_requires_auth() {
 #[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
 fn whitelist_remove_requires_auth() {
     let env = Env::default(); // no mock_all_auths
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let bad_actor = Address::generate(&env);
     let issuer = bad_actor.clone();
 
@@ -966,7 +966,7 @@ fn whitelist_remove_requires_auth() {
 fn large_whitelist_operations() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -1001,7 +1001,7 @@ fn large_whitelist_operations() {
 fn repeated_whitelist_operations_on_same_address() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -1025,7 +1025,7 @@ fn repeated_whitelist_operations_on_same_address() {
 fn whitelist_enabled_when_non_empty() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -1047,7 +1047,7 @@ fn whitelist_enabled_when_non_empty() {
 fn register_offering_rejects_bps_over_10000() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1074,7 +1074,7 @@ fn register_offering_rejects_bps_over_10000() {
 fn register_offering_accepts_bps_exactly_10000() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1100,7 +1100,7 @@ fn register_offering_accepts_bps_exactly_10000() {
 fn denomination_metadata_stored_and_readable() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1129,7 +1129,7 @@ fn denomination_metadata_stored_and_readable() {
 fn denomination_metadata_zero_decimals_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1152,7 +1152,7 @@ fn denomination_metadata_zero_decimals_accepted() {
 fn denomination_metadata_max_decimals_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1177,7 +1177,7 @@ fn denomination_metadata_max_decimals_accepted() {
 fn denomination_metadata_rejects_display_decimals_over_18() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1204,7 +1204,7 @@ fn denomination_metadata_rejects_display_decimals_over_18() {
 fn denomination_metadata_rejects_display_decimals_u32_max() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1231,7 +1231,7 @@ fn denomination_metadata_rejects_display_decimals_u32_max() {
 fn denomination_metadata_returns_none_before_register() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -1245,7 +1245,7 @@ fn denomination_metadata_returns_none_before_register() {
 fn denomination_metadata_in_ofr_reg2_event_payload() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1291,7 +1291,7 @@ fn denomination_metadata_in_ofr_reg2_event_payload() {
 fn denomination_metadata_reflected_in_get_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1321,7 +1321,7 @@ fn denomination_metadata_reflected_in_get_offering() {
 fn denomination_metadata_validation_before_duplicate_guard() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1362,7 +1362,7 @@ fn denomination_metadata_validation_before_duplicate_guard() {
 fn single_report_is_persisted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -1391,7 +1391,7 @@ fn storage_stress_many_offerings_no_panic() {
 fn multiple_reports_same_period_accumulate() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -1423,7 +1423,7 @@ fn multiple_reports_same_period_accumulate() {
     // Fix tests to match one-report-per-period with override logic.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1456,7 +1456,7 @@ fn multiple_reports_same_period_accumulate() {
 fn multiple_reports_same_period_accumulate_is_disabled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -1470,7 +1470,7 @@ fn multiple_reports_same_period_accumulate_is_disabled() {
 fn empty_period_returns_zero() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let token = Address::generate(&env);
 
     let issuer = Address::generate(&env);
@@ -1481,7 +1481,7 @@ fn empty_period_returns_zero() {
 fn get_revenue_range_sums_periods() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1515,7 +1515,7 @@ fn gas_characterization_many_offerings_single_issuer() {
 fn gas_characterization_report_revenue_with_large_blacklist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1561,7 +1561,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
 fn revenue_matches_event_amount() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let amount: i128 = 42_000;
@@ -1576,7 +1576,7 @@ fn revenue_matches_event_amount() {
 fn large_period_range_sums_correctly() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.register_offering(&issuer,
@@ -1600,7 +1600,7 @@ fn large_period_range_sums_correctly() {
 fn concentration_limit_not_set_allows_report_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1629,7 +1629,7 @@ fn concentration_limit_not_set_allows_report_revenue() {
 fn set_concentration_limit_requires_offering_to_exist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     // No offering registered
@@ -1642,7 +1642,7 @@ fn set_concentration_limit_requires_offering_to_exist() {
 fn set_concentration_limit_stores_config() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1669,7 +1669,7 @@ fn set_concentration_limit_stores_config() {
 fn set_concentration_limit_bounds_check() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1693,7 +1693,7 @@ fn set_concentration_limit_bounds_check() {
 fn report_concentration_bounds_check() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1798,7 +1798,7 @@ fn report_concentration_emits_audit_event() {
 fn report_concentration_emits_warning_when_over_limit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1826,7 +1826,7 @@ fn report_concentration_emits_warning_when_over_limit() {
 fn report_concentration_no_warning_when_below_limit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1852,7 +1852,7 @@ fn report_concentration_no_warning_when_below_limit() {
 fn concentration_enforce_blocks_report_revenue_when_over_limit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1887,7 +1887,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
 fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1928,7 +1928,7 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
 fn concentration_near_threshold_boundary() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -1975,7 +1975,7 @@ fn concentration_near_threshold_boundary() {
 fn set_concentration_limit_requires_auth_before_state_read() {
     // No mock_all_auths — auth is NOT mocked, so require_auth() will panic/fail.
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2016,7 +2016,7 @@ fn set_concentration_limit_auth_required_even_in_event_only_mode() {
     // event-only mode silently skipped authorization entirely.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
 
     // Initialize in event-only mode.
@@ -2057,7 +2057,7 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
     // Confirms the identity check (current_issuer != issuer) still fires after auth.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let attacker = Address::generate(&env);
     let token = Address::generate(&env);
@@ -2096,7 +2096,7 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
 fn concentration_staleness_no_prior_report_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2134,7 +2134,7 @@ fn concentration_staleness_no_prior_report_rejected() {
 fn concentration_staleness_stale_report_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2178,7 +2178,7 @@ fn concentration_staleness_stale_report_rejected() {
 fn concentration_staleness_fresh_report_allowed() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2217,7 +2217,7 @@ fn concentration_staleness_fresh_report_allowed() {
 fn concentration_staleness_enforce_off_bypasses_guard() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2258,7 +2258,7 @@ fn concentration_staleness_enforce_off_bypasses_guard() {
 fn concentration_staleness_zero_secs_disables_guard() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2292,7 +2292,7 @@ fn concentration_staleness_zero_secs_disables_guard() {
 fn concentration_staleness_boundary_exact_window_allowed() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2332,7 +2332,7 @@ fn concentration_staleness_boundary_exact_window_allowed() {
 fn set_rounding_mode_requires_auth_before_state_read() {
     // No mock_all_auths — require_auth() will fail.
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -2350,7 +2350,7 @@ fn set_rounding_mode_requires_auth_before_state_read() {
 fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let attacker = Address::generate(&env);
     let token = Address::generate(&env);
@@ -2384,7 +2384,7 @@ fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
 fn audit_summary_empty_before_any_report() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2406,7 +2406,7 @@ fn audit_summary_empty_before_any_report() {
 fn audit_summary_aggregates_revenue_and_count() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2435,7 +2435,7 @@ fn audit_summary_aggregates_revenue_and_count() {
 fn audit_summary_per_offering_isolation() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
@@ -2500,7 +2500,7 @@ fn audit_summary_per_offering_isolation() {
 #[test]
 fn compute_share_truncation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // 1000 * 2500 / 10000 = 250
     let share = client.compute_share(&1000, &2500, &RoundingMode::Truncation);
     assert_eq!(share, 250);
@@ -2509,7 +2509,7 @@ fn compute_share_truncation() {
 #[test]
 fn compute_share_round_half_up() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // 1000 * 2500 = 2_500_000; half-up: (2_500_000 + 5000) / 10000 = 250
     let share = client.compute_share(&1000, &2500, &RoundingMode::RoundHalfUp);
     assert_eq!(share, 250);
@@ -2518,7 +2518,7 @@ fn compute_share_round_half_up() {
 #[test]
 fn compute_share_round_half_up_rounds_up_at_half() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // 1 * 2500 = 2500; 2500/10000 trunc = 0; half-up (2500+5000)/10000 = 0.75 -> 0? No: (2500+5000)/10000 = 7500/10000 = 0. So 1 bps would be 1*100/10000 = 0.01 -> 0 trunc, round half up (100+5000)/10000 = 0.51 -> 1. So 1 * 100 = 100, (100+5000)/10000 = 0.
     // 3 * 3333 = 9999; 9999/10000 = 0 trunc. (9999+5000)/10000 = 14999/10000 = 1 round half up.
     let share_trunc = client.compute_share(&3, &3333, &RoundingMode::Truncation);
@@ -2530,7 +2530,7 @@ fn compute_share_round_half_up_rounds_up_at_half() {
 #[test]
 fn compute_share_bps_over_10000_returns_zero() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let share = client.compute_share(&1000, &10_001, &RoundingMode::Truncation);
     assert_eq!(share, 0);
 }
@@ -2539,7 +2539,7 @@ fn compute_share_bps_over_10000_returns_zero() {
 fn set_and_get_rounding_mode() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -2585,7 +2585,7 @@ fn set_and_get_rounding_mode() {
 fn set_rounding_mode_requires_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let r = client.try_set_rounding_mode(
@@ -2600,7 +2600,7 @@ fn set_rounding_mode_requires_offering() {
 #[test]
 fn compute_share_tiny_payout_truncation() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let share = client.compute_share(&1, &1, &RoundingMode::Truncation);
     assert_eq!(share, 0);
 }
@@ -2608,7 +2608,7 @@ fn compute_share_tiny_payout_truncation() {
 #[test]
 fn compute_share_no_overflow_bounds() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let amount = 1_000_000_i128;
     let share = client.compute_share(&amount, &10_000, &RoundingMode::Truncation);
     assert_eq!(share, amount);
@@ -2619,7 +2619,7 @@ fn compute_share_no_overflow_bounds() {
 #[test]
 fn compute_share_max_amount_full_bps_is_exact() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let amount = i128::MAX;
 
     let trunc = client.compute_share(&amount, &10_000, &RoundingMode::Truncation);
@@ -2632,7 +2632,7 @@ fn compute_share_max_amount_full_bps_is_exact() {
 #[test]
 fn compute_share_max_amount_half_bps_rounding_is_deterministic() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let amount = i128::MAX;
 
     // For 50%, truncation and half-up differ by exactly 1 for odd amounts.
@@ -2646,7 +2646,7 @@ fn compute_share_max_amount_half_bps_rounding_is_deterministic() {
 #[test]
 fn compute_share_min_amount_full_bps_is_exact() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let amount = i128::MIN;
 
     let trunc = client.compute_share(&amount, &10_000, &RoundingMode::Truncation);
@@ -2659,7 +2659,7 @@ fn compute_share_min_amount_full_bps_is_exact() {
 #[test]
 fn compute_share_extreme_inputs_remain_bounded() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let amount = i128::MAX;
     let share = client.compute_share(&amount, &9_999, &RoundingMode::RoundHalfUp);
@@ -2746,7 +2746,7 @@ fn deposit_revenue_stores_period_data() {
 fn register_offering_does_not_lock_payment_token_before_first_deposit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -2770,7 +2770,7 @@ fn register_offering_does_not_lock_payment_token_before_first_deposit() {
 fn get_payment_token_returns_none_for_unknown_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
 
@@ -2781,7 +2781,7 @@ fn get_payment_token_returns_none_for_unknown_offering() {
 fn failed_invalid_first_deposit_does_not_lock_payment_token() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
     let payment_token = Address::generate(&env);
@@ -2870,7 +2870,7 @@ fn deposit_revenue_preserves_locked_payment_token_across_deposits() {
 fn report_revenue_rejects_mismatched_payout_asset() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -3197,7 +3197,7 @@ fn payment_token_lock_is_per_offering() {
 fn payment_token_none_before_first_deposit() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payout, _) = create_payment_token(&env);
@@ -3348,7 +3348,7 @@ fn payment_token_lock_stable_across_repeated_same_token_deposits() {
 fn payment_token_not_locked_for_unknown_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let unknown = Address::generate(&env);
     let (payout, admin) = create_payment_token(&env);
@@ -4047,7 +4047,7 @@ fn multi_offering_interleaved_deposits_maintain_isolation() {
 fn get_payment_token_decimals_defaults_to_7() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
@@ -4071,7 +4071,7 @@ fn get_payment_token_decimals_defaults_to_7() {
 fn set_and_get_payment_token_decimals() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
@@ -4096,7 +4096,7 @@ fn set_and_get_payment_token_decimals() {
 fn set_payment_token_decimals_rejects_out_of_range() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
@@ -4121,7 +4121,7 @@ fn set_payment_token_decimals_rejects_out_of_range() {
 fn set_payment_token_decimals_accepts_max_18() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
@@ -4147,7 +4147,7 @@ fn set_payment_token_decimals_accepts_max_18() {
 fn set_payment_token_decimals_accepts_zero() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
@@ -6873,7 +6873,7 @@ fn set_snapshot_config_requires_auth() {
 #[test]
 fn testnet_mode_disabled_by_default() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     assert!(!client.is_testnet_mode());
 }
 
@@ -6881,7 +6881,7 @@ fn testnet_mode_disabled_by_default() {
 fn set_testnet_mode_requires_admin() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -6897,7 +6897,7 @@ fn set_testnet_mode_requires_admin() {
 fn set_testnet_mode_fails_without_admin() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     // No admin set - should fail
     let result = client.try_set_testnet_mode(&true);
@@ -6908,7 +6908,7 @@ fn set_testnet_mode_fails_without_admin() {
 fn set_testnet_mode_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -6922,7 +6922,7 @@ fn set_testnet_mode_emits_event() {
 fn testnet_mode_functions_properly_implemented() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
 
     // Initially disabled
@@ -6944,7 +6944,7 @@ fn testnet_mode_functions_properly_implemented() {
 fn testnet_mode_toggle_emits_correct_events() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
 
     client.set_admin(&admin);
@@ -7020,7 +7020,7 @@ fn issuer_transfer_new_issuer_can_deposit_revenue() {
 fn testnet_mode_can_be_toggled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7043,7 +7043,7 @@ fn testnet_mode_can_be_toggled() {
 fn testnet_mode_allows_bps_over_10000() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7077,7 +7077,7 @@ fn testnet_mode_allows_bps_over_10000() {
 fn testnet_mode_disabled_rejects_bps_over_10000() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -7101,7 +7101,7 @@ fn testnet_mode_disabled_rejects_bps_over_10000() {
 fn testnet_mode_skips_concentration_enforcement() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7217,7 +7217,7 @@ fn issuer_transfer_cancel_emits_event() {
 fn testnet_mode_disabled_enforces_concentration() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -7253,7 +7253,7 @@ fn testnet_mode_disabled_enforces_concentration() {
 fn testnet_mode_toggle_after_offerings_exist() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7300,7 +7300,7 @@ fn testnet_mode_toggle_after_offerings_exist() {
 fn testnet_mode_affects_only_validation_not_storage() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7335,7 +7335,7 @@ fn testnet_mode_affects_only_validation_not_storage() {
 fn testnet_mode_multiple_offerings_with_varied_bps() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -7366,7 +7366,7 @@ fn testnet_mode_multiple_offerings_with_varied_bps() {
 fn testnet_mode_concentration_warning_still_emitted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -8010,7 +8010,7 @@ fn multisig_init_twice_fails() {
 fn multisig_init_zero_threshold_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8027,7 +8027,7 @@ fn multisig_init_zero_threshold_fails() {
 fn multisig_init_threshold_exceeds_owners_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8045,7 +8045,7 @@ fn multisig_init_threshold_exceeds_owners_fails() {
 fn multisig_init_empty_owners_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8058,7 +8058,7 @@ fn multisig_init_empty_owners_fails() {
 fn multisig_init_zero_duration_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8073,7 +8073,7 @@ fn multisig_init_zero_duration_fails() {
 fn multisig_init_duration_exceeds_max_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8089,7 +8089,7 @@ fn multisig_init_duration_exceeds_max_fails() {
 fn multisig_init_valid_duration_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8110,7 +8110,7 @@ fn multisig_init_valid_duration_succeeds() {
 fn multisig_init_max_owners_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8130,7 +8130,7 @@ fn multisig_init_max_owners_succeeds() {
 fn multisig_init_exceeds_max_owners_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8148,7 +8148,7 @@ fn multisig_init_exceeds_max_owners_fails() {
 fn multisig_init_threshold_equals_owners_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8170,7 +8170,7 @@ fn multisig_init_threshold_equals_owners_succeeds() {
 fn multisig_init_threshold_one_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8189,7 +8189,7 @@ fn multisig_init_threshold_one_succeeds() {
 fn multisig_init_duplicate_owners_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -8209,7 +8209,7 @@ fn multisig_init_duplicate_owners_fails() {
 fn multisig_init_then_propose_works() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let caller = Address::generate(&env);
     let issuer = caller.clone();
 
@@ -9585,7 +9585,7 @@ fn kani_cancel_lifts_transfer_pending_guard() {
 fn testnet_mode_normal_operations_unaffected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9628,7 +9628,7 @@ fn testnet_mode_normal_operations_unaffected() {
 fn testnet_mode_blacklist_operations_unaffected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9653,7 +9653,7 @@ fn testnet_mode_blacklist_operations_unaffected() {
 fn testnet_mode_pagination_unaffected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9688,7 +9688,7 @@ fn testnet_mode_pagination_unaffected() {
 fn testnet_mode_requires_auth_to_set() {
     let env = Env::default();
     // No mock_all_auths - should error
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9705,7 +9705,7 @@ fn testnet_mode_requires_auth_to_set() {
 fn pause_unpause_idempotence_and_events() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9733,7 +9733,7 @@ fn pause_unpause_idempotence_and_events() {
 fn register_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
     let token = Address::generate(&env);
@@ -9759,7 +9759,7 @@ fn register_blocked_while_paused() {
 fn report_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
     let token = Address::generate(&env);
@@ -9793,7 +9793,7 @@ fn report_blocked_while_paused() {
 fn pause_safety_role_works() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9817,7 +9817,7 @@ fn pause_safety_role_works() {
 fn blacklist_add_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9847,7 +9847,7 @@ fn blacklist_add_blocked_while_paused() {
 fn blacklist_remove_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     let issuer = admin.clone();
 
@@ -9875,7 +9875,7 @@ fn blacklist_remove_blocked_while_paused() {
 fn large_period_range_sums_correctly_full() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
@@ -9991,7 +9991,7 @@ proptest! {
     })]
     #[test]
     fn prop_period_ordering(env in Env::default(), seq in arb_valid_operation_sequence(&env, 20usize)) {
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuers = vec![&env, [Address::generate(&env)].to_vec()];
 
         for op in seq {
@@ -10031,7 +10031,7 @@ proptest! {
         limit_bps in 1000u32..=5000,
         conc_bps in 5001u32..=10_000,
     ) {
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let ns = symbol_short!("def");
         let token = Address::generate(&env);
@@ -10087,7 +10087,7 @@ proptest! {
 proptest! {
     #[test]
     fn prop_multisig_threshold(env in Env::default()) {
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let owner1 = Address::generate(&env);
         let owner2 = Address::generate(&env);
         let owner3 = Address::generate(&env);
@@ -10114,7 +10114,7 @@ proptest! {
 proptest! {
     #[test]
     fn prop_pause_safety(env in Env::default()) {
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let admin = Address::generate(&env);
         let issuer = admin.clone();
 
@@ -10153,17 +10153,8 @@ proptest! {
         holder in any::<Address>(),
     ) {
         let (i, ns, t) = offering;
-        let client = make_client(&env);
-        client.register_offering(&i,
-        &Vec::new(&env),
-        &1u32,
-        &ns,
-        &t,
-        &1000,
-        &t.clone(),
-        &0,
-        &symbol_short!(""),
-        &0);
+        let client = make_client(&env.clone());
+        client.register_offering(&i, &ns, &t, &1000, &t.clone(), &0, &symbol_short!(""), &0);
 
         // Blacklist holder
         client.blacklist_add(&i, &i, &ns, &t.clone(), &holder);
@@ -10184,7 +10175,7 @@ proptest! {
         env in Env::default(),
         n in 5usize..=50,
     ) {
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let ns = symbol_short!("def");
 
@@ -10238,7 +10229,7 @@ proptest! {
         mut env in any::<Env>(),
     ) {
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let seed = 0xdeadbeefu64;
         let issuers = vec![&env, vec![&env, Address::generate(&env)]];
 
@@ -10264,7 +10255,7 @@ fn continuous_invariants_deterministic_reproducible() {
 fn test_offerings_pagination_stress() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let ns = symbol_short!("def");
 
@@ -10313,7 +10304,7 @@ fn test_offerings_pagination_stress() {
 fn test_blacklist_pagination_stress() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let ns = symbol_short!("def");
     let token = Address::generate(&env);
@@ -10359,7 +10350,7 @@ fn test_blacklist_pagination_stress() {
 fn test_whitelist_pagination_stress() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let ns = symbol_short!("def");
     let token = Address::generate(&env);
@@ -10434,7 +10425,7 @@ fn calculate_distribution_basic() {
 fn calculate_distribution_bps_100_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10471,7 +10462,7 @@ fn calculate_distribution_bps_100_percent() {
 fn calculate_distribution_bps_25_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10571,7 +10562,7 @@ fn calculate_distribution_zero_supply_panics() {
 fn calculate_distribution_nonexistent_offering_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10618,7 +10609,7 @@ fn calculate_distribution_blacklisted_holder_panics() {
 fn calculate_distribution_rounds_down() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10655,7 +10646,7 @@ fn calculate_distribution_rounds_down() {
 fn calculate_distribution_rounds_down_exact() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10736,7 +10727,7 @@ fn calculate_distribution_emits_event() {
 fn calculate_distribution_multiple_holders_sum() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10801,7 +10792,7 @@ fn calculate_distribution_multiple_holders_sum() {
 #[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
 fn calculate_distribution_requires_auth() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let caller = Address::generate(&env);
@@ -10846,7 +10837,7 @@ fn calculate_total_distributable_basic() {
 fn calculate_total_distributable_bps_100_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -10871,7 +10862,7 @@ fn calculate_total_distributable_bps_100_percent() {
 fn calculate_total_distributable_bps_25_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -10905,7 +10896,7 @@ fn calculate_total_distributable_zero_revenue() {
 fn calculate_total_distributable_rounds_down() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -10930,7 +10921,7 @@ fn calculate_total_distributable_rounds_down() {
 fn calculate_total_distributable_nonexistent_offering_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11206,7 +11197,7 @@ fn test_event_only_mode_testnet_config() {
 fn test_set_offering_metadata_success() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11231,7 +11222,7 @@ fn test_set_offering_metadata_success() {
 fn test_get_offering_metadata_returns_none_initially() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11254,7 +11245,7 @@ fn test_get_offering_metadata_returns_none_initially() {
 fn test_update_offering_metadata_success() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11282,7 +11273,7 @@ fn test_update_offering_metadata_success() {
 fn test_get_offering_metadata_after_set() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11309,7 +11300,7 @@ fn test_get_offering_metadata_after_set() {
 #[ignore = "legacy host-panic auth test; Soroban aborts process in unit tests"]
 fn test_set_metadata_requires_auth() {
     let env = Env::default(); // no mock_all_auths
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11332,7 +11323,7 @@ fn test_set_metadata_requires_auth() {
 fn test_set_metadata_nonexistent_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11406,7 +11397,7 @@ fn test_set_metadata_respects_pause() {
 fn test_set_metadata_empty_string() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11434,7 +11425,7 @@ fn test_set_metadata_empty_string() {
 fn test_set_metadata_max_length() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11461,7 +11452,7 @@ fn test_set_metadata_max_length() {
 fn test_set_metadata_oversized_data() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11488,7 +11479,7 @@ fn test_set_metadata_oversized_data() {
 fn test_set_metadata_repeated_updates() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11521,7 +11512,7 @@ fn test_set_metadata_repeated_updates() {
 fn test_metadata_scoped_per_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
@@ -11679,7 +11670,7 @@ fn test_metadata_events_include_correct_data() {
 fn test_metadata_multiple_offerings_same_issuer() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token1 = Address::generate(&env);
     let token2 = Address::generate(&env);
@@ -11733,7 +11724,7 @@ fn test_metadata_multiple_offerings_same_issuer() {
 fn test_metadata_after_issuer_transfer() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let old_issuer = Address::generate(&env);
     let new_issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -11771,7 +11762,7 @@ fn test_metadata_after_issuer_transfer() {
 fn test_set_metadata_requires_issuer() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let non_issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -11797,7 +11788,7 @@ fn test_set_metadata_requires_issuer() {
 fn test_metadata_ipfs_cid_format() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11826,7 +11817,7 @@ fn test_metadata_ipfs_cid_format() {
 fn test_metadata_https_url_format() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11854,7 +11845,7 @@ fn test_metadata_https_url_format() {
 fn test_metadata_content_hash_format() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -11918,7 +11909,7 @@ fn test_metadata_content_hash_format() {
 // fn regression_issue_N_description() {
 //     let env = Env::default();
 //     env.mock_all_auths();
-//     let client = make_client(&env);
+//     let client = make_client(&env.clone());
 //
 //     // Arrange: Set up the conditions that triggered the bug
 //     // ...
@@ -11955,7 +11946,7 @@ mod regression {
     fn regression_template_example() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
 
         // Arrange: Set up test conditions
         let issuer = Address::generate(&env);
@@ -13391,7 +13382,7 @@ mod regression {
     #[test]
     fn get_version_returns_constant_version() {
         let env = Env::default();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         assert_eq!(client.get_version(), crate::CONTRACT_VERSION);
     }
 
@@ -13549,7 +13540,7 @@ mod regression {
     fn regression_issue_360_get_offering_direct_lookup() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let token = Address::generate(&env);
         let payout = Address::generate(&env);
@@ -13577,7 +13568,7 @@ mod regression {
     fn regression_issue_360_get_offering_many_offerings_still_finds_correct() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let payout = Address::generate(&env);
 
@@ -13609,7 +13600,7 @@ mod regression {
     fn regression_issue_360_get_offering_after_issuer_transfer() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let old_issuer = Address::generate(&env);
         let new_issuer = Address::generate(&env);
         let token = Address::generate(&env);
@@ -13639,7 +13630,7 @@ mod regression {
     fn regression_issue_360_get_offering_unknown_returns_none() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -13672,7 +13663,7 @@ mod regression {
     fn regression_issue_360_get_offering_unknown_returns_none() {
         let env = Env::default();
         env.mock_all_auths();
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
         let issuer = Address::generate(&env);
         let token = Address::generate(&env);
 
@@ -14667,7 +14658,7 @@ fn test_offerings_page_pagination_25_offerings() {
     // Issue #370: Register 25 offerings and test pagination with different limits
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer1 = Address::generate(&env);
     let ns = symbol_short!("test");
 
@@ -14717,7 +14708,7 @@ fn test_offerings_page_edge_cases() {
     // Issue #370: Test edge cases - start == count, start > count, limit 0, limit > cap
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
 
@@ -14761,7 +14752,7 @@ fn test_offerings_page_ordering_deterministic() {
     // Issue #370: Verify offerings are ordered by registration index (creation order)
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
 

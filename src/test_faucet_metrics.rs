@@ -53,8 +53,7 @@ fn register_offering(
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let cid = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token)
@@ -353,7 +352,7 @@ fn window_id_equals_ts_divided_by_window_secs() {
 fn metrics_event_never_emitted_when_testnet_mode_false() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // Do NOT enable testnet mode — contract stays in production mode.
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
@@ -377,7 +376,7 @@ fn metrics_event_never_emitted_when_testnet_mode_false() {
 fn metrics_event_not_emitted_on_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.set_testnet_mode(&true);
