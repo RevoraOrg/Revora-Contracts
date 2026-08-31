@@ -65,20 +65,9 @@ fn setup_test_env(network_id: [u8; 32]) -> (Env, RevoraRevenueShareClient<'stati
 }
 
 /// Register an offering for testing.
-fn register_offering(
-    env: &Env,
-    client: &RevoraRevenueShareClient,
-    issuer: &Address,
-    token: &Address,
-    payout_asset: &Address,
-) {
-    client.register_offering(
-        issuer,
-        &Symbol::new(env, "test_ns"),
-        token,
-        &5_000u32, // 50% revenue share
-        payout_asset,
-    );
+fn register_offering(env: &Env, &Vec::new(&env), &1u32, client: &RevoraRevenueShareClient, issuer: &Address, token: &Address, payout_asset: &Address, , &symbol_short!(""), &0u32) {
+    client.register_offering(issuer, &Vec::new(&env), &1u32, &Symbol::new(env, "test_ns"), token, &5_000u32, // 50% revenue share
+        payout_asset, , &symbol_short!(""), &0u32);
 }
 
 /// Get the current audit summary for an offering (total revenue and report count).

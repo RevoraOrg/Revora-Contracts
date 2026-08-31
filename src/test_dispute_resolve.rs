@@ -27,7 +27,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 
 fn create_payment_token(env: &Env) -> (Address, Address) {
     let admin = Address::generate(env);
-    let token_id = env.register_stellar_asset_contract(admin.clone());
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
     (token_id, admin)
 }
 
@@ -67,7 +67,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
         &offering_token,
         &holder,
         &10_000,
-    );
+    &1);
 
     (env, client, cid, admin, issuer, offering_token, payment_token, holder)
 }
@@ -108,7 +108,7 @@ fn resolve_dispute_admin_succeeds() {
     );
 
     // Get dispute ID (should be 1)
-    let dispute = client.get_dispute(&1);
+    let dispute = client.get_dispute_entry(&1);
     assert!(dispute.is_some());
     assert!(!dispute.unwrap().resolved);
 
@@ -364,7 +364,7 @@ fn resolve_dispute_updates_dispute_entry() {
     let evidence = create_evidence_hash(&env);
     client.resolve_dispute(&admin, &1, &DisputeOutcome::Rejected, &evidence);
 
-    let dispute = client.get_dispute(&1).unwrap();
+    let dispute = client.get_dispute_entry(&1).unwrap();
     assert!(dispute.resolved, "dispute should be marked resolved");
     assert_eq!(dispute.outcome, Some(DisputeOutcome::Rejected), "outcome should be Rejected");
     assert_eq!(dispute.evidence_hash, Some(evidence), "evidence hash should be stored");
@@ -387,7 +387,7 @@ fn resolve_dispute_preserves_original_data() {
         &FreezeReason::IssuerDispute,
     );
 
-    let dispute_before = client.get_dispute(&1).unwrap();
+    let dispute_before = client.get_dispute_entry(&1).unwrap();
     assert_eq!(dispute_before.dispute_id, 1);
     assert_eq!(dispute_before.freeze_reason, FreezeReason::IssuerDispute);
     assert!(!dispute_before.resolved);
@@ -395,7 +395,7 @@ fn resolve_dispute_preserves_original_data() {
     let evidence = create_evidence_hash(&env);
     client.resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
 
-    let dispute_after = client.get_dispute(&1).unwrap();
+    let dispute_after = client.get_dispute_entry(&1).unwrap();
     assert_eq!(dispute_after.dispute_id, 1, "dispute_id should remain unchanged");
     assert_eq!(dispute_after.holder, holder, "holder should remain unchanged");
     assert_eq!(dispute_after.freeze_reason, FreezeReason::IssuerDispute, "reason should remain unchanged");
@@ -419,7 +419,7 @@ fn multiple_disputes_can_be_resolved_independently() {
         &token,
         &holder2,
         &5_000,
-    );
+    &1);
 
     // Create dispute 1
     client.emergency_freeze_holder(
@@ -441,19 +441,19 @@ fn multiple_disputes_can_be_resolved_independently() {
         &FreezeReason::IssuerDispute,
     );
 
-    assert_eq!(client.get_dispute(&1).unwrap().dispute_id, 1);
-    assert_eq!(client.get_dispute(&2).unwrap().dispute_id, 2);
+    assert_eq!(client.get_dispute_entry(&1).unwrap().dispute_id, 1);
+    assert_eq!(client.get_dispute_entry(&2).unwrap().dispute_id, 2);
 
     // Resolve dispute 1 with Upheld
     let evidence = create_evidence_hash(&env);
     client.resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(client.get_dispute(&1).unwrap().resolved);
-    assert!(!client.get_dispute(&2).unwrap().resolved);
+    assert!(client.get_dispute_entry(&1).unwrap().resolved);
+    assert!(!client.get_dispute_entry(&2).unwrap().resolved);
 
     // Resolve dispute 2 with Rejected
     let evidence2 = create_evidence_hash(&env);
     client.resolve_dispute(&admin, &2, &DisputeOutcome::Rejected, &evidence2);
-    assert!(client.get_dispute(&2).unwrap().resolved);
+    assert!(client.get_dispute_entry(&2).unwrap().resolved);
 
     // Verify holder2 freeze was removed
     assert!(!client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder2));
@@ -474,6 +474,6 @@ fn get_dispute_nonexistent_returns_none() {
     // Actually, get_dispute returns an Option<DisputeEntry> so it will be None
     // Since it's a contract function, we need to call it through the client
     // The auto-generated client returns Option<DisputeEntry>
-    let result = _client.get_dispute(&999);
+    let result = _client.get_dispute_entry(&999);
     assert!(result.is_none(), "non-existent dispute should return None");
 }

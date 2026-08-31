@@ -5,8 +5,8 @@ use crate::vesting::{
     compute_claimable, compute_vested, VestingCurve, VestingKey, VestingSchedule,
 };
 use crate::{
-    assert_semver_forward, MigrationError, RevoraError, RevoraRevenueShare,
-    RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
+    assert_semver_forward, MigrationError, MigrationTransform, RevoraError,
+    RevoraRevenueShare, RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
 };
 use core::string::ToString;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -243,7 +243,7 @@ fn register_hook_rename_succeeds() {
 #[test]
 fn register_hook_custom_succeeds() {
     let (_, client, admin) = setup_migration_test();
-    let legacy_key = symbol_short!("custom_legacy");
+    let legacy_key = symbol_short!("cust_leg");
     let selector = symbol_short!("wrap_v2");
 
     client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Custom(selector));
@@ -306,7 +306,7 @@ fn clear_migration_hook_succeeds() {
 #[test]
 fn clear_nonexistent_hook_is_idempotent() {
     let (_, client, admin) = setup_migration_test();
-    let legacy_key = symbol_short!("no_such_key");
+    let legacy_key = symbol_short!("no_key");
 
     // Clearing a non-existent hook should succeed silently (idempotent)
     let res = client.try_clear_migration_hook(&admin, &legacy_key);
@@ -411,7 +411,7 @@ fn migrate_storage_walker_dry_run_applies_hooks_as_plan() {
     let legacy_key = symbol_short!("dry_key");
 
     // Register a rename hook
-    let new_key = symbol_short!("new_key_v2");
+    let new_key = symbol_short!("new_kv2");
     client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Rename(new_key));
 
     // Run the walker in dry_run mode
@@ -846,7 +846,8 @@ fn assert_schedules_eq(a: &VestingSchedule, b: &VestingSchedule) {
 /// all fields match.
 fn assert_xdr_roundtrip(env: &Env, schedule: &VestingSchedule) {
     let bytes: Bytes = schedule.to_xdr(env);
-    let decoded: VestingSchedule = VestingSchedule::from_xdr(env, &bytes).unwrap();
+    let decoded: VestingSchedule =
+        VestingSchedule::from_xdr(env, &bytes).expect("valid vesting schedule XDR");
     assert_schedules_eq(schedule, &decoded);
 }
 
@@ -928,7 +929,7 @@ fn test_vesting_xdr_roundtrip_graded() {
         0,
         1_000,
         50_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         2_000_000,
         100_000,
     );
@@ -943,7 +944,7 @@ fn test_vesting_xdr_roundtrip_step() {
         86_400,    // 1 day cliff
         86_400,    // start = cliff
         2_592_000, // 30 day end
-        VestingCurve::Step { steps: 12 },
+        VestingCurve::Step(12),
         10_000_000,
         500_000,
     );
@@ -1015,7 +1016,7 @@ fn test_vesting_storage_roundtrip_with_acceleration() {
         500,
         1_000,
         10_000,
-        VestingCurve::Graded { step_secs: 7_200 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (7200_u64, 10000_u32)]),
         5_000_000,
         250_000, // pre-accelerated
     );
@@ -1031,8 +1032,8 @@ fn test_vesting_legacy_bytes_migration_all_curves() {
     let curves = vec![
         VestingCurve::Linear,
         VestingCurve::Cliff,
-        VestingCurve::Graded { step_secs: 3600 },
-        VestingCurve::Step { steps: 12 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
+        VestingCurve::Step(12),
     ];
 
     for curve in curves {
@@ -1116,7 +1117,7 @@ fn test_vesting_byte_level_determinism() {
         1_000,
         5_000,
         100_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         1_000_000,
         0,
     );
@@ -1125,7 +1126,7 @@ fn test_vesting_byte_level_determinism() {
         1_000,
         5_000,
         100_000,
-        VestingCurve::Graded { step_secs: 3600 },
+        VestingCurve::Graded(soroban_sdk::vec![&env, (3600_u64, 10000_u32)]),
         1_000_000,
         0,
     );

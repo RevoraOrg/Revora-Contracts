@@ -45,7 +45,7 @@ fn register_offering(
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &ns, &token, &10_000, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
     (issuer, ns, token)
 }
 
@@ -53,7 +53,7 @@ fn register_offering(
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token)
@@ -187,7 +187,7 @@ fn unique_address_not_double_counted_for_same_requester_in_window() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &ns2, &token2, &5_000, &payout2, &0);
+    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
 
     let requester = Address::generate(&env);
     // First call on offering 1
@@ -352,7 +352,7 @@ fn window_id_equals_ts_divided_by_window_secs() {
 fn metrics_event_never_emitted_when_testnet_mode_false() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     // Do NOT enable testnet mode — contract stays in production mode.
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
@@ -376,7 +376,7 @@ fn metrics_event_never_emitted_when_testnet_mode_false() {
 fn metrics_event_not_emitted_on_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.set_testnet_mode(&true);
