@@ -162,47 +162,12 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposalPayload", "offering+proposal"),
     ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
     // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
-    ("DataKey3::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
-    ("DataKey3::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
-    ("DataKey3::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
-    // ── Multi-class share keys ──
-    ("DataKey3::OfferingClasses(OfferingId)", "Vec<ShareClass>", "offering"),
-    ("DataKey3::HolderShareClass(OfferingId, Address, ShareClass)", "ShareClass", "offering+holder"),
-    ("DataKey3::TotalClassSharesIssued(OfferingId, ShareClass)", "u32", "offering+class"),
-    ("DataKey3::ClassPriority(OfferingId, ShareClass)", "u32", "offering+class"),
-    ("DataKey3::ClassPayOrder(OfferingId, u64)", "Vec<ShareClass>", "offering+period"),
-    // ── Dispute keys ──
-    ("DataKey3::Dispute(BytesN<32>)", "Dispute", "dispute"),
-    ("DataKey3::DisputeEntry(u64)", "DisputeEntry", "dispute"),
-    ("DataKey3::DisputeWindowSecs(OfferingId)", "u64", "offering"),
-    ("DataKey3::CriticalDisputeCount(OfferingId)", "u32", "offering"),
-    ("DataKey3::DisputeCount(OfferingId, Address)", "u32", "offering+opener"),
-    // ── Oracle keys ──
-    ("DataKey3::OracleChain(OfferingId)", "Vec<Address>", "offering"),
-    ("DataKey3::TwapWindowSecs(OfferingId)", "u64", "offering"),
-    // ── Lockup / redemption keys ──
-    ("DataKey3::LockupSchedule(OfferingId)", "LockupSchedule", "offering"),
-    ("DataKey3::RedemptionFeeConfig(OfferingId)", "RedemptionFeeConfig", "offering"),
-    ("DataKey3::RedemptionRequest(OfferingId, Address)", "RedemptionRequest", "offering+holder"),
-    ("DataKey3::LastClosedPeriodTimestamp(OfferingId)", "u64", "offering"),
-    // ── Jurisdiction migration keys ──
-    ("DataKey3::JurisdictionGracePeriod(OfferingId)", "u64", "offering"),
-    ("DataKey3::JurisdictionMigration(OfferingId, Address)", "JurisdictionMigrationState", "offering+holder"),
-    // ── Faucet metrics keys ──
-    ("DataKey3::FaucetMetricsAddrSeen(u64, Address)", "bool", "window+address"),
-    ("DataKey3::FaucetMetricsCooldownRejects", "u32", "contract"),
-    ("DataKey3::FaucetMetricsUniqueAddrs", "u32", "contract"),
-    ("DataKey3::FaucetMetricsTotalDispensed", "u32", "contract"),
-    // ── Misc keys ──
-    ("DataKey3::AdminRotationDelay", "u64", "contract"),
-    ("DataKey3::GlobalFreezeReason", "FreezeReason", "contract"),
-    ("DataKey3::MultisigQuorumBps", "u32", "contract"),
-    ("DataKey3::MultisigEpoch", "u64", "contract"),
-    ("DataKey3::VoterWeight(Address)", "u32", "voter"),
-    ("DataKey3::HolderShareNonce(OfferingId, Address)", "u32", "offering+holder"),
-    ("DataKey3::ProcessedAttestationHash(BytesN<32>)", "bool", "attestation"),
-    ("DataKey3::EmitV2Compat", "bool", "contract"),
-    ("DataKey3::RemainingBasis(OfferingId, Address)", "i128", "offering+holder"),
+    ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
+    ("DataKey2::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
+    ("DataKey2::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
+    // ── Dividend accrual ledger (#div-accrual) ──
+    ("DataKey2::ReportAccPerShareE18(OfferingId)", "i128", "offering"),
+    ("DataKey2::HolderReportLedger(OfferingId, Address)", "HolderReportAccrual", "offering+holder"),
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
