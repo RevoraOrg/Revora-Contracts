@@ -146,11 +146,11 @@ pub fn update_tax_year_accumulator(
     return_of_capital: i128,
 ) {
     let year_key = DataKey2::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
-    let mut summary: TaxYearSummary = env.storage().persistent().get(&year_key).unwrap_or(TaxYearSummary {
-        ordinary_income: 0,
-        capital_gains: 0,
-        return_of_capital: 0,
-    });
+    let mut summary: TaxYearSummary = env
+        .storage()
+        .persistent()
+        .get(&year_key)
+        .unwrap_or(TaxYearSummary { ordinary_income: 0, capital_gains: 0, return_of_capital: 0 });
     summary.ordinary_income = summary.ordinary_income.saturating_add(ordinary_income);
     summary.capital_gains = summary.capital_gains.saturating_add(capital_gains);
     summary.return_of_capital = summary.return_of_capital.saturating_add(return_of_capital);
@@ -202,4 +202,29 @@ pub fn rollover_distribution(
     );
 
     TaxBucketResult { return_of_capital, capital_gains }
+}
+
+/// Taxation bucket for a revenue-share distribution.
+///
+/// Revenue-share distributions have different tax treatments:
+/// - `Ordinary` — ordinary taxable income (dividends, interest, etc.)
+/// - `Capital` — capital gains (profit from sale of securities)
+/// - `ReturnOfCapital` — return of capital (non-taxable distribution)
+/// - `Custom(Symbol)` — a jurisdiction-specific or custom bucket identifier.
+///
+/// The bucket is tagged on `report_revenue` so downstream indexers and tax
+/// engines can categorize each disbursement without out-of-band annotation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaxBucket {
+    Ordinary,
+    Capital,
+    ReturnOfCapital,
+    Custom(Symbol),
+}
+
+impl Default for TaxBucket {
+    fn default() -> Self {
+        TaxBucket::Ordinary
+    }
 }
