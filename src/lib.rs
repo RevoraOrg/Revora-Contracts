@@ -396,6 +396,8 @@ mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_compute_share_invariants;
 #[cfg(test)]
+mod test_blacklist_add_many;
+#[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
