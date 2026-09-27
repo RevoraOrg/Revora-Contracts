@@ -388,6 +388,8 @@ mod test_merkle_canonical_order;
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_time_windows;
+#[cfg(test)]
+mod test_whitelist_enabled;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
