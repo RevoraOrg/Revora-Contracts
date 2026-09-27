@@ -91,7 +91,7 @@
 
 #![allow(dead_code)]
 
-use crate::MAX_PROOF_DEPTH;
+pub use crate::MAX_PROOF_DEPTH;
 use soroban_sdk::{contracterror, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
 // ── Error type ─────────────────────────────────────────────────────────────

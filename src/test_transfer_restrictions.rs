@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{RevoraError, test_utils::setup_context};
+use crate::{RevoraError, test_utils::setup_context, TransferAttestation };
 use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env, Symbol};
 
 #[test]
@@ -25,11 +25,21 @@ fn test_transfer_restrictions() {
     // Transfer from holder1 to holder2, assigning holder2 to "RegD"
     let nonce = 1u64;
     let expires_at = u64::MAX;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &attestation_hash, &network_id, &nonce, &expires_at);
+    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
 
     let holder3 = Address::generate(&env);
     let nonce2 = 2u64;
-    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &attestation_hash, &network_id, &nonce2, &expires_at);
+    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce2,
+            expires_at: expires_at,
+        },);
     assert_eq!(res.unwrap_err().unwrap(), RevoraError::CategoryCapReached);
 
     // Drop holder2 to 0
@@ -37,7 +47,12 @@ fn test_transfer_restrictions() {
 
     // Now we can transfer to holder3
     let nonce3 = 3u64;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &attestation_hash, &network_id, &nonce3, &expires_at);
+    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce3,
+            expires_at: expires_at,
+        },);
 }
 
 #[test]
@@ -62,15 +77,30 @@ fn test_oscillating_across_zero() {
     
     let nonce = 1u64;
     let expires_at = u64::MAX;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &attestation_hash, &network_id, &nonce, &expires_at);
+    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
 
     // Holder2 transfers entirely to holder3
     let nonce2 = 2u64;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder2, &holder3, &50, &category, &attestation_hash, &network_id, &nonce2, &expires_at);
+    client.transfer_with_attestation(&issuer, &namespace, &token, &holder2, &holder3, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce2,
+            expires_at: expires_at,
+        },);
 
     // Cap is 1, holder3 is the only one in RegS. Try adding holder4.
     let holder4 = Address::generate(&env);
     let nonce3 = 3u64;
-    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder4, &50, &category, &attestation_hash, &network_id, &nonce3, &expires_at);
+    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder4, &50, &category, &TransferAttestation {
+            attest_hash: attestation_hash,
+            network_id: network_id,
+            nonce: nonce3,
+            expires_at: expires_at,
+        },);
     assert_eq!(res.unwrap_err().unwrap(), RevoraError::CategoryCapReached);
 }

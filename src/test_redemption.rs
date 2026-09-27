@@ -733,11 +733,7 @@ fn test_cliff_taper_lockup_schedule_success_and_getters() {
     assert_eq!(client.get_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token), None);
 
     // Set CliffTaper: 20% (2000 BPS) bulk unlock at ts=1000, linear taper until ts=2000
-    let sched = crate::LockupSchedule::CliffTaper {
-        cliff_ts: 1000,
-        cliff_bps: 2000,
-        taper_end_ts: 2000,
-    };
+    let sched = crate::LockupSchedule::CliffTaper(1000, 2000, 2000);
     client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
 
     assert_eq!(
@@ -801,11 +797,7 @@ fn test_cliff_taper_invalid_params_rejected() {
     assert_eq!(res1, Err(Ok(RevoraError::InvalidRevenueShareBps)));
 
     // Invalid taper_end_ts < cliff_ts
-    let invalid_end = crate::LockupSchedule::CliffTaper {
-        cliff_ts: 2000,
-        cliff_bps: 2000,
-        taper_end_ts: 1000,
-    };
+    let invalid_end = crate::LockupSchedule::CliffTaper(2000, 2000, 1000);
     let res2 = client.try_set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &invalid_end);
     assert_eq!(res2, Err(Ok(RevoraError::InvalidAmount)));
 }
@@ -818,11 +810,7 @@ fn test_extend_lockup_extends_taper_end_ts() {
     let (client, issuer, offering_token, ..) = setup_offering(&env);
 
     // Set initial lockup: cliff at 1000, taper end at 2000.
-    let sched = crate::LockupSchedule::CliffTaper {
-        cliff_ts: 1000,
-        cliff_bps: 2000,
-        taper_end_ts: 2000,
-    };
+    let sched = crate::LockupSchedule::CliffTaper(1000, 2000, 2000);
     client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
 
     // Extend taper_end_ts from 2000 to 3000.
@@ -843,7 +831,7 @@ fn test_extend_lockup_extends_taper_end_ts() {
     // Verify the schedule was updated.
     let updated =
         client.get_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token).unwrap();
-    if let crate::LockupSchedule::CliffTaper { cliff_ts, cliff_bps, taper_end_ts } = updated {
+    if let crate::LockupSchedule::CliffTaper(cliff_ts, cliff_bps, taper_end_ts) = updated {
         assert_eq!(cliff_ts, 1000);
         assert_eq!(cliff_bps, 2000);
         assert_eq!(taper_end_ts, 3000);
@@ -858,11 +846,7 @@ fn test_extend_lockup_rejects_shortening() {
     let (client, issuer, offering_token, ..) = setup_offering(&env);
 
     // Set initial lockup: taper_end_ts = 2000.
-    let sched = crate::LockupSchedule::CliffTaper {
-        cliff_ts: 1000,
-        cliff_bps: 2000,
-        taper_end_ts: 2000,
-    };
+    let sched = crate::LockupSchedule::CliffTaper(1000, 2000, 2000);
     client.set_lockup_schedule(&issuer, &symbol_short!("def"), &offering_token, &sched);
 
     // Attempt to shorten to 1500 is rejected.

@@ -6385,25 +6385,43 @@ fn simulate_distribution_returns_correct_payouts() {
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
 
-    let mut shares = Vec::new(&env);
-    shares.push_back((holder_a.clone(), 3_000u32));
-    shares.push_back((holder_b.clone(), 2_000u32));
+    let mut holders = Vec::new(&env);
+    holders.push_back(holder_a.clone());
+    holders.push_back(holder_b.clone());
+    let mut holder_bps = Vec::new(&env);
+    holder_bps.push_back(3_000u32);
+    holder_bps.push_back(2_000u32);
 
-    let result =
-        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    let result = client.simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &holders,
+        &holder_bps,
+    );
     assert_eq!(result.total_distributed, 50_000); // 30% + 20% of 100k
     assert_eq!(result.payouts.len(), 2);
-    assert_eq!(result.payouts.get(0).unwrap(), (holder_a, 30_000));
-    assert_eq!(result.payouts.get(1).unwrap(), (holder_b, 20_000));
+    assert_eq!(result.payouts.get(0).unwrap().holder, holder_a);
+    assert_eq!(result.payouts.get(0).unwrap().normalized_payout, 30_000);
+    assert_eq!(result.payouts.get(1).unwrap().holder, holder_b);
+    assert_eq!(result.payouts.get(1).unwrap().normalized_payout, 20_000);
 }
 
 #[test]
 fn simulate_distribution_zero_holders() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
 
-    let shares = Vec::new(&env);
-    let result =
-        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    let holders = Vec::new(&env);
+    let holder_bps = Vec::new(&env);
+    let result = client.simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &holders,
+        &holder_bps,
+    );
     assert_eq!(result.total_distributed, 0);
     assert_eq!(result.payouts.len(), 0);
 }
@@ -6413,11 +6431,20 @@ fn simulate_distribution_zero_revenue() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let holder = Address::generate(&env);
 
-    let mut shares = Vec::new(&env);
-    shares.push_back((holder.clone(), 5_000u32));
-    let result = client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &0, &shares);
+    let mut holders = Vec::new(&env);
+    holders.push_back(holder.clone());
+    let mut holder_bps = Vec::new(&env);
+    holder_bps.push_back(5_000u32);
+    let result = client.simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &0,
+        &holders,
+        &holder_bps,
+    );
     assert_eq!(result.total_distributed, 0);
-    assert_eq!(result.payouts.get(0).clone().unwrap().1, 0);
+    assert_eq!(result.payouts.get(0).unwrap().normalized_payout, 0);
 }
 
 #[test]
