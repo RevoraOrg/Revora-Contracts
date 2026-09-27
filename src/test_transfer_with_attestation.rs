@@ -1528,3 +1528,671 @@ fn attestation_compute_verify_round_trip() {
         "digests for different `from` addresses must differ"
     );
 }
+
+// ── Focused boundary and adversarial tests for `verify_attestation_digest` ───
+//
+// These tests exercise the boundary and adversarial parameter space not covered
+// by the round-trip / network-id suite above.  They are grouped by concern:
+//
+//   A — amount_bps boundary values (0, 10 000, u32::MAX)
+//   B — full parameter no-aliasing (each of issuer / namespace / token / to)
+//   C — parameter position sensitivity (swap from ↔ to)
+//   D — first-check-wins: both fields wrong → NetworkIdMismatch at step 1
+//   E — all-zeros digest with correct network_id → NetworkIdMismatch at step 2
+//   F — state invariance: the function is read-only; no storage mutations
+
+// ── A: amount_bps boundary values ────────────────────────────────────────────
+
+/// A1. amount_bps = 0 (minimum boundary) → `Ok(())`
+///
+/// Zero basis-points is a valid amount_bps (no revenue share).  The digest must
+/// be computed and verified without error.
+#[test]
+fn verify_attestation_amount_bps_zero_accepted() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let attestation = make_signed_attestation(&env, &client, &issuer, &token, &from, &to, 0);
+
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &0u32,
+    );
+    assert_eq!(result, Ok(Ok(())), "amount_bps=0 (min boundary) must be accepted");
+}
+
+/// A2. amount_bps = 10 000 (maximum valid offering bps) → `Ok(())`
+///
+/// 10 000 bps represents a 100% revenue share and is the upper valid boundary
+/// for an offering's share allocation.  The round-trip must succeed.
+#[test]
+fn verify_attestation_amount_bps_max_valid_accepted() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let attestation = make_signed_attestation(&env, &client, &issuer, &token, &from, &to, 10_000);
+
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &10_000u32,
+    );
+    assert_eq!(result, Ok(Ok(())), "amount_bps=10 000 (max valid) must be accepted");
+}
+
+/// A3. amount_bps = u32::MAX (extreme boundary) → `Ok(())`
+///
+/// `verify_attestation_digest` has no upper bound on amount_bps; it only checks
+/// the digest.  An attestation produced for u32::MAX must round-trip successfully.
+#[test]
+fn verify_attestation_amount_bps_u32_max_accepted() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let attestation =
+        make_signed_attestation(&env, &client, &issuer, &token, &from, &to, u32::MAX);
+
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &u32::MAX,
+    );
+    assert_eq!(result, Ok(Ok(())), "amount_bps=u32::MAX (extreme boundary) must be accepted");
+}
+
+/// A4. Digest computed for amount_bps=0 must not verify for amount_bps=1.
+///
+/// Confirms that the BE-4-byte encoding of amount_bps participates fully in the
+/// preimage and that the zero value is not a special alias for any nonzero value.
+#[test]
+fn verify_attestation_amount_bps_zero_vs_one_no_alias() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    let digest_0 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &0u32,
+    );
+    let digest_1 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &1u32,
+    );
+    assert_ne!(digest_0, digest_1, "digests for bps=0 and bps=1 must differ");
+
+    // Using digest for 0 against params with 1 must be rejected.
+    let attestation = SignedAttestation {
+        network_id: network_id.clone(),
+        digest: digest_0,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &1u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "digest for bps=0 must not verify against bps=1"
+    );
+}
+
+// ── B: full parameter no-aliasing ────────────────────────────────────────────
+//
+// For each of issuer / namespace / token / to, changing only that parameter must
+// produce a different digest and must cause verify to return NetworkIdMismatch
+// when the old digest is presented with the new parameters.
+
+/// B1. Changing the issuer alone changes the digest.
+#[test]
+fn verify_attestation_issuer_no_alias() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    let digest_original = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+
+    // Distinct issuer address.
+    let issuer2 = Address::generate(&env);
+    let digest_issuer2 = client.compute_attestation_digest(
+        &issuer2,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_ne!(
+        digest_original, digest_issuer2,
+        "changing issuer must produce a different digest"
+    );
+
+    // Presenting the original digest against issuer2's params must fail.
+    let attestation = SignedAttestation {
+        network_id,
+        digest: digest_original,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer2,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "digest for issuer_1 must not verify against issuer_2"
+    );
+}
+
+/// B2. Changing the namespace alone changes the digest.
+#[test]
+fn verify_attestation_namespace_no_alias() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    let digest_def = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    let digest_alt = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("alt"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_ne!(
+        digest_def, digest_alt,
+        "changing namespace must produce a different digest"
+    );
+
+    // Presenting digest_def against the alt namespace must fail.
+    let attestation = SignedAttestation {
+        network_id,
+        digest: digest_def,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("alt"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "digest for namespace 'def' must not verify against namespace 'alt'"
+    );
+}
+
+/// B3. Changing the token alone changes the digest.
+#[test]
+fn verify_attestation_token_no_alias() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    let digest_token1 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+
+    let token2 = Address::generate(&env);
+    let digest_token2 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token2,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_ne!(
+        digest_token1, digest_token2,
+        "changing token must produce a different digest"
+    );
+
+    // Presenting digest for token against token2 must fail.
+    let attestation = SignedAttestation {
+        network_id,
+        digest: digest_token1,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token2,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "digest for token_1 must not verify against token_2"
+    );
+}
+
+/// B4. Changing the `to` address alone changes the digest.
+#[test]
+fn verify_attestation_to_address_no_alias() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to1 = Address::generate(&env);
+    let to2 = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    let digest_to1 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to1,
+        &500u32,
+    );
+    let digest_to2 = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to2,
+        &500u32,
+    );
+    assert_ne!(
+        digest_to1, digest_to2,
+        "changing `to` must produce a different digest"
+    );
+
+    // Presenting digest for to1 against to2 must fail.
+    let attestation = SignedAttestation {
+        network_id,
+        digest: digest_to1,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to2,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "digest for to_1 must not verify against to_2"
+    );
+}
+
+// ── C: parameter position sensitivity (from ↔ to swap) ──────────────────────
+
+/// C1. Swapping `from` and `to` produces a different digest.
+///
+/// An attestation for (from=A, to=B) must not pass verification for (from=B,
+/// to=A).  This ensures the positional encoding of from/to is unambiguous and
+/// prevents a receiver from forging an attestation where they appear as sender.
+#[test]
+fn verify_attestation_from_to_swap_rejected() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let addr_a = Address::generate(&env);
+    let addr_b = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    // Digest for (from=A, to=B).
+    let digest_ab = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &addr_a,
+        &addr_b,
+        &500u32,
+    );
+    // Digest for (from=B, to=A).
+    let digest_ba = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &addr_b,
+        &addr_a,
+        &500u32,
+    );
+    assert_ne!(
+        digest_ab, digest_ba,
+        "from/to swap must produce a different digest (position sensitivity)"
+    );
+
+    // Presenting digest_ab against the swapped parameters must fail.
+    let attestation_ab = SignedAttestation {
+        network_id: network_id.clone(),
+        digest: digest_ab,
+    };
+    let result = client.try_verify_attestation_digest(
+        &attestation_ab,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &addr_b, // swapped
+        &addr_a, // swapped
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "attestation for (from=A,to=B) must not verify against (from=B,to=A)"
+    );
+
+    // And the reverse: digest_ba against the original (from=A, to=B) must fail.
+    let attestation_ba = SignedAttestation {
+        network_id,
+        digest: digest_ba,
+    };
+    let result_rev = client.try_verify_attestation_digest(
+        &attestation_ba,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &addr_a,
+        &addr_b,
+        &500u32,
+    );
+    assert_eq!(
+        result_rev,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "attestation for (from=B,to=A) must not verify against (from=A,to=B)"
+    );
+}
+
+// ── D: first-check-wins — both fields wrong → NetworkIdMismatch at step 1 ───
+
+/// D1. When both `network_id` and `digest` are wrong, the function returns
+///     `NetworkIdMismatch` (step 1 check wins before step 2 is reached).
+///
+/// This test ensures the guard ordering is stable: the network_id gate fires
+/// first, so an attacker cannot learn whether their digest is correct by
+/// providing a mismatched network_id.
+#[test]
+fn verify_attestation_both_fields_wrong_returns_network_id_mismatch() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    // Deliberately wrong on both fields: unknown network_id and garbage digest.
+    let wrong_network_id = BytesN::from_array(&env, &[0xde; 32]);
+    let wrong_digest = BytesN::from_array(&env, &[0xad; 32]);
+
+    let attestation = SignedAttestation {
+        network_id: wrong_network_id,
+        digest: wrong_digest,
+    };
+
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "both fields wrong must still return NetworkIdMismatch (step 1 fires first)"
+    );
+}
+
+// ── E: all-zeros digest with correct network_id → step-2 rejection ───────────
+
+/// E1. A `SignedAttestation` with the correct `network_id` but an all-zeros
+///     digest (BytesN<32> = [0x00; 32]) must be rejected.
+///
+/// This is the zero-value boundary for the digest field: SHA-256 never produces
+/// all-zeros naturally, so this tests that the comparison is strict and that the
+/// zero digest cannot pass as a wildcard.
+#[test]
+fn verify_attestation_zero_digest_with_correct_network_id_rejected() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    // Correct network_id, but zero digest — should fail at step 2.
+    let zero_digest = BytesN::from_array(&env, &[0x00u8; 32]);
+    let attestation = SignedAttestation {
+        network_id,
+        digest: zero_digest,
+    };
+
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "all-zeros digest must not pass verification even with a correct network_id"
+    );
+}
+
+// ── F: state invariance (read-only) ──────────────────────────────────────────
+//
+// `verify_attestation_digest` must never mutate contract storage.  We verify
+// this by reading holder-share state before and after both a successful call
+// and a failing call, asserting they are identical.
+
+/// F1. A successful `verify_attestation_digest` call must not alter any
+///     storage entry (holder shares are unchanged).
+#[test]
+fn verify_attestation_success_does_not_mutate_state() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    // Pre-condition: give `from` a share so we have a concrete storage entry.
+    set_share(&client, &issuer, &token, &from, 3_000);
+    let share_before = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from);
+    let to_share_before = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to);
+
+    let attestation = make_signed_attestation(&env, &client, &issuer, &token, &from, &to, 500);
+    let result = client.try_verify_attestation_digest(
+        &attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(result, Ok(Ok(())), "successful verify must return Ok(())");
+
+    // Post-condition: storage must be identical to pre-condition.
+    assert_eq!(
+        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from),
+        share_before,
+        "from holder's share must be unchanged after successful verify"
+    );
+    assert_eq!(
+        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to),
+        to_share_before,
+        "to holder's share must be unchanged after successful verify"
+    );
+}
+
+/// F2. A rejected `verify_attestation_digest` call (wrong network_id) must not
+///     alter any storage entry.
+#[test]
+fn verify_attestation_failure_does_not_mutate_state() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    // Pre-condition: give `from` a share so we have a concrete storage entry.
+    set_share(&client, &issuer, &token, &from, 4_000);
+    let share_before = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from);
+    let to_share_before = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to);
+
+    // Construct an attestation that will be rejected (wrong network_id).
+    let wrong_network_id = BytesN::from_array(&env, &[0xff; 32]);
+    let correct_digest = client.compute_attestation_digest(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    let bad_attestation = SignedAttestation {
+        network_id: wrong_network_id,
+        digest: correct_digest,
+    };
+
+    let result = client.try_verify_attestation_digest(
+        &bad_attestation,
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &500u32,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NetworkIdMismatch)),
+        "call with wrong network_id must be rejected"
+    );
+
+    // Post-condition: storage must be identical to pre-condition.
+    assert_eq!(
+        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from),
+        share_before,
+        "from holder's share must be unchanged after failed verify"
+    );
+    assert_eq!(
+        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to),
+        to_share_before,
+        "to holder's share must be unchanged after failed verify"
+    );
+}
+
+/// F3. Multiple consecutive failed calls (wrong digest) must not accumulate any
+///     state changes — all shares remain at their initial values.
+#[test]
+fn verify_attestation_repeated_failures_do_not_mutate_state() {
+    let env = Env::default();
+    let (client, issuer, token) = setup_offering(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    set_share(&client, &issuer, &token, &from, 2_500);
+    let share_before = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from);
+
+    let network_id: BytesN<32> = env.ledger().network_id();
+
+    // Five consecutive calls, each with a correct network_id but a wrong digest.
+    for i in 0u8..5u8 {
+        let bad_digest = BytesN::from_array(&env, &[i; 32]);
+        let attestation = SignedAttestation {
+            network_id: network_id.clone(),
+            digest: bad_digest,
+        };
+        let result = client.try_verify_attestation_digest(
+            &attestation,
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &from,
+            &to,
+            &500u32,
+        );
+        assert_eq!(
+            result,
+            Err(Ok(RevoraError::NetworkIdMismatch)),
+            "iteration {i}: wrong digest must be rejected"
+        );
+    }
+
+    assert_eq!(
+        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from),
+        share_before,
+        "from holder's share must be unchanged after five failed verify calls"
+    );
+}
