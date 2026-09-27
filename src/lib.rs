@@ -378,6 +378,8 @@ mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_compute_share_invariants;
 #[cfg(test)]
+mod test_blacklist_add_many;
+#[cfg(test)]
 mod test_duplicates;
 mod test_event_indexed_v2;
 #[cfg(test)]
