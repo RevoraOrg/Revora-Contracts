@@ -406,6 +406,8 @@ mod test_faucet_metrics;
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
+mod test_min_revenue_threshold_adversarial;
+#[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
 mod test_quorum_check;
