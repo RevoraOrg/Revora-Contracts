@@ -415,6 +415,8 @@ mod test_tax_year;
 mod test_transfer_cooldown;
 #[cfg(test)]
 mod test_multi_token_independence;
+#[cfg(test)]
+mod test_get_total_shares_issued;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
