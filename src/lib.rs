@@ -16358,3 +16358,5 @@ mod test_merkle_root_rotation;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
+#[cfg(test)]
+mod test_pending_transfer_details;
