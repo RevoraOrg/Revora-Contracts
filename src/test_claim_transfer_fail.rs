@@ -447,7 +447,8 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (token_b_id, token_b) = deploy_failing_token(&env);
     token_b.mint(&issuer, &1_000_000);
 
-    revora.register_offering(&issuer,
+    revora.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -456,8 +457,16 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &token_b_id,
         &0,
         &symbol_short!(""),
-        &0);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000, &1);
+        &0,
+    );
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token_b,
+        &holder,
+        &10_000,
+        &1,
+    );
 
     // Mint payout tokens to the issuer so they can deposit revenue
     soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);

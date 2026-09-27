@@ -37,7 +37,18 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 10_000_000);
 
     // Register offering with 0 claim delay → all periods immediately mature.
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &10_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }
