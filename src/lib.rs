@@ -391,6 +391,8 @@ mod test_time_windows;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
 mod test_close_period;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
@@ -404,17 +406,15 @@ mod test_faucet_metrics;
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
+mod test_multi_token_independence;
+#[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
 #[cfg(test)]
-mod test_accrual_reconciliation_prop;
-#[cfg(test)]
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
-#[cfg(test)]
-mod test_multi_token_independence;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -3055,10 +3055,7 @@ impl RevoraRevenueShare {
             .storage()
             .persistent()
             .get(&ledger_key)
-            .unwrap_or(HolderReportAccrual {
-                last_report_acc_e18: global_acc,
-                accrued_owed: 0,
-            });
+            .unwrap_or(HolderReportAccrual { last_report_acc_e18: global_acc, accrued_owed: 0 });
 
         if global_acc <= ledger.last_report_acc_e18 || old_share_bps == 0 {
             // Nothing to settle; advance the checkpoint to current global.
@@ -9117,7 +9114,12 @@ impl RevoraRevenueShare {
             }
             if temp_total_shares == max_shares {
                 env.events().publish(
-                    (EVENT_SUPPLY_CAP_SATURATED, offering_id.issuer.clone(), offering_id.namespace.clone(), offering_id.token.clone()),
+                    (
+                        EVENT_SUPPLY_CAP_SATURATED,
+                        offering_id.issuer.clone(),
+                        offering_id.namespace.clone(),
+                        offering_id.token.clone(),
+                    ),
                     (temp_total_shares, max_shares),
                 );
             }
@@ -11163,11 +11165,7 @@ impl RevoraRevenueShare {
         let mut payouts: Vec<DistributionEntry> = Vec::new(env);
         for (bounded_bps, share_bps, holder, normalized_payout) in payout_rows {
             let _ = bounded_bps;
-            payouts.push_back(DistributionEntry {
-                holder,
-                share_bps,
-                normalized_payout,
-            });
+            payouts.push_back(DistributionEntry { holder, share_bps, normalized_payout });
         }
 
         PreflightCloseResult {
@@ -12768,10 +12766,7 @@ impl RevoraRevenueShare {
             .storage()
             .persistent()
             .get(&ledger_key)
-            .unwrap_or(HolderReportAccrual {
-                last_report_acc_e18: global_acc,
-                accrued_owed: 0,
-            });
+            .unwrap_or(HolderReportAccrual { last_report_acc_e18: global_acc, accrued_owed: 0 });
 
         // Unsettled portion since last share-change settlement.
         let unsettled = if global_acc > ledger.last_report_acc_e18 {

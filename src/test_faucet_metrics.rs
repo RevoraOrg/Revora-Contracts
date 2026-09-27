@@ -45,7 +45,18 @@ fn register_offering(
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (issuer, ns, token)
 }
 
@@ -187,7 +198,18 @@ fn unique_address_not_double_counted_for_same_requester_in_window() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer2,
+        &Vec::new(&env),
+        &1u32,
+        &ns2,
+        &token2,
+        &5_000,
+        &payout2,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let requester = Address::generate(&env);
     // First call on offering 1
