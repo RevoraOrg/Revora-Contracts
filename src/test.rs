@@ -15467,3 +15467,379 @@ fn set_holder_share_below_max_supply_does_not_emit_cap_sat_event() {
     let found = events_after[events_before..].iter().any(|e| e.1.contains(cap_sat_sym));
     assert!(!found, "EVENT_SUPPLY_CAP_SATURATED must not fire strictly below cap");
 }
+// ============================================================
+// Adversarial coverage for apply_snapshot_shares
+// ============================================================
+#[cfg(test)]
+mod apply_snapshot_shares_adversarial {
+    use super::*;
+
+    fn snapshot_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &contract_id);
+        let issuer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let (payment_token, pt_admin) = create_payment_token(&env);
+
+        client.register_offering(
+            &issuer,
+            &Vec::new(&env),
+            &1u32,
+            &symbol_short!("def"),
+            &token,
+            &5_000,
+            &payment_token,
+            &0,
+            &symbol_short!(""),
+            &0,
+        );
+
+        mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
+        client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+
+        let hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+        client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &hash);
+
+        (env, client, issuer, token, payment_token, contract_id)
+    }
+
+    #[test]
+    fn apply_snapshot_shares_happy_path() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+            (Address::generate(&env), 2000u32),
+            (Address::generate(&env), 3000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_ok(), "apply_snapshot_shares should succeed with valid inputs");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_multiple_batches() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders1 = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+            (Address::generate(&env), 2000u32),
+        ];
+        let holders2 = vec![
+            &env,
+            (Address::generate(&env), 3000u32),
+            (Address::generate(&env), 4000u32),
+        ];
+
+        let r1 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders1);
+        assert!(r1.is_ok());
+
+        let r2 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &2, &holders2);
+        assert!(r2.is_ok());
+
+        let count = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn apply_snapshot_shares_idempotent_same_index() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holder = Address::generate(&env);
+        let holders = vec![&env, (holder.clone(), 1000u32)];
+
+        let r1 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(r1.is_ok());
+
+        let holders2 = vec![&env, (holder.clone(), 1000u32)];
+        let r2 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders2);
+        assert!(r2.is_ok());
+
+        let count = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn apply_snapshot_shares_empty_holders_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders: Vec<(Address, u32)> = Vec::new(&env);
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "empty holders should be rejected");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_batch_too_large_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let mut holders: Vec<(Address, u32)> = Vec::new(&env);
+        for _ in 0..51 {
+            holders.push_back((Address::generate(&env), 100u32));
+        }
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "batch > MAX_SNAPSHOT_BATCH should be rejected");
+        if let Err(Ok(RevoraError::LimitReached)) = result {
+        } else {
+            panic!("expected LimitReached error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_share_bps_too_large_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 10_001u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "share_bps > 10000 should be rejected");
+        if let Err(Ok(RevoraError::InvalidShareBps)) = result {
+        } else {
+            panic!("expected InvalidShareBps error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_uncommitted_snapshot_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &999, &0, &holders);
+        assert!(result.is_err(), "uncommitted snapshot_ref should be rejected");
+        if let Err(Ok(RevoraError::OutdatedSnapshot)) = result {
+        } else {
+            panic!("expected OutdatedSnapshot error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_outdated_snapshot_ref_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_ok());
+
+        let result2 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result2.is_err(), "duplicate/outdated snapshot_ref should be rejected");
+        if let Err(Ok(RevoraError::OutdatedSnapshot)) = result2 {
+        } else {
+            panic!("expected OutdatedSnapshot error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_disabled_snapshot_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &false);
+
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "disabled snapshot should be rejected");
+        if let Err(Ok(RevoraError::SnapshotNotEnabled)) = result {
+        } else {
+            panic!("expected SnapshotNotEnabled error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_non_issuer_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        env.mock_all_auths(false);
+        let attacker = Address::generate(&env);
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&attacker, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "non-issuer should be rejected");
+        if let Err(Ok(RevoraError::OfferingNotFound)) = result {
+        } else {
+            panic!("expected OfferingNotFound error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_frozen_contract_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        client.pause(&issuer, &symbol_short!("def"), &token, &PauseState::HardPaused);
+
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "frozen contract should reject");
+        if let Err(Ok(RevoraError::ContractFrozen)) = result {
+        } else {
+            panic!("expected ContractFrozen error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_paused_contract_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        client.pause(&issuer, &symbol_short!("def"), &token, &PauseState::SoftPaused);
+
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "paused contract should reject");
+        if let Err(Ok(RevoraError::ContractPaused)) = result {
+        } else {
+            panic!("expected ContractPaused error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_invalid_namespace_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("wrong"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "wrong namespace should be rejected");
+        if let Err(Ok(RevoraError::OfferingNotFound)) = result {
+        } else {
+            panic!("expected OfferingNotFound error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_invalid_token_rejected() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let wrong_token = Address::generate(&env);
+        let holders = vec![
+            &env,
+            (Address::generate(&env), 1000u32),
+        ];
+
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &wrong_token, &1, &0, &holders);
+        assert!(result.is_err(), "wrong token should be rejected");
+        if let Err(Ok(RevoraError::OfferingNotFound)) = result {
+        } else {
+            panic!("expected OfferingNotFound error");
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_shares_state_unchanged_after_invalid_share_bps() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holder = Address::generate(&env);
+        let holders_valid = vec![&env, (holder.clone(), 1000u32)];
+        let holders_invalid = vec![&env, (holder.clone(), 10_001u32)];
+
+        let r1 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders_valid);
+        assert!(r1.is_ok());
+        let count_after_valid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count_after_valid, 1);
+
+        let r2 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &1, &holders_invalid);
+        assert!(r2.is_err());
+        let count_after_invalid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count_after_invalid, count_after_valid, "state should be unchanged after rejection");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_state_unchanged_after_outdated_snapshot() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holder = Address::generate(&env);
+        let holders = vec![&env, (holder.clone(), 1000u32)];
+
+        let r1 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(r1.is_ok());
+        let count_after_valid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+
+        let r2 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &1, &holders);
+        assert!(r2.is_err());
+        let count_after_invalid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count_after_invalid, count_after_valid, "state should be unchanged after rejection");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_state_unchanged_after_non_issuer() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        env.mock_all_auths(false);
+        let attacker = Address::generate(&env);
+        let holder = Address::generate(&env);
+        let holders = vec![&env, (holder.clone(), 1000u32)];
+
+        let r1 = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        assert!(r1.is_ok());
+        let count_after_valid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+
+        let r2 = client.try_apply_snapshot_shares(&attacker, &symbol_short!("def"), &token, &1, &1, &holders);
+        assert!(r2.is_err());
+        let count_after_invalid = client.get_snapshot_holder_count(&issuer, &symbol_short!("def"), &token, &1);
+        assert_eq!(count_after_invalid, count_after_valid, "state should be unchanged after rejection");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_start_index_boundary() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let holder = Address::generate(&env);
+        let holders = vec![&env, (holder.clone(), 1000u32)];
+
+        let max_u32 = u32::MAX;
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &max_u32, &holders);
+        assert!(result.is_ok(), "max u32 start_index should work");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_snapshot_ref_boundary() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let hash = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+        client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &u64::MAX, &hash);
+
+        let holders = vec![&env, (Address::generate(&env), 1000u32)];
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &u64::MAX, &0, &holders);
+        assert!(result.is_ok(), "max u64 snapshot_ref should work");
+    }
+
+    #[test]
+    fn apply_snapshot_shares_requires_issuer_quorum() {
+        let (env, client, issuer, token, _payment_token, _contract_id) = snapshot_setup();
+        let co_issuer = Address::generate(&env);
+        client.register_offering(
+            &issuer,
+            &vec![&env, co_issuer.clone()],
+            &2u32,
+            &symbol_short!("multi"),
+            &token,
+            &5_000,
+            &Address::generate(&env),
+            &0,
+            &symbol_short!(""),
+            &0,
+        );
+        client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token, &true);
+        let hash = soroban_sdk::BytesN::from_array(&env, &[3u8; 32]);
+        client.commit_snapshot(&issuer, &symbol_short!("multi"), &token, &1, &hash);
+
+        env.mock_all_auths(false);
+        issuer.require_auth();
+
+        let holders = vec![&env, (Address::generate(&env), 1000u32)];
+        let result = client.try_apply_snapshot_shares(&issuer, &symbol_short!("multi"), &token, &1, &0, &holders);
+        assert!(result.is_err(), "missing quorum auth should reject");
+    }
+}
