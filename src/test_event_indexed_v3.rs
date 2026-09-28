@@ -21,7 +21,10 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+    Vec,
+};
 
 use crate::{
     EventIndexTopicV2, EventIndexTopicV3, RevoraRevenueShare, RevoraRevenueShareClient, VoteChoice,
@@ -40,7 +43,18 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &2500,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (env, client, issuer, ns, token, payout)
 }
 
@@ -303,7 +317,18 @@ fn register_offering_emits_v2_and_v3_indexed_events() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     let events = env.events().all();
 
     assert!(events.len() > before + 2, "expected at least 3 events (offer_reg, ev_idx2, ev_idx3)");
@@ -371,7 +396,18 @@ fn v2_and_v3_fixtures_have_parallel_structure() {
 fn v2_only_subscribers_still_receive_v2_events() {
     let (env, client, issuer, token, ns, payout) = setup();
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     // V2 events are still emitted alongside V3
     let events = env.events().all();
