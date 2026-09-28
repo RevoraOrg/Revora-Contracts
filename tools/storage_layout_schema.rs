@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -32,14 +32,18 @@ macro_rules! storage_layout_entries {
 }
 
 const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_revenue_share", [
+    // -- DeferredDataKey --
     ("DeferredDataKey::DeferredReports(u32)", "i128", "period"),
+    // -- WindowDataKey --
     ("WindowDataKey::Report(OfferingId)", "WindowConfig", "offering"),
     ("WindowDataKey::Claim(OfferingId)", "WindowConfig", "offering"),
     ("WindowDataKey::Redemption(OfferingId)", "WindowConfig", "offering"),
+    // -- MetaDataKey --
     ("MetaDataKey::SignerKey(Address)", "BytesN<32>", "address"),
     ("MetaDataKey::Delegate(OfferingId)", "Address", "offering"),
     ("MetaDataKey::NonceUsed(Address, u64)", "bool", "address+nonce"),
     ("MetaDataKey::RevenueApproved(OfferingId, u64)", "bool", "offering+period"),
+    // -- DataKey --
     ("DataKey::LastPeriodId(OfferingId)", "u64", "offering"),
     ("DataKey::Blacklist(OfferingId)", "Vec<Address>", "offering"),
     ("DataKey::Whitelist(OfferingId)", "Vec<Address>", "offering"),
@@ -72,7 +76,6 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::LastSnapshotRef(OfferingId)", "u64", "offering"),
     ("DataKey::SnapshotEntry(OfferingId, u64)", "SnapshotEntry", "offering+snapshot"),
     ("DataKey::SnapshotHolder(OfferingId, u64, u32)", "HolderSnapshotEntry", "offering+snapshot+index"),
-    ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("DataKey::SnapshotHolderCount(OfferingId, u64)", "u32", "offering+snapshot"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("DataKey::PendingIssuerTransfer(OfferingId)", "PendingTransfer", "offering"),
@@ -89,6 +92,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::PlatformFeePerAsset(Address)", "u32", "asset"),
     ("DataKey::SnapshotFinalizationRequired", "bool", "contract"),
     ("DataKey::LastSnapshotCommitRef(OfferingId)", "u64", "offering"),
+    // -- DataKey2 --
     ("DataKey2::SnapshotFinalized(OfferingId, u64)", "bool", "offering+snapshot"),
     ("DataKey2::SupplyCap(OfferingId)", "i128", "offering"),
     ("DataKey2::DepositedRevenue(OfferingId)", "i128", "offering"),
@@ -107,6 +111,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::StressDataEntry(Address, u32)", "Bytes", "admin+index"),
     ("DataKey2::StressDataCount(Address)", "u32", "admin"),
     ("DataKey2::HolderJurisdiction(OfferingId, Address)", "Symbol", "offering+holder"),
+    ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
+    ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
     ("DataKey2::AllowedJurisdictions(OfferingId)", "Vec<Symbol>", "offering"),
     ("DataKey2::GlobalAccPerShareE18(OfferingId)", "i128", "offering"),
     ("DataKey2::AccPerShareAtIndex(OfferingId, u32)", "i128", "offering+index"),
@@ -119,16 +125,13 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::BlacklistSizeLimit(OfferingId)", "u32", "offering"),
     ("DataKey2::ClosedPeriod(OfferingId, u64)", "bool", "offering+period"),
     ("DataKey2::DisclosureMeta(OfferingId)", "DisclosureMeta", "offering"),
+    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposalPayload", "offering+proposal"),
+    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
     ("DataKey2::FaucetLastRequest(Address)", "u64", "address"),
     ("DataKey2::DualSigEnabled(OfferingId)", "bool", "offering"),
     ("DataKey2::AdminRotationLog(u64)", "AdminRotationEntry", "contract"),
     ("DataKey2::AdminRotationCount", "u64", "contract"),
-    ("DataKey3::MultisigOwners", "Vec<Address>", "contract"),
-    ("DataKey3::MultisigThreshold", "u32", "contract"),
-    ("DataKey3::MultisigProposalCount", "u32", "contract"),
-    ("DataKey3::MultisigProposalDuration", "u64", "contract"),
-    ("DataKey3::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
-    ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
     ("DataKey2::AccrualIndex(OfferingId)", "u32", "offering"),
     ("DataKey2::OfferingPlatformFee(OfferingId)", "PlatformFeeConfig", "offering"),
     ("DataKey2::DenominationMetadata(OfferingId)", "DenominationMetadata", "offering"),
@@ -136,48 +139,71 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::TransferRestrictions(OfferingId, Symbol)", "TransferRestrictionConfig", "offering+category"),
     ("DataKey2::HolderCategory(OfferingId, Address)", "Symbol", "offering+holder"),
     ("DataKey2::CategoryHolderCount(OfferingId, Symbol)", "u32", "offering+category"),
-    ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
     ("DataKey2::EmergencyFreeze(OfferingId, Address)", "bool", "offering+holder"),
     ("DataKey2::HolderFreezeMask(OfferingId, Address)", "u32", "offering+holder"),
+    // -- DataKey3 --
+    ("DataKey3::FiscalYearStartMonth(OfferingId)", "u32", "offering"),
+    ("DataKey3::TaxYearEntry(OfferingId, Address, u64)", "TaxYearSummary", "offering+holder+year"),
     ("DataKey3::TotalSharesIssued(OfferingId)", "u32", "offering"),
     ("DataKey3::MaxTotalSupplyShares(OfferingId)", "u32", "offering"),
     ("DataKey3::FaucetSeedEntry(OfferingId, u32)", "Address", "offering+index"),
     ("DataKey3::FaucetSeedCount(OfferingId)", "u32", "offering"),
-    ("DataKey3::FiscalYearStartMonth(OfferingId)", "u32", "offering"),
-    ("DataKey3::TaxYearEntry(OfferingId, Address, u64)", "TaxYearSummary", "offering+holder+year"),
-    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
-    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
-    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
+    ("DataKey3::MultisigThreshold", "u32", "contract"),
+    ("DataKey3::MultisigOwners", "Vec<Address>", "contract"),
+    ("DataKey3::MultisigProposalCount", "u32", "contract"),
+    ("DataKey3::MultisigProposalDuration", "u64", "contract"),
+    ("DataKey3::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
     ("DataKey3::GovProposalCount(OfferingId)", "u32", "offering"),
     ("DataKey3::GovProposal(OfferingId, u32)", "GovProposal", "offering+proposal"),
     ("DataKey3::VoteRecord(OfferingId, u32, Address)", "bool", "offering+proposal+voter"),
-    ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
-    ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
     ("DataKey3::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
-    // ── Accrual-checkpoint keys ──
-    ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
-    ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
-    // ── Governance keys (issue #557) ──
-    ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
-    ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposalPayload", "offering+proposal"),
-    ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
-    // ── Regulatory-limit aggregate (reg_limit_delta event stream) ──
-    ("DataKey2::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
-    ("DataKey2::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
-    ("DataKey2::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
-    // ── Dividend accrual ledger (#div-accrual) ──
-    ("DataKey2::ReportAccPerShareE18(OfferingId)", "i128", "offering"),
-    ("DataKey2::HolderReportLedger(OfferingId, Address)", "HolderReportAccrual", "offering+holder"),
-    ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
-    ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
-    ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
+    ("DataKey3::JurisdictionAggregateShare(OfferingId, Symbol)", "i128", "offering+jurisdiction"),
+    ("DataKey3::TransferCooldownConfig(OfferingId, Symbol)", "u64", "offering+jurisdiction"),
+    ("DataKey3::HolderLastTransferTime(OfferingId, Address)", "u64", "offering+holder"),
+    ("DataKey3::OfferingClasses(OfferingId)", "Vec<ShareClass>", "offering"),
+    ("DataKey3::HolderShareClass(OfferingId, Address, ShareClass)", "ShareClass", "offering+holder"),
+    ("DataKey3::TotalClassSharesIssued(OfferingId, ShareClass)", "u32", "offering+class"),
+    ("DataKey3::ClassPriority(OfferingId, ShareClass)", "u32", "offering+class"),
+    ("DataKey3::ClassPayOrder(OfferingId, u64)", "Vec<ShareClass>", "offering+period"),
+    ("DataKey3::Dispute(BytesN<32>)", "Dispute", "dispute"),
+    ("DataKey3::DisputeEntry(u64)", "DisputeEntry", "dispute"),
+    ("DataKey3::DisputeWindowSecs(OfferingId)", "u64", "offering"),
+    ("DataKey3::CriticalDisputeCount(OfferingId)", "u32", "offering"),
+    ("DataKey3::DisputeCount(OfferingId, Address)", "u32", "offering+opener"),
+    ("DataKey3::OracleChain(OfferingId)", "Vec<Address>", "offering"),
+    ("DataKey3::TwapWindowSecs(OfferingId)", "u64", "offering"),
+    ("DataKey3::LockupSchedule(OfferingId)", "LockupSchedule", "offering"),
+    ("DataKey3::RedemptionFeeConfig(OfferingId)", "RedemptionFeeConfig", "offering"),
+    ("DataKey3::RedemptionRequest(OfferingId, Address)", "RedemptionRequest", "offering+holder"),
+    ("DataKey3::LastClosedPeriodTimestamp(OfferingId)", "u64", "offering"),
+    ("DataKey3::JurisdictionGracePeriod(OfferingId)", "u64", "offering"),
+    ("DataKey3::JurisdictionMigration(OfferingId, Address)", "JurisdictionMigrationState", "offering+holder"),
+    ("DataKey3::FaucetMetricsAddrSeen(u64, Address)", "bool", "window+address"),
+    ("DataKey3::FaucetMetricsCooldownRejects", "u32", "contract"),
+    ("DataKey3::FaucetMetricsUniqueAddrs", "u32", "contract"),
+    ("DataKey3::FaucetMetricsTotalDispensed", "u32", "contract"),
+    ("DataKey3::AdminRotationDelay", "u64", "contract"),
+    ("DataKey3::GlobalFreezeReason", "FreezeReason", "contract"),
+    ("DataKey3::MultisigQuorumBps", "u32", "contract"),
+    ("DataKey3::MultisigEpoch", "u64", "contract"),
+    ("DataKey3::VoterWeight(Address)", "u32", "voter"),
+    ("DataKey3::HolderShareNonce(OfferingId, Address)", "u32", "offering+holder"),
+    ("DataKey3::ProcessedAttestationHash(BytesN<32>)", "bool", "attestation"),
+    ("DataKey3::EmitV2Compat", "bool", "contract"),
+    ("DataKey3::RemainingBasis(OfferingId, Address)", "i128", "offering+holder"),
+    // -- FaucetDataKey --
+    ("FaucetDataKey::WindowOpened", "u64", "contract"),
+    ("FaucetDataKey::WindowEmitted", "u64", "contract"),
+    // -- MigrationDataKey --
     ("MigrationDataKey::LastMigrationCompletedAt(Address)", "u32", "issuer"),
+    ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
     ("MigrationDataKey::MigrationHook(Symbol)", "MigrationTransform", "legacy_key"),
     ("MigrationDataKey::MigrationHookIndex(u32)", "Symbol", "index"),
     ("MigrationDataKey::MigrationHookCount", "u32", "contract"),
 ]);
 
 const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revenue_deposit_contract", [
+    // -- DataKey --
     ("DataKey::Admin", "Address", "contract"),
     ("DataKey::Token", "Address", "contract"),
     ("DataKey::AuthorizedOfferings", "Vec<Address>", "contract"),
@@ -185,15 +211,16 @@ const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("r
     ("DataKey::PeriodIds", "Vec<u32>", "contract"),
     ("DataKey::Period(u32)", "Period", "period"),
     ("DataKey::Beneficiaries(u32)", "Vec<Address>", "period"),
-    ("DataKey::Claimed(u32, Address)", "bool", "period+holder")
+    ("DataKey::Claimed(u32, Address)", "bool", "period+holder"),
 ]);
 
 const VESTING_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("vesting_contract", [
+    // -- VestingKey --
     ("VestingKey::Schedule(Address)", "VestingSchedule", "beneficiary"),
     ("VestingKey::Claimed(Address)", "i128", "beneficiary"),
     ("VestingKey::OfferingScheduleCount(VestingOfferingId)", "u32", "offering"),
     ("VestingKey::OfferingScheduleItem(VestingOfferingId, u32)", "Address", "offering+index"),
-    ("VestingKey::Acceleration(Address, Symbol)", "bool", "beneficiary+trigger")
+    ("VestingKey::Acceleration(Address, Symbol)", "bool", "beneficiary+trigger"),
 ]);
 
 pub fn all_storage_layout_entries() -> Vec<StorageLayoutEntry> {
@@ -268,6 +295,7 @@ fn collect_source_keys(repo_root: &Path) -> Result<BTreeSet<String>, String> {
         ("src/lib.rs", "DataKey"),
         ("src/lib.rs", "DataKey2"),
         ("src/lib.rs", "DataKey3"),
+        ("src/lib.rs", "FaucetDataKey"),
         ("src/lib.rs", "MigrationDataKey"),
         ("src/revenue_deposit_contract.rs", "DataKey"),
         ("src/vesting.rs", "VestingKey"),

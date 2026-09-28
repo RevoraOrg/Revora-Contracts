@@ -42,7 +42,7 @@
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
-    String,
+    String, Vec,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -403,8 +403,10 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
         setup_claim_fail();
 
     let holder2 = Address::generate(&env);
-    // Give holder2 a share (adjust holder1 to 50% too)
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    // Give holder2 a share (adjust holder1 to 50% too). Holder1's share was set
+    // with nonce 1 in setup_claim_fail, so this update must use a higher nonce
+    // (per-(offering, holder) monotonicity is enforced with StaleNonce).
+    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &2);
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder2, &5_000, &1);
 
     // Deposit period 2 while fail mode is temporarily off
@@ -447,7 +449,8 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
     let (token_b_id, token_b) = deploy_failing_token(&env);
     token_b.mint(&issuer, &1_000_000);
 
-    revora.register_offering(&issuer,
+    revora.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -456,11 +459,19 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &token_b_id,
         &0,
         &symbol_short!(""),
-        &0);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000, &1);
+        &0,
+    );
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token_b,
+        &holder,
+        &10_000,
+        &1,
+    );
 
     // Mint payout tokens to the issuer so they can deposit revenue
-    soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_b_id).mint(&issuer, &100_000);
 
     revora.deposit_revenue(
         &issuer,

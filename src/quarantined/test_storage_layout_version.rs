@@ -1,14 +1,15 @@
 #![cfg(test)]
 extern crate alloc;
 
+use alloc::string::ToString;
+use alloc::vec;
 use crate::vesting::{
     compute_claimable, compute_vested, VestingCurve, VestingKey, VestingSchedule,
 };
 use crate::{
-    assert_semver_forward, MigrationError, MigrationTransform, RevoraError,
-    RevoraRevenueShare, RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
+    assert_semver_forward, MigrationError, MigrationTransform, RevoraError, RevoraRevenueShare,
+    RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
 };
-use core::string::ToString;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     symbol_short,
@@ -466,7 +467,7 @@ fn multiple_hooks_applied_during_walker() {
 fn walker_replay_protection_preserved_with_hooks() {
     let (_, client, admin) = setup_migration_test();
     let issuer = admin.clone();
-    let legacy_key = symbol_short!("replay_key");
+    let legacy_key = symbol_short!("replay_k");
 
     client.register_migration_hook(&admin, &legacy_key, &MigrationTransform::Identity);
 

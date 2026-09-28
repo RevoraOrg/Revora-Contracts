@@ -1,10 +1,13 @@
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, testutils::Ledger as _, Address,
+    Env, IntoVal, Symbol, TryIntoVal, Vec,
+};
 
 use crate::{
-    RevoraRevenueShare, RevoraRevenueShareClient, EVENT_SCHEMA_VERSION_V2,
-    tax_bucket::EVENT_TAX_LOT_V1,
+    tax_bucket::EVENT_TAX_LOT_V1, RevoraRevenueShare, RevoraRevenueShareClient,
+    EVENT_SCHEMA_VERSION_V2,
 };
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -19,7 +22,18 @@ fn setup_with_offering(env: &Env) -> (RevoraRevenueShareClient, Address, Address
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &admin,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
     (client, admin, token, payout_asset)
 }
 
@@ -117,7 +131,8 @@ fn fixture_topics_bind_to_requested_identity() {
     let token = Address::generate(&env);
     let ns = symbol_short!("abc");
 
-    let (v2_fixtures, v3_fixtures) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
+    let (v2_fixtures, v3_fixtures) =
+        client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
     for i in 0..v2_fixtures.len() {
         let f = v2_fixtures.get(i).unwrap();
         assert_eq!(f.issuer, issuer);
@@ -157,16 +172,31 @@ fn register_offering_emits_ofr_reg2_v2_event() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &admin,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let events = env.events().all();
     assert!(events.len() > before, "register_offering must emit at least one event");
 
     // Verify ofr_reg2 topic is present among the new events.
     let new_events = events.slice(before as u32..);
-    let ofr_reg2_sym: soroban_sdk::Val = symbol_short!("ofr_reg2").into_val(&env);
+    let ofr_reg2_sym = symbol_short!("ofr_reg2");
     let found = new_events.iter().any(|(_, topics, _)| {
-        topics.len() > 0 && topics.get(0).map(|t| t == ofr_reg2_sym).unwrap_or(false)
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(ofr_reg2_sym.clone()))
+                .unwrap_or(false)
     });
     assert!(found, "ofr_reg2 event must be emitted unconditionally by register_offering");
 }
@@ -183,18 +213,35 @@ fn register_offering_v2_event_data_starts_with_version_2() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &admin,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let ofr_reg2_sym: soroban_sdk::Val = symbol_short!("ofr_reg2").into_val(&env);
+    let ofr_reg2_sym = symbol_short!("ofr_reg2");
 
     for (_, topics, data) in new_events.iter() {
-        if topics.len() > 0 && topics.get(0).map(|t| t == ofr_reg2_sym).unwrap_or(false) {
-            // data[0] must be EVENT_SCHEMA_VERSION_V2 = 2u32
-            let version: u32 = data.into_val(&env);
-            // The data tuple is (2u32, (token, bps, payout)) — outer element is 2
-            // We verify this by checking data is non-empty and version-typed.
+        if topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(ofr_reg2_sym.clone()))
+                .unwrap_or(false)
+        {
+            // Data is (EVENT_SCHEMA_VERSION_V2, payload) — emit_v2_event wraps every
+            // v2 payload with a leading version field. Payload (ignored here) is
+            // (token, revenue_share_bps, payout_asset, denomination_symbol, display_decimals).
+            let (version, _payload): (u32, (Address, u32, Address, Symbol, u32)) =
+                data.into_val(&env);
             assert_eq!(version, 2u32, "ofr_reg2 data[0] must be EVENT_SCHEMA_VERSION_V2 = 2");
             return;
         }
@@ -222,10 +269,14 @@ fn report_revenue_emits_rv_init2_on_initial_report() {
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let rv_init2_sym: soroban_sdk::Val = symbol_short!("rv_init2").into_val(&env);
-    let found = new_events
-        .iter()
-        .any(|(_, topics, _)| topics.len() > 0 && topics.get(0).map(|t| t == rv_init2_sym).unwrap_or(false));
+    let rv_init2_sym = symbol_short!("rv_init2");
+    let found = new_events.iter().any(|(_, topics, _)| {
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(rv_init2_sym.clone()))
+                .unwrap_or(false)
+    });
     assert!(found, "rv_init2 must be emitted unconditionally on an initial revenue report");
 }
 
@@ -247,10 +298,14 @@ fn report_revenue_emits_rv_rep2_unconditionally() {
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let rv_rep2_sym: soroban_sdk::Val = symbol_short!("rv_rep2").into_val(&env);
-    let found = new_events
-        .iter()
-        .any(|(_, topics, _)| topics.len() > 0 && topics.get(0).map(|t| t == rv_rep2_sym).unwrap_or(false));
+    let rv_rep2_sym = symbol_short!("rv_rep2");
+    let found = new_events.iter().any(|(_, topics, _)| {
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(rv_rep2_sym.clone()))
+                .unwrap_or(false)
+    });
     assert!(found, "rv_rep2 must be emitted unconditionally on every revenue report");
 }
 
@@ -272,10 +327,14 @@ fn report_revenue_emits_rv_repa2_unconditionally() {
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let rv_repa2_sym: soroban_sdk::Val = symbol_short!("rv_repa2").into_val(&env);
-    let found = new_events
-        .iter()
-        .any(|(_, topics, _)| topics.len() > 0 && topics.get(0).map(|t| t == rv_repa2_sym).unwrap_or(false));
+    let rv_repa2_sym = symbol_short!("rv_repa2");
+    let found = new_events.iter().any(|(_, topics, _)| {
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(rv_repa2_sym.clone()))
+                .unwrap_or(false)
+    });
     assert!(found, "rv_repa2 must be emitted unconditionally on every revenue report");
 }
 
@@ -298,10 +357,14 @@ fn report_revenue_emits_rv_inia2_unconditionally_without_versioning_flag() {
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let rv_inia2_sym: soroban_sdk::Val = symbol_short!("rv_inia2").into_val(&env);
-    let found = new_events
-        .iter()
-        .any(|(_, topics, _)| topics.len() > 0 && topics.get(0).map(|t| t == rv_inia2_sym).unwrap_or(false));
+    let rv_inia2_sym = symbol_short!("rv_inia2");
+    let found = new_events.iter().any(|(_, topics, _)| {
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(rv_inia2_sym.clone()))
+                .unwrap_or(false)
+    });
     assert!(
         found,
         "rv_inia2 must be emitted unconditionally (not gated on is_event_versioning_enabled)"
@@ -321,10 +384,14 @@ fn set_holder_share_emits_sh_set2_v2_event() {
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
-    let sh_set2_sym: soroban_sdk::Val = symbol_short!("sh_set2").into_val(&env);
-    let found = new_events
-        .iter()
-        .any(|(_, topics, _)| topics.len() > 0 && topics.get(0).map(|t| t == sh_set2_sym).unwrap_or(false));
+    let sh_set2_sym = symbol_short!("sh_set2");
+    let found = new_events.iter().any(|(_, topics, _)| {
+        topics.len() > 0
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(sh_set2_sym.clone()))
+                .unwrap_or(false)
+    });
     assert!(found, "sh_set2 must be emitted unconditionally by set_holder_share");
 }
 
@@ -371,12 +438,12 @@ fn all_fixture_topics_carry_version_2() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &1u64);
-    for i in 0..fixtures.len() {
-        let f = fixtures.get(i).unwrap();
+    let (v2_fixtures, _v3_fixtures) =
+        client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &1u64);
+    for i in 0..v2_fixtures.len() {
+        let f = v2_fixtures.get(i).unwrap();
         assert_eq!(
-            f.version,
-            EVENT_SCHEMA_VERSION_V2,
+            f.version, EVENT_SCHEMA_VERSION_V2,
             "fixture at index {i} must carry version = EVENT_SCHEMA_VERSION_V2 = 2"
         );
     }
@@ -390,10 +457,11 @@ fn fixture_period_id_zero_for_non_period_scoped_events() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &99u64);
+    let (v2_fixtures, _v3_fixtures) =
+        client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &99u64);
     // offer (index 0) and claim (index 5) are not period-scoped: period_id must be 0.
-    assert_eq!(fixtures.get(0).unwrap().period_id, 0, "offer fixture must have period_id = 0");
-    assert_eq!(fixtures.get(5).unwrap().period_id, 0, "claim fixture must have period_id = 0");
+    assert_eq!(v2_fixtures.get(0).unwrap().period_id, 0, "offer fixture must have period_id = 0");
+    assert_eq!(v2_fixtures.get(5).unwrap().period_id, 0, "claim fixture must have period_id = 0");
 }
 
 #[test]
@@ -404,11 +472,12 @@ fn fixture_period_scoped_events_carry_requested_period_id() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &77u64);
+    let (v2_fixtures, _v3_fixtures) =
+        client.get_indexer_fixture_topics(&issuer, &symbol_short!("ns"), &token, &77u64);
     // rv_init (1), rv_ovr (2), rv_rej (3), rv_rep (4) must all have period_id = 77.
     for idx in 1u32..=4 {
         assert_eq!(
-            fixtures.get(idx).unwrap().period_id,
+            v2_fixtures.get(idx).unwrap().period_id,
             77u64,
             "fixture at index {idx} must carry the requested period_id"
         );
@@ -454,7 +523,18 @@ fn fixture_fct_mtr1_data_tuple_shape() {
     let token = soroban_sdk::Address::generate(&env);
     let payout = soroban_sdk::Address::generate(&env);
     let ns = symbol_short!("fix");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     // Set ledger timestamp to a non-zero window (window_id = 1).
     env.ledger().set_timestamp(crate::FAUCET_METRICS_WINDOW_SECS);
@@ -463,13 +543,23 @@ fn fixture_fct_mtr1_data_tuple_shape() {
     client.faucet_seed_holders(&requester, &issuer, &ns, &token, &3);
 
     // Find the fct_mtr1 event and assert tuple shape.
-    let fct_mtr1_val: soroban_sdk::Val = crate::EVENT_FAUCET_METRICS.into_val(&env);
+    let fct_mtr1_val = crate::EVENT_FAUCET_METRICS;
     let mut found = false;
     for (_, topics, data) in env.events().all().iter() {
-        if topics.len() >= 2 && topics.get(0).map(|t| t == fct_mtr1_val).unwrap_or(false) {
+        if topics.len() >= 2
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(fct_mtr1_val.clone()))
+                .unwrap_or(false)
+        {
             let window_id: u64 = topics.get(1).unwrap().into_val(&env);
-            let (total_dispensed, unique_addresses, cooldown_rejects, window_start, window_end):
-                (u32, u32, u32, u64, u64) = data.into_val(&env);
+            let (total_dispensed, unique_addresses, cooldown_rejects, window_start, window_end): (
+                u32,
+                u32,
+                u32,
+                u64,
+                u64,
+            ) = data.into_val(&env);
 
             // Shape assertions (values are also deterministic here)
             assert_eq!(window_id, 1u64, "window_id = ts / FAUCET_METRICS_WINDOW_SECS");
@@ -504,7 +594,18 @@ fn fixture_fct_mtr1_window_id_formula() {
     let token = soroban_sdk::Address::generate(&env);
     let payout = soroban_sdk::Address::generate(&env);
     let ns = symbol_short!("fix2");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     // ts = 7 * FAUCET_METRICS_WINDOW_SECS + 999  →  window_id = 7
     let ts = crate::FAUCET_METRICS_WINDOW_SECS * 7 + 999;
@@ -513,10 +614,15 @@ fn fixture_fct_mtr1_window_id_formula() {
     let requester = soroban_sdk::Address::generate(&env);
     client.faucet_seed_holders(&requester, &issuer, &ns, &token, &1);
 
-    let fct_mtr1_val: soroban_sdk::Val = crate::EVENT_FAUCET_METRICS.into_val(&env);
+    let fct_mtr1_val = crate::EVENT_FAUCET_METRICS;
     let mut found_window_id: Option<u64> = None;
     for (_, topics, _) in env.events().all().iter() {
-        if topics.len() >= 2 && topics.get(0).map(|t| t == fct_mtr1_val).unwrap_or(false) {
+        if topics.len() >= 2
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(fct_mtr1_val.clone()))
+                .unwrap_or(false)
+        {
             found_window_id = Some(topics.get(1).unwrap().into_val(&env));
         }
     }
@@ -568,40 +674,66 @@ fn fixture_tax_lot_v1_data_tuple_shape() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("tx");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
 
     // Track cost basis so we get a return_of_capital component.
-    let offering_id = crate::OfferingId {
-        issuer: issuer.clone(),
-        namespace: ns.clone(),
-        token: token.clone(),
-    };
-    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 100_000);
+    let offering_id =
+        crate::OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
+    // Storage writes are only permitted from within the contract's own frame.
+    env.as_contract(&contract_id, || {
+        crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 100_000);
+    });
 
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
 
+    // Give the ledger a non-zero timestamp so the event's timestamp field is
+    // realistic (indexers key off it).
+    env.ledger().set_timestamp(1_000);
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
     // Find the tax_lt1 event among the new events.
-    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let tax_lt1_val = EVENT_TAX_LOT_V1;
     let mut found = false;
     for (_, topics, data) in env.events().all().slice(before as u32..).iter() {
         if topics.len() >= 4
-            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(tax_lt1_val.clone()))
+                .unwrap_or(false)
         {
-            let (holder_addr, return_of_capital, capital_gains, amount, period_id, timestamp):
-                (Address, i128, i128, i128, u64, u64) = data.into_val(&env);
+            let (holder_addr, return_of_capital, capital_gains, amount, period_id, timestamp): (
+                Address,
+                i128,
+                i128,
+                i128,
+                u64,
+                u64,
+            ) = data.into_val(&env);
 
             assert_eq!(holder_addr, holder);
             assert!(return_of_capital > 0, "return_of_capital must be positive");
             assert_eq!(capital_gains, 0i128, "capital_gains must be zero when basis is sufficient");
-            assert_eq!(amount, return_of_capital + capital_gains,
-                "decomposition invariant: return_of_capital + capital_gains must equal amount");
-            assert_eq!(amount, 5_000i128); // 50% of 100_000 = 50_000 normalized
+            assert_eq!(
+                amount,
+                return_of_capital + capital_gains,
+                "decomposition invariant: return_of_capital + capital_gains must equal amount"
+            );
+            assert_eq!(amount, 50_000i128); // 50% of 100_000 = 50_000
             assert_eq!(period_id, 1u64);
             assert!(timestamp > 0, "timestamp must be positive");
             found = true;
@@ -628,38 +760,64 @@ fn fixture_tax_lot_v1_capital_gains_when_basis_exhausted() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("txcg");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1); // 100%
 
-    let offering_id = crate::OfferingId {
-        issuer: issuer.clone(),
-        namespace: ns.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        crate::OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
     // Track small cost basis so payout exceeds it → capital_gains > 0.
-    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000);
+    // Storage writes are only permitted from within the contract's own frame.
+    env.as_contract(&contract_id, || {
+        crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000);
+    });
 
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
 
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
-    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let tax_lt1_val = EVENT_TAX_LOT_V1;
     let mut found = false;
     for (_, topics, data) in env.events().all().slice(before as u32..).iter() {
         if topics.len() >= 4
-            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(tax_lt1_val.clone()))
+                .unwrap_or(false)
         {
-            let (holder_addr, return_of_capital, capital_gains, amount, _period_id, _timestamp):
-                (Address, i128, i128, i128, u64, u64) = data.into_val(&env);
+            let (holder_addr, return_of_capital, capital_gains, amount, _period_id, _timestamp): (
+                Address,
+                i128,
+                i128,
+                i128,
+                u64,
+                u64,
+            ) = data.into_val(&env);
 
             assert_eq!(holder_addr, holder);
-            assert_eq!(return_of_capital, 1_000i128, "return_of_capital should equal remaining basis");
+            assert_eq!(
+                return_of_capital, 1_000i128,
+                "return_of_capital should equal remaining basis"
+            );
             assert!(capital_gains > 0, "capital_gains must be positive when basis is exceeded");
-            assert_eq!(amount, return_of_capital + capital_gains,
-                "decomposition invariant: return_of_capital + capital_gains must equal amount");
+            assert_eq!(
+                amount,
+                return_of_capital + capital_gains,
+                "decomposition invariant: return_of_capital + capital_gains must equal amount"
+            );
             found = true;
             break;
         }
@@ -684,7 +842,18 @@ fn fixture_tax_lot_v1_zero_payout_emits_no_event() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("tz");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let holder = Address::generate(&env);
     // No share set → share_bps = 0 → claim returns NoPendingClaims before any payout.
@@ -700,10 +869,13 @@ fn fixture_tax_lot_v1_zero_payout_emits_no_event() {
     );
 
     // Scan for any tax_lt1 event — must be absent.
-    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let tax_lt1_val = EVENT_TAX_LOT_V1;
     for (_, topics, _) in env.events().all().slice(before as u32..).iter() {
         if topics.len() >= 4
-            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(tax_lt1_val.clone()))
+                .unwrap_or(false)
         {
             panic!("tax_lt1 must NOT be emitted when claim fails (share_bps = 0)");
         }
@@ -727,18 +899,29 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("txb");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
 
-    let offering_id = crate::OfferingId {
-        issuer: issuer.clone(),
-        namespace: ns.clone(),
-        token: token.clone(),
-    };
+    let offering_id =
+        crate::OfferingId { issuer: issuer.clone(), namespace: ns.clone(), token: token.clone() };
     // Track sufficient cost basis so all claims get return_of_capital.
-    crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000_000);
+    // Storage writes are only permitted from within the contract's own frame.
+    env.as_contract(&contract_id, || {
+        crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000_000);
+    });
 
     // Deposit revenue for 3 periods.
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -754,11 +937,14 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
     client.claim(&holder, &issuer, &ns, &token, &10);
 
     let new_events = env.events().all().slice(before as u32..);
-    let tax_lt1_val: soroban_sdk::Val = EVENT_TAX_LOT_V1.into_val(&env);
+    let tax_lt1_val = EVENT_TAX_LOT_V1;
     let mut tax_lot_count = 0u32;
     for (_, topics, _) in new_events.iter() {
         if topics.len() >= 4
-            && topics.get(0).map(|t| t == tax_lt1_val).unwrap_or(false)
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(tax_lt1_val.clone()))
+                .unwrap_or(false)
         {
             tax_lot_count += 1;
         }

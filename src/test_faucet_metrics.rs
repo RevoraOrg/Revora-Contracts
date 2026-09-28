@@ -1,5 +1,25 @@
 //! Tests for `faucet_metrics_v1` (`fct_mtr1`) event emission.
 //!
+//! Restored from `src/quarantined/test_faucet_metrics.rs` (2026-09), together
+//! with the contract-side emission code it pins: the merge chain (PRs
+//! #858–#864) had dropped `faucet_metrics_emit_if_new_window` from `lib.rs`
+//! while its constant (`EVENT_FAUCET_METRICS`), storage counters
+//! (`DataKey3::FaucetMetrics*`), doc comment, and the compiled indexer fixture
+//! all survived — so the contract documented an event it never emitted. The
+//! emission was restored from commit `fb12481` (PR #676), adapted to the
+//! current window-scoped counters: counters roll over when the first faucet
+//! activity of a new window occurs, so each `fct_mtr1` event describes exactly
+//! its own window (the tests below rely on that per-window freshness).
+//!
+//! Other porting notes:
+//! - `make_client` borrows and client lifetime annotations updated to the
+//!   patterns the restored files use.
+//! - The event scans use `topics.get(0)` → `Option` (the quarantined raw-Val
+//!   comparisons and pair-destructures predate the current
+//!   `(Address, Vec<Val>, Val)` event API).
+//! - Collected event lists are `std::vec::Vec` (a soroban `Vec` cannot be
+//!   collected into).
+//!
 //! ## Coverage matrix
 //!
 //! | Scenario | Expected |
@@ -21,7 +41,7 @@ use super::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _, Ledger},
-    Address, Env,
+    Address, Env, Symbol, TryIntoVal,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -31,21 +51,32 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
     RevoraRevenueShareClient::new(env, &id)
 }
 
-fn enable_testnet(client: &RevoraRevenueShareClient<'_>, env: &Env) {
+fn enable_testnet(client: &RevoraRevenueShareClient<'static>, env: &Env) {
     let admin = Address::generate(env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.set_testnet_mode(&true);
 }
 
 fn register_offering(
-    client: &RevoraRevenueShareClient<'_>,
+    client: &RevoraRevenueShareClient<'static>,
     env: &Env,
 ) -> (Address, Symbol, Address) {
     let issuer = Address::generate(env);
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (issuer, ns, token)
 }
 
@@ -53,7 +84,7 @@ fn register_offering(
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token)
@@ -68,12 +99,11 @@ fn set_ts(env: &Env, ts: u64) {
 /// Returns `(window_id, total_dispensed, unique_addresses, cooldown_rejects,
 ///            window_start, window_end)`.
 fn find_metrics_event(env: &Env) -> Option<(u64, u32, u32, u32, u64, u64)> {
-    let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(env);
     let mut found: Option<(u64, u32, u32, u32, u64, u64)> = None;
     for (_, topics, data) in env.events().all().iter() {
         if topics.len() >= 2 {
             if let Some(t0) = topics.get(0) {
-                if t0 == fct_mtr1 {
+                if t0.try_into_val(env) as Result<Symbol, _> == Ok(EVENT_FAUCET_METRICS) {
                     let window_id: u64 = topics.get(1).unwrap().into_val(env);
                     let (total, unique, rejects, wstart, wend): (u32, u32, u32, u64, u64) =
                         data.into_val(env);
@@ -87,14 +117,18 @@ fn find_metrics_event(env: &Env) -> Option<(u64, u32, u32, u32, u64, u64)> {
 
 /// Count how many `fct_mtr1` events are present in the full event log.
 fn count_metrics_events(env: &Env) -> usize {
-    let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(env);
-    env.events()
-        .all()
-        .iter()
-        .filter(|(_, topics, _)| {
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
-        })
-        .count()
+    let mut count = 0usize;
+    for (_, topics, _) in env.events().all().iter() {
+        if topics.len() >= 1
+            && topics
+                .get(0)
+                .map(|t| t.try_into_val(env) as Result<Symbol, _> == Ok(EVENT_FAUCET_METRICS))
+                .unwrap_or(false)
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 // ── Happy path ────────────────────────────────────────────────────────────────
@@ -179,24 +213,34 @@ fn total_dispensed_accumulates_across_calls_in_same_window() {
 
 #[test]
 fn unique_address_not_double_counted_for_same_requester_in_window() {
+    // The faucet enforces a per-requester cooldown (`DataKey2::FaucetLastRequest`)
+    // of `DEFAULT_FAUCET_COOLDOWN_SECONDS` — exactly one metrics window — so a
+    // second *successful* dispense by the same requester inside one window is
+    // impossible by design. (The quarantined original assumed a per-offering
+    // cooldown and registered a second offering to dodge it; that call actually
+    // fails with `FaucetCooldownActive`.) Ported expectation: within a window
+    // the requester is counted once, and a same-window repeat call is
+    // cooldown-rejected without emitting a second summary or inflating counts.
     let (env, client, issuer, ns, token) = setup();
     set_ts(&env, FAUCET_METRICS_WINDOW_SECS);
 
-    // Register a second offering so the same requester can call twice without cooldown.
-    let issuer2 = Address::generate(&env);
-    let token2 = Address::generate(&env);
-    let payout2 = Address::generate(&env);
-    let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
-
     let requester = Address::generate(&env);
-    // First call on offering 1
-    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &1);
-    // Second call on offering 2 (no cooldown conflict — different offering)
-    client.faucet_seed_holders(&requester, &issuer2, &ns2, &token2, &1);
+    // First call seeds and emits the window summary with unique = 1.
+    client.faucet_seed_holders(&requester, &issuer, &ns, &token, &3);
 
-    // unique_addresses in window must still be 1 (addr already counted)
-    let (_, _, unique, _, _, _) = find_metrics_event(&env).unwrap();
+    // Second call within the same window is cooldown-rejected...
+    let second = client.try_faucet_seed_holders(&requester, &issuer, &ns, &token, &2);
+    assert_eq!(
+        second,
+        Err(Ok(RevoraError::FaucetCooldownActive)),
+        "same-window repeat must be cooldown-rejected"
+    );
+
+    // ...and must not emit a second summary nor inflate the counters the
+    // event published for this window.
+    assert_eq!(count_metrics_events(&env), 1, "reject must not re-emit the summary");
+    let (_, total, unique, _, _, _) = find_metrics_event(&env).unwrap();
+    assert_eq!(total, 3, "rejected call must not add to total_dispensed");
     assert_eq!(unique, 1, "same requester must not be counted twice within the window");
 }
 
@@ -303,16 +347,21 @@ fn new_window_event_has_fresh_counters() {
     let r2 = Address::generate(&env);
     client.faucet_seed_holders(&r2, &issuer, &ns, &token, &7);
 
-    // Collect all fct_mtr1 events.
-    let all_events: Vec<_> = env
-        .events()
-        .all()
-        .iter()
-        .filter(|(_, topics, _)| {
-            let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(&env);
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
-        })
-        .collect();
+    // Collect all fct_mtr1 events (std Vec — a soroban Vec cannot be collected into).
+    let all_events: std::vec::Vec<(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> =
+        env.events()
+            .all()
+            .iter()
+            .filter(|(_, topics, _)| {
+                topics.len() >= 1
+                    && topics
+                        .get(0)
+                        .map(|t| {
+                            t.try_into_val(&env) as Result<Symbol, _> == Ok(EVENT_FAUCET_METRICS)
+                        })
+                        .unwrap_or(false)
+            })
+            .collect();
 
     assert_eq!(all_events.len(), 2, "must have exactly two fct_mtr1 events");
 
@@ -352,7 +401,7 @@ fn window_id_equals_ts_divided_by_window_secs() {
 fn metrics_event_never_emitted_when_testnet_mode_false() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     // Do NOT enable testnet mode — contract stays in production mode.
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
@@ -376,7 +425,7 @@ fn metrics_event_never_emitted_when_testnet_mode_false() {
 fn metrics_event_not_emitted_on_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.set_testnet_mode(&true);
@@ -415,13 +464,16 @@ fn rejects_are_window_scoped_and_reset_on_rollover() {
     client.faucet_seed_holders(&r2, &issuer, &ns, &token, &1);
 
     // Find the window-2 event
-    let all: Vec<_> = env
+    let all: std::vec::Vec<(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> = env
         .events()
         .all()
         .iter()
         .filter(|(_, topics, _)| {
-            let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(&env);
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
+            topics.len() >= 1
+                && topics
+                    .get(0)
+                    .map(|t| t.try_into_val(&env) as Result<Symbol, _> == Ok(EVENT_FAUCET_METRICS))
+                    .unwrap_or(false)
         })
         .collect();
 

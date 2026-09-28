@@ -60,10 +60,13 @@
 //! refactor accidentally removes it.
 
 #![cfg(test)]
+extern crate alloc;
+
+use alloc::format;
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::Env;
 
 // ── Test client ───────────────────────────────────────────────────────────────
 
