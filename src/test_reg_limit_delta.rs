@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -14,7 +16,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
     let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(env, &payout).mint(&admin, &1_000_000);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin,
+    client.register_offering(
+        &admin,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -23,7 +26,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     (client, admin, token, payout)
 }
 
