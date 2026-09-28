@@ -48,10 +48,7 @@ fn unset_class_reads_zero() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let ns = symbol_short!("def");
 
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A),
-        0,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A), 0,);
     assert_eq!(
         client.get_total_class_shares_issued(
             &issuer,
@@ -72,16 +69,10 @@ fn same_class_shares_accumulate_across_holders() {
     let holder_b = Address::generate(&env);
 
     client.set_holder_share_class(&issuer, &ns, &token, &holder_a, &3_000, &ShareClass::A);
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A),
-        3_000,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A), 3_000,);
 
     client.set_holder_share_class(&issuer, &ns, &token, &holder_b, &2_000, &ShareClass::A);
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A),
-        5_000,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A), 5_000,);
 }
 
 #[test]
@@ -111,10 +102,7 @@ fn distinct_classes_are_tracked_independently() {
         5_000,
         "class A must not absorb class B or custom shares",
     );
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::B),
-        1_000,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::B), 1_000,);
     assert_eq!(
         client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::Custom(pref)),
         500,
@@ -131,10 +119,7 @@ fn updating_a_holders_share_replaces_instead_of_double_counting() {
 
     client.set_holder_share_class(&issuer, &ns, &token, &holder_a, &3_000, &ShareClass::A);
     client.set_holder_share_class(&issuer, &ns, &token, &holder_b, &2_000, &ShareClass::A);
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A),
-        5_000,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A), 5_000,);
 
     // Reduce holder_a from 3_000 to 1_000 bps: the aggregate must drop by 2_000.
     client.set_holder_share_class(&issuer, &ns, &token, &holder_a, &1_000, &ShareClass::A);
@@ -146,10 +131,7 @@ fn updating_a_holders_share_replaces_instead_of_double_counting() {
 
     // Clearing a holder's share removes it from the class aggregate.
     client.set_holder_share_class(&issuer, &ns, &token, &holder_b, &0, &ShareClass::A);
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A),
-        1_000,
-    );
+    assert_eq!(client.get_total_class_shares_issued(&issuer, &ns, &token, &ShareClass::A), 1_000,);
 }
 
 #[test]
@@ -160,12 +142,14 @@ fn unknown_offering_reads_zero_without_panicking() {
     let stranger = Address::generate(&env);
 
     // `stranger` never registered an offering: the read must default to 0.
+    assert_eq!(client.get_total_class_shares_issued(&stranger, &ns, &token, &ShareClass::A), 0,);
     assert_eq!(
-        client.get_total_class_shares_issued(&stranger, &ns, &token, &ShareClass::A),
-        0,
-    );
-    assert_eq!(
-        client.get_total_class_shares_issued(&issuer, &symbol_short!("nope"), &token, &ShareClass::A),
+        client.get_total_class_shares_issued(
+            &issuer,
+            &symbol_short!("nope"),
+            &token,
+            &ShareClass::A
+        ),
         0,
     );
 }
