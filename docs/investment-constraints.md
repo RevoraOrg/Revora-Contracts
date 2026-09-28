@@ -72,4 +72,22 @@ The regression tests cover boundary deposits, event emission, read API consisten
 - `set_investment_constraints_update_event_marks_previous_existed`: Confirms the update event payload correctly flags when prior constraints existed.
 - `set_investment_constraints_fails_for_nonexistent_offering`: Confirms constraints cannot be set on an unregistered offering.
 
+### `get_investment_constraints` Read-API Tests (`src/test_investment_constraints_read.rs`, #1124)
+- `get_investment_constraints_returns_none_for_unregistered_offering`: Unknown issuer/namespace/token triples resolve to `None` rather than panicking or inventing a default.
+- `get_investment_constraints_distinguishes_unset_from_explicit_zero_bounds`: `None` (never configured) never collapses into `Some { min: 0, max: 0 }` (explicitly unlimited).
+- `get_investment_constraints_returns_exact_configured_bounds`: Both bounds are returned field-by-field with no clamping, rounding, or field swapping.
+- `get_investment_constraints_round_trips_i128_max_bounds`: `i128::MAX` (alone and as `min == max`) round-trips verbatim through storage.
+- `get_investment_constraints_reflects_only_latest_configuration`: Each write replaces both fields atomically; the read never exposes stale or merged bounds.
+- `get_investment_constraints_is_scoped_by_namespace`: A neighbouring namespace, the empty symbol, and a `Symbol` longer than 9 characters all resolve to `None`.
+- `get_investment_constraints_is_scoped_by_token`: A sibling token on the same namespace keeps an independent record.
+- `get_investment_constraints_does_not_leak_across_issuers`: Two issuers sharing a namespace and token never observe each other's bounds.
+- `get_investment_constraints_isolated_across_contract_instances`: A second deployment of the contract starts with no constraints for the same triple.
+- `get_investment_constraints_serves_callers_without_auth`: The read view keeps serving with every mocked authorization revoked (no auth requirement on the read path).
+- `get_investment_constraints_reads_are_idempotent_and_side_effect_free`: Repeated reads return identical values and publish no events.
+- `get_investment_constraints_unchanged_after_rejected_negative_bounds`: `min = -1`, `max = -1`, and `min = max = -5` are rejected with `InvalidAmount`; stored bounds stay intact and no partial record is created.
+- `get_investment_constraints_unchanged_after_rejected_inverted_range`: `min > max` is rejected with `InvalidAmount` while the inclusive `min == max` boundary remains storable.
+- `get_investment_constraints_unchanged_after_rejected_foreign_issuer_write`: A non-issuer write is rejected with `OfferingNotFound`; the issuer's bounds and the caller's empty view are unchanged.
+- `get_investment_constraints_unchanged_after_write_without_authorization`: A write with no authorization entries fails, publishes no `inv_cfg` event, and leaves the stored bounds intact.
+- `get_investment_constraints_unchanged_after_rejected_write_while_frozen`: A write while globally frozen is rejected with `ContractFrozen`; the read API keeps serving the previous bounds.
+
 *Note: All tests successfully achieved > 95% test coverage for the implemented code paths.*
