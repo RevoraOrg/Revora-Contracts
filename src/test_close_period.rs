@@ -69,7 +69,8 @@ fn setup_offering_with_contract_id(
     let offering_token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -78,7 +79,8 @@ fn setup_offering_with_contract_id(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     (env, client, issuer, offering_token, payment_token, contract_id)
 }
@@ -378,7 +380,18 @@ fn measure_cpu_for_n_holders(n: u32) -> u64 {
     let (payment_token, _) = create_payment_token(&env);
     let ns = symbol_short!("ns");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &offering_token, &10_000, &payment_token, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &offering_token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     for _ in 0..n {
         let holder = Address::generate(&env);
@@ -450,7 +463,18 @@ fn close_period_zero_holders_has_constant_cost() {
     let ns = symbol_short!("ns");
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payment_token, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let before = env.budget().cpu_instruction_cost();
     client.close_period(&issuer, &ns, &token, &1);
