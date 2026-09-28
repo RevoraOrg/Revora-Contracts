@@ -391,6 +391,8 @@ mod test_time_windows;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_checkpoint_threshold;
+#[cfg(test)]
 mod test_close_period;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
