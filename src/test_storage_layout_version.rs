@@ -5,8 +5,8 @@ use crate::vesting::{
     compute_claimable, compute_vested, VestingCurve, VestingKey, VestingSchedule,
 };
 use crate::{
-    assert_semver_forward, MigrationError, MigrationTransform, RevoraError,
-    RevoraRevenueShare, RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
+    assert_semver_forward, MigrationError, MigrationTransform, RevoraError, RevoraRevenueShare,
+    RevoraRevenueShareClient, STORAGE_LAYOUT_VERSION,
 };
 use core::string::ToString;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
