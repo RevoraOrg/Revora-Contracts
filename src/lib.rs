@@ -404,6 +404,8 @@ mod test_faucet_metrics;
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
+mod test_get_fx_oracle;
+#[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
