@@ -415,6 +415,9 @@ mod test_tax_year;
 mod test_transfer_cooldown;
 #[cfg(test)]
 mod test_multi_token_independence;
+/// Focused adversarial coverage for the `get_investment_constraints` read API.
+#[cfg(test)]
+mod test_investment_constraints_read;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
