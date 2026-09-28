@@ -17,7 +17,10 @@
 
 use crate::merkle_helpers::{build_merkle_root, canonical_leaves};
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, xdr::ToXdr, Address, Bytes, BytesN, Env};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, xdr::ToXdr, Address, Bytes,
+    BytesN, Env, Vec,
+};
 
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
     let env = Env::default();
@@ -28,7 +31,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -37,7 +41,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
     (env, client, issuer, token)
 }
@@ -82,9 +87,16 @@ fn root_and_content_hash_rotate_after_new_snapshot() {
     client.finalize_snapshot(&issuer, &ns, &token, &1);
 
     let h3 = Address::generate(&env);
-    let holders_b = soroban_sdk::vec![&env, (h1.clone(), 1_000u32), (h3.clone(), 9_000u32)];
-    let hash_b = flat_content_hash(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
-    let root_b = merkle_root_for(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
+    // Snapshot B rebalances the live holder set: h2's 6_000 bps from snapshot A
+    // persists in `HolderShare` storage, so B must transfer h2's allocation to
+    // h3 to keep the aggregate at 10_000 bps (apply_snapshot_shares enforces
+    // the running total across snapshots).
+    let holders_b =
+        soroban_sdk::vec![&env, (h1.clone(), 1_000u32), (h2.clone(), 0u32), (h3.clone(), 9_000u32)];
+    let hash_b =
+        flat_content_hash(&env, &[(h1.clone(), 1_000), (h2.clone(), 0), (h3.clone(), 9_000)]);
+    let root_b =
+        merkle_root_for(&env, &[(h1.clone(), 1_000), (h2.clone(), 0), (h3.clone(), 9_000)]);
 
     client.commit_snapshot(&issuer, &ns, &token, &2, &hash_b);
     client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b);

@@ -145,7 +145,7 @@ pub fn update_tax_year_accumulator(
     capital_gains: i128,
     return_of_capital: i128,
 ) {
-    let year_key = DataKey2::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
+    let year_key = DataKey3::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
     let mut summary: TaxYearSummary = env
         .storage()
         .persistent()
@@ -215,16 +215,12 @@ pub fn rollover_distribution(
 /// The bucket is tagged on `report_revenue` so downstream indexers and tax
 /// engines can categorize each disbursement without out-of-band annotation.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum TaxBucket {
+    /// Default bucket: ordinary taxable income.
+    #[default]
     Ordinary,
     Capital,
     ReturnOfCapital,
     Custom(Symbol),
-}
-
-impl Default for TaxBucket {
-    fn default() -> Self {
-        TaxBucket::Ordinary
-    }
 }

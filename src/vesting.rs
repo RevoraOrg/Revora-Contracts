@@ -94,6 +94,8 @@ pub enum VestingError {
     InvalidAccelerationBps = 108,
     /// Curve parameters are invalid or cannot be evaluated safely.
     InvalidCurveParameters = 109,
+    /// Vesting cliff period has not been reached yet.
+    VestingCliffNotReached = 110,
 }
 
 /// Shared schema version for vesting events.
@@ -445,6 +447,9 @@ pub fn migrate_legacy_schedule(
         end_ts: legacy.end_ts,
         curve: VestingCurve::Linear,
         accelerated_amount: legacy.accelerated_amount,
+        // Legacy schedules had no cliff_secs field; a zero value keeps the
+        // migrated schedule's effective behavior identical to linear vesting.
+        cliff_secs: 0,
     })
 }
 
@@ -519,14 +524,16 @@ pub fn evaluate_curve(
                 return Err(VestingError::InvalidCurveParameters);
             }
             let target = fixed_pow(linear, *k_num)?;
+            // Inclusive upper bound: `high` may exceed scale by 1 so the fully
+            // vested fraction (1e18, i.e. x = duration) is representable.
             let mut low = 0_i128;
-            let mut high = 1_000_000_000_000_000_000_i128;
-            for _ in 0..60 {
+            let mut high = 1_000_000_000_000_000_001_i128;
+            for _ in 0..62 {
                 let mid = low.checked_add(high).ok_or(VestingError::InvalidCurveParameters)? / 2;
-                if fixed_pow(mid, *k_den)? <= target {
-                    low = mid;
-                } else {
+                if mid > 1_000_000_000_000_000_000 || fixed_pow(mid, *k_den)? > target {
                     high = mid;
+                } else {
+                    low = mid;
                 }
             }
             low
@@ -564,7 +571,7 @@ fn fixed_pow(mut value: i128, exponent: u32) -> Result<i128, VestingError> {
 }
 
 /// Helper: compute total vested tokens at a given timestamp.
-fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
+pub fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
     if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
         return 0;
     }
@@ -618,7 +625,7 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
 }
 
 /// Helper: compute claimable tokens given prior claimed amount.
-fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64) -> i128 {
+pub fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64) -> i128 {
     let vested = compute_vested(schedule, now);
     let claimable = vested.saturating_sub(already_claimed);
     if claimable < 0 {

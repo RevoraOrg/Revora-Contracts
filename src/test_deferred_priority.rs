@@ -1,4 +1,20 @@
 #![cfg(test)]
+//! `enqueue_deferred` / `get_deferred_queue` priority-queue tests (issue #551).
+//!
+//! Restored from `src/quarantined/test_deferred_priority.rs` (2026-09) and
+//! ported to the current API:
+//! - `initialize` passes explicit `None::<Address>` / `None::<bool>` generics
+//!   (the generated client can no longer infer bare `&None` arguments).
+//! - The `deferred_priority_set` event lookup uses the index-based scan the
+//!   live event tests (`test_event_indexed_v2`) use: `env.events().all()`
+//!   yields `(Address, Vec<Val>, Val)` tuples, `topics.get(0)` returns an
+//!   `Option` (the quarantined `if let Ok(...)` pattern predates that change),
+//!   and the soroban `Vec` iterator is not double-ended, so the original
+//!   `events.iter().rev().find(...)` no longer compiles.
+//! - The 50-entry stress loop annotates its index as `u64` and casts the
+//!   priority to `u32`: the original inferred `i` as both `u64` (payload_id)
+//!   and `u32` (priority), which no longer type-checks.
+
 use super::*;
 use soroban_sdk::{
     symbol_short,
@@ -16,7 +32,7 @@ fn setup_test() -> (Env, RevoraRevenueShareClient<'static>, Address) {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin, &None, &None);
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     (env, client, admin)
 }
@@ -27,7 +43,8 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol,
     let payout_asset = Address::generate(&env);
     let namespace = symbol_short!("ns");
 
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &namespace,
@@ -36,7 +53,8 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol,
         &payout_asset,
         &0,
         &symbol_short!("USD"),
-        &2);
+        &2,
+    );
 
     (env, client, issuer, namespace, token)
 }
@@ -45,7 +63,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol,
 
 #[test]
 fn enqueue_deferred_assigns_incrementing_queue_id() {
-    let (env, client, issuer, namespace, token) = setup_offering();
+    let (_env, client, issuer, namespace, token) = setup_offering();
 
     // Enqueue entries with same priority and timestamp
     let queue_id_1 = client.enqueue_deferred(&issuer, &namespace, &token, &1000, &1, &101);
@@ -78,23 +96,26 @@ fn enqueue_deferred_emits_deferred_priority_set_event() {
     let events = env.events().all();
     assert!(events.len() > before, "expected at least one new event");
 
-    // Find the deferred_priority_set event by topic
-    let def_pset_event = events.iter().rev().find(|(_contract_id, topics_val, _data)| {
-        let topics: soroban_sdk::Vec<soroban_sdk::Val> = topics_val.clone().into_val(&env);
-        if let Ok(first_topic) = topics.get(0).map(|v| v.into_val(&env)) {
-            let sym: Symbol = first_topic;
-            sym == EVENT_DEFERRED_PRIORITY_SET
-        } else {
-            false
+    // Find the deferred_priority_set event by topic.
+    // Ported from the quarantined original (see module docs): index-based
+    // reverse scan matching topics[0] against EVENT_DEFERRED_PRIORITY_SET.
+    let mut payload: Option<(u32, u64, u32, u64)> = None;
+    for i in (0..events.len()).rev() {
+        let (_contract_id, topics, data) = events.get(i).unwrap();
+        if topics.is_empty() {
+            continue;
         }
-    });
+        let first_topic: Symbol = topics.get(0).unwrap().into_val(&env);
+        if first_topic == EVENT_DEFERRED_PRIORITY_SET {
+            payload = Some(data.into_val(&env));
+            break;
+        }
+    }
 
-    assert!(def_pset_event.is_some(), "deferred_priority_set event not found");
+    let payload = payload.expect("deferred_priority_set event not found");
 
     // Verify event payload: (queue_id, release_ts, priority, payload_id)
-    let (_contract_id, _topics, data) = def_pset_event.unwrap();
-    let payload: (u32, u64, u32, u64) = data.into_val(&env);
-    assert_eq!(payload, (queue_id, 2000, 5, 42));
+    assert_eq!(payload, (queue_id, 2000u64, 5u32, 42u64));
 }
 
 // ── Tests: Priority Ordering ─────────────────────────────────────────────────
@@ -291,8 +312,8 @@ fn single_entry_queue_returns_correctly() {
 
 #[test]
 fn enqueue_deferred_requires_issuer_auth() {
-    let (env, client, issuer, namespace, token) = setup_offering();
-    let attacker = Address::generate(&env);
+    let (_env, client, _issuer, namespace, token) = setup_offering();
+    let attacker = Address::generate(&Env::default());
 
     // Attempt to enqueue as an unauthorized address
     let result = client.try_enqueue_deferred(&attacker, &namespace, &token, &1000, &1, &1);
@@ -334,7 +355,8 @@ fn queues_are_isolated_per_offering() {
     let token2 = Address::generate(&env);
     let namespace2 = symbol_short!("ns2");
     let payout_asset2 = Address::generate(&env);
-    client.register_offering(&issuer2,
+    client.register_offering(
+        &issuer2,
         &Vec::new(&env),
         &1u32,
         &namespace2,
@@ -343,7 +365,8 @@ fn queues_are_isolated_per_offering() {
         &payout_asset2,
         &0,
         &symbol_short!("EUR"),
-        &2);
+        &2,
+    );
 
     // Enqueue entries in each offering
     client.enqueue_deferred(&issuer1, &namespace1, &token1, &100, &1, &11);
@@ -371,9 +394,10 @@ fn large_queue_maintains_correct_order() {
     let (_env, client, issuer, namespace, token) = setup_offering();
 
     // Enqueue 50 entries with varying timestamps and priorities
-    for i in 0..50 {
-        let timestamp = 1000 + (i % 10) * 100; // 10 distinct timestamps
-        let priority = i % 5; // 5 distinct priorities
+    // (index annotated u64 for payload_id; priority cast to u32 — see module docs)
+    for i in 0..50u64 {
+        let timestamp = 1000u64 + (i % 10) * 100; // 10 distinct timestamps
+        let priority = (i % 5) as u32; // 5 distinct priorities
         client.enqueue_deferred(&issuer, &namespace, &token, &timestamp, &priority, &(1000 + i));
     }
 

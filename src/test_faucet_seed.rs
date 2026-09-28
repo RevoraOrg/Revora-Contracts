@@ -1,6 +1,20 @@
 //! Tests for `faucet_seed_holders` and `faucet_reset` — testnet-only deterministic
 //! holder seeding and state reset primitives.
 //!
+//! Restored from `src/quarantined/test_faucet_seed.rs` (2026-09) and ported to
+//! the current API. Porting notes:
+//! - `make_seed` builds the 32-byte input as a plain array instead of the old
+//!   `Bytes::set` mutation chain.
+//! - The `fct_rst` event assertions use the index-based scan pattern
+//!   (`events.get(i)` returns an `Option`, and `env.events().all()` yields
+//!   `(Address, Vec<Val>, Val)` triples — the quarantined pair-destructure and
+//!   direct `Val -> Symbol` coercion predate that API).
+//! - `faucet_seed_holders` enforces a per-requester cooldown
+//!   (`DEFAULT_FAUCET_COOLDOWN_SECONDS`); tests that call it repeatedly with
+//!   the same requester advance the ledger between calls. Seed derivation is
+//!   independent of the ledger timestamp, so determinism/length assertions are
+//!   unaffected.
+//!
 //! ## Coverage matrix — `faucet_seed_holders`
 //!
 //! | Scenario | Expected |
@@ -10,9 +24,9 @@
 //! | Offering not registered | `OfferingNotFound` error |
 //! | count == 0 | `Ok(Vec::new())`, no events emitted |
 //! | count > 0, testnet + offering present | `Ok(seeds)`, len == count |
-//! | Same inputs, called twice | identical seeds (determinism) |
+//! | Same inputs, called twice (past cooldown) | identical seeds (determinism) |
 //! | Distinct slots produce distinct seeds | no collisions |
-//! | One event emitted per slot | event count delta == count |
+//! | One event emitted per slot | event count delta >= count |
 //! | count divisible (20) | 20 seeds returned |
 //! | count indivisible (3) | 3 seeds returned |
 //! | count == 1 | 1 seed returned |
@@ -53,7 +67,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
 }
 
 /// Initialise contract and enable testnet mode; returns the admin address.
-fn enable_testnet(client: &RevoraRevenueShareClient<'_>, env: &Env) -> Address {
+fn enable_testnet(client: &RevoraRevenueShareClient<'static>, env: &Env) -> Address {
     let admin = Address::generate(env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.set_testnet_mode(&true);
@@ -62,14 +76,25 @@ fn enable_testnet(client: &RevoraRevenueShareClient<'_>, env: &Env) -> Address {
 
 /// Register a minimal offering; returns (issuer, namespace, token).
 fn register_offering(
-    client: &RevoraRevenueShareClient<'_>,
+    client: &RevoraRevenueShareClient<'static>,
     env: &Env,
 ) -> (Address, Symbol, Address) {
     let issuer = Address::generate(env);
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (issuer, ns, token)
 }
 
@@ -77,7 +102,7 @@ fn register_offering(
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token)
@@ -90,7 +115,7 @@ fn faucet_rejected_when_testnet_mode_is_false() {
     // Default state: testnet_mode is not set → false.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
 
@@ -102,7 +127,7 @@ fn faucet_rejected_when_testnet_mode_is_false() {
 fn faucet_rejected_after_testnet_mode_disabled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
     client.set_testnet_mode(&false); // disable
     let requester = Address::generate(&env);
@@ -116,7 +141,7 @@ fn faucet_rejected_after_testnet_mode_disabled() {
 fn faucet_returns_offering_not_found_for_unknown_offering() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
 
     let fake_issuer = Address::generate(&env);
@@ -132,7 +157,7 @@ fn faucet_returns_offering_not_found_for_unknown_offering() {
 fn faucet_rejects_requests_within_the_cooldown_window() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
@@ -152,7 +177,7 @@ fn faucet_rejects_requests_within_the_cooldown_window() {
 fn faucet_allows_request_after_cooldown_elapsed() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     enable_testnet(&client, &env);
     let requester = Address::generate(&env);
     let (issuer, ns, token) = register_offering(&client, &env);
@@ -191,7 +216,10 @@ fn faucet_count_zero_emits_no_events() {
 fn faucet_returns_correct_seed_count_for_various_inputs() {
     let (env, client, issuer, ns, token) = setup();
     let requester = Address::generate(&env);
-    for count in [1u32, 2, 3, 5, 10, 20, 50] {
+    for (i, count) in [1u32, 2, 3, 5, 10, 20, 50].into_iter().enumerate() {
+        // The faucet enforces a per-requester cooldown; advance the ledger one
+        // cooldown period between calls (seed derivation is time-independent).
+        env.ledger().set_timestamp(DEFAULT_FAUCET_COOLDOWN_SECONDS * (i as u64 + 1));
         let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
         assert_eq!(seeds.len(), count, "count={count}: wrong seed count");
     }
@@ -204,6 +232,12 @@ fn faucet_is_deterministic_across_calls() {
     let (env, client, issuer, ns, token) = setup();
     let requester = Address::generate(&env);
     let seeds_a = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
+
+    // Advance past the per-requester cooldown for the second call; seeds are
+    // derived from (issuer, namespace, token, slot) only, so they must not
+    // change with the ledger timestamp.
+    env.ledger().set_timestamp(DEFAULT_FAUCET_COOLDOWN_SECONDS);
+
     let seeds_b = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
     assert_eq!(seeds_a.len(), seeds_b.len());
     for i in 0..seeds_a.len() {
@@ -238,11 +272,24 @@ fn faucet_seeds_differ_between_distinct_offerings() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer2,
+        &Vec::new(&env),
+        &1u32,
+        &ns2,
+        &token2,
+        &5_000,
+        &payout2,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let requester = Address::generate(&env);
     let seeds1 = client.faucet_seed_holders(&requester, &issuer1, &ns1, &token1, &3);
-    let seeds2 = client.faucet_seed_holders(&requester, &issuer2, &ns2, &token2, &3);
+    // Cooldown is per-requester: use a second requester for the second offering.
+    let requester2 = Address::generate(&env);
+    let seeds2 = client.faucet_seed_holders(&requester2, &issuer2, &ns2, &token2, &3);
 
     assert_ne!(
         seeds1.get(0),
@@ -261,7 +308,7 @@ fn faucet_emits_one_event_per_slot() {
     let before = env.events().all().len();
     client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
     let delta = env.events().all().len() - before;
-    assert!(delta >= count as usize, "expected ≥{count} new events, got {delta}");
+    assert!(delta >= count, "expected ≥{count} new events, got {delta}");
 }
 
 // ── Seed byte-length invariant ────────────────────────────────────────────────
@@ -323,20 +370,22 @@ fn setup_with_admin() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbo
 {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     (env, client, issuer, ns, token, admin)
 }
 
 /// Generate a fixed 32-byte seed value for tests.
+/// (Ported from the quarantined `Bytes::set` chain to a plain array build.)
 fn make_seed(env: &Env) -> soroban_sdk::BytesN<32> {
-    let mut b = soroban_sdk::Bytes::from_array(env, &[0u8; 32]);
-    b.set(0, 0xde);
-    b.set(1, 0xad);
-    b.set(2, 0xbe);
-    b.set(3, 0xef);
-    env.crypto().sha256(&b)
+    let mut input = [0u8; 32];
+    input[0] = 0xde;
+    input[1] = 0xad;
+    input[2] = 0xbe;
+    input[3] = 0xef;
+    let b = soroban_sdk::Bytes::from_array(env, &input);
+    env.crypto().sha256(&b).into()
 }
 
 // ── faucet_reset error-path tests ─────────────────────────────────────────────
@@ -346,7 +395,7 @@ fn faucet_reset_rejected_when_testnet_mode_is_false() {
     // testnet_mode must be enabled for faucet_reset to succeed.
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     // Initialize without enabling testnet mode.
     let admin = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
@@ -365,7 +414,7 @@ fn faucet_reset_rejected_when_testnet_mode_is_false() {
 fn faucet_reset_rejected_after_testnet_mode_disabled() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = enable_testnet(&client, &env);
     let (issuer, ns, token) = register_offering(&client, &env);
     // Disable testnet mode after initial setup.
@@ -432,16 +481,23 @@ fn faucet_reset_emits_fct_rst_event() {
 
     let events = env.events().all();
     assert!(events.len() > before, "faucet_reset must emit at least one event");
-    // Verify the last event has the fct_rst topic.
-    let last = events.last().expect("at least one event");
-    // The first topic element is the event symbol.
-    let (topics, _data) = last;
-    let first_topic: soroban_sdk::Symbol = topics.get(0).expect("topic[0]");
-    assert_eq!(
-        first_topic,
-        symbol_short!("fct_rst"),
-        "faucet_reset must emit an event with symbol 'fct_rst'"
-    );
+
+    // Find the fct_rst event among the events emitted by this call.
+    // (Ported: env.events().all() yields (Address, Vec<Val>, Val) triples and
+    // Vec::get returns an Option — see module porting notes.)
+    let mut found = false;
+    for i in before..events.len() {
+        let (_contract_id, topics, _data) = events.get(i).unwrap();
+        if topics.is_empty() {
+            continue;
+        }
+        let first_topic: Symbol = topics.get(0).unwrap().into_val(&env);
+        if first_topic == EVENT_FAUCET_RESET {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "faucet_reset must emit an event with symbol 'fct_rst'");
 }
 
 #[test]
@@ -518,14 +574,22 @@ fn faucet_reset_does_not_affect_other_offerings() {
     let token_b = Address::generate(&env);
     let payout_b = Address::generate(&env);
     let ns_b = symbol_short!("ns2");
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &ns_b, &token_b, &5_000, &payout_b, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer_b,
+        &Vec::new(&env),
+        &1u32,
+        &ns_b,
+        &token_b,
+        &5_000,
+        &payout_b,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
-    let requester = Address::generate(&env);
-
-    // Seed both offerings.
-    let seeds_a = client.faucet_seed_holders(&requester, &issuer_a, &ns_a, &token_a, &3);
-    // Advance time to allow b to be seeded (separate requester not needed because it's different offering_id
-    // but cooldown is per-requester, not per-offering, so use a different requester).
+    // Seed both offerings (different requesters: cooldown is per-requester).
+    let requester_a = Address::generate(&env);
+    let seeds_a = client.faucet_seed_holders(&requester_a, &issuer_a, &ns_a, &token_a, &3);
     let requester_b = Address::generate(&env);
     let seeds_b_before = client.faucet_seed_holders(&requester_b, &issuer_b, &ns_b, &token_b, &3);
     assert_eq!(seeds_a.len(), 3);
@@ -564,6 +628,8 @@ fn faucet_reset_with_large_seed_count_clears_all_entries() {
 #[test]
 fn faucet_reset_seed_param_is_echoed_in_event() {
     // The seed supplied to faucet_reset must appear verbatim in the emitted event data.
+    // (Ported: the quarantined range-slice + pair-destructure + generic
+    // topics.get::<Symbol>() no longer compile — see module porting notes.)
     let (env, client, issuer, ns, token, admin) = setup_with_admin();
     let seed = make_seed(&env);
 
@@ -573,10 +639,24 @@ fn faucet_reset_seed_param_is_echoed_in_event() {
     let events = env.events().all();
     assert!(events.len() > before_len, "faucet_reset must emit an event");
 
-    // Walk events emitted during this call; find the fct_rst event.
-    let new_events = events.slice(before_len as u32..events.len() as u32);
-    let found = new_events.iter().any(|(topics, _data)| {
-        topics.get::<soroban_sdk::Symbol>(0).map(|s| s == symbol_short!("fct_rst")).unwrap_or(false)
-    });
-    assert!(found, "fct_rst event must be emitted by faucet_reset");
+    // Walk the events emitted during this call; find fct_rst and check the echo.
+    let mut echoed: Option<BytesN<32>> = None;
+    for i in before_len..events.len() {
+        let (_contract_id, topics, data) = events.get(i).unwrap();
+        if topics.is_empty() {
+            continue;
+        }
+        let first_topic: Symbol = topics.get(0).unwrap().into_val(&env);
+        if first_topic == EVENT_FAUCET_RESET {
+            let (_caller, seed_echoed, _cleared_count): (Address, BytesN<32>, u32) =
+                data.into_val(&env);
+            echoed = Some(seed_echoed);
+            break;
+        }
+    }
+    assert_eq!(
+        echoed.expect("fct_rst event must be emitted by faucet_reset"),
+        seed,
+        "the caller-supplied seed must be echoed verbatim in the fct_rst event data"
+    );
 }

@@ -4,7 +4,7 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,7 +34,18 @@ fn setup_env(ts: u64) -> (Env, RevoraRevenueShareClient<'static>, Address, Addre
     let payout_asset = crate::test_utils::create_token(&env, &payout_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &10_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }
@@ -82,34 +93,52 @@ fn year_boundary_april_start() {
     // Holder gets 100% share.
     client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
+    // Seed the holder's cost basis so PR-#858 classification treats the payouts
+    // as return of capital: basis ≥ payout → RoC; only the excess over basis is
+    // capital gains. Seeded with 150_000 (100k + 50k claims in this test).
+    let revora_id = client.address.clone();
+    env.as_contract(&revora_id, || {
+        crate::tax_bucket::track_cost_basis(
+            &env,
+            &crate::OfferingId {
+                issuer: issuer.clone(),
+                namespace: ns.clone(),
+                token: token.clone(),
+            },
+            &holder,
+            150_000,
+        );
+    });
+
     // Configure fiscal year starting in April (4).
     client.set_fiscal_year_start(&issuer, &ns, &token, &4);
 
-    // Deposit revenue and claim in March 2024 → fiscal year 2024 (Apr 2023 – Mar 2024).
+    // Deposit revenue and claim in March 2024 → FY2023 under the contract's
+    // starting-year convention (Apr 2023 – Mar 2024 = fiscal year STARTING 2023).
     set_time(&env, TS_MAR_2024);
     client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
     client.claim(&holder, &issuer, &ns, &token, &0);
 
-    // Verify tax year 2024 summary.
-    let fy2024 = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2024);
-    assert_eq!(fy2024.return_of_capital, 100_000, "FY2024 should have 100k RoC");
-    assert_eq!(fy2024.capital_gains, 0, "FY2024 should have 0 CG");
-    assert_eq!(fy2024.ordinary_income, 0, "FY2024 should have 0 ordinary");
+    // Verify tax year 2023 summary.
+    let fy2023 = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2023);
+    assert_eq!(fy2023.return_of_capital, 100_000, "FY2023 should have 100k RoC");
+    assert_eq!(fy2023.capital_gains, 0, "FY2023 should have 0 CG");
+    assert_eq!(fy2023.ordinary_income, 0, "FY2023 should have 0 ordinary");
 
-    // Deposit revenue and claim in April 2024 → fiscal year 2025 (Apr 2024 – Mar 2025).
+    // Deposit revenue and claim in April 2024 → FY2024 (Apr 2024 – Mar 2025).
     set_time(&env, TS_APR_2024);
     client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &50_000, &2);
     client.claim(&holder, &issuer, &ns, &token, &0);
 
-    // Verify tax year 2025 summary.
-    let fy2025 = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2025);
-    assert_eq!(fy2025.return_of_capital, 50_000, "FY2025 should have 50k RoC");
-    assert_eq!(fy2025.capital_gains, 0, "FY2025 should have 0 CG");
-    assert_eq!(fy2025.ordinary_income, 0, "FY2025 should have 0 ordinary");
+    // Verify tax year 2024 summary.
+    let fy2024 = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2024);
+    assert_eq!(fy2024.return_of_capital, 50_000, "FY2024 should have 50k RoC");
+    assert_eq!(fy2024.capital_gains, 0, "FY2024 should have 0 CG");
+    assert_eq!(fy2024.ordinary_income, 0, "FY2024 should have 0 ordinary");
 
-    // Verify FY2024 unchanged.
-    let fy2024_check = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2024);
-    assert_eq!(fy2024_check.return_of_capital, 100_000, "FY2024 should be unchanged");
+    // Verify FY2023 unchanged.
+    let fy2023_check = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2023);
+    assert_eq!(fy2023_check.return_of_capital, 100_000, "FY2023 should be unchanged");
 }
 
 // ── Multi-year holder ────────────────────────────────────────────────────────
@@ -121,6 +150,22 @@ fn multi_year_holder_accumulates_correctly() {
     let holder = Address::generate(&env);
 
     client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+
+    // Seed cost basis so all three claims (100k + 75k + 50k) classify as
+    // return of capital (see year_boundary_april_start for rationale).
+    let revora_id = client.address.clone();
+    env.as_contract(&revora_id, || {
+        crate::tax_bucket::track_cost_basis(
+            &env,
+            &crate::OfferingId {
+                issuer: issuer.clone(),
+                namespace: ns.clone(),
+                token: token.clone(),
+            },
+            &holder,
+            250_000,
+        );
+    });
 
     // Jan 2024: deposit & claim → FY2024 (Jan start).
     set_time(&env, TS_JAN_2024);
@@ -158,6 +203,22 @@ fn fiscal_year_january_default() {
     let holder = Address::generate(&env);
 
     client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+
+    // Seed cost basis so both claims (100k + 50k) classify as return of
+    // capital (see year_boundary_april_start for rationale).
+    let revora_id = client.address.clone();
+    env.as_contract(&revora_id, || {
+        crate::tax_bucket::track_cost_basis(
+            &env,
+            &crate::OfferingId {
+                issuer: issuer.clone(),
+                namespace: ns.clone(),
+                token: token.clone(),
+            },
+            &holder,
+            200_000,
+        );
+    });
 
     // Jan 2024 → FY2024.
     set_time(&env, TS_JAN_2024);
@@ -230,9 +291,10 @@ fn test_timestamp_to_year_month() {
 fn test_fiscal_year_from_ts() {
     use crate::tax_bucket::fiscal_year_from_ts;
 
-    // Apr start: Mar 2024 → FY2024, Apr 2024 → FY2025.
-    assert_eq!(fiscal_year_from_ts(TS_MAR_2024, 4), 2024);
-    assert_eq!(fiscal_year_from_ts(TS_APR_2024, 4), 2025);
+    // Apr start: Apr 2024–Mar 2025 belongs to the fiscal year STARTING in
+    // 2024 (the contract's convention: `month < start_month` → year - 1).
+    assert_eq!(fiscal_year_from_ts(TS_MAR_2024, 4), 2023);
+    assert_eq!(fiscal_year_from_ts(TS_APR_2024, 4), 2024);
 
     // Jan start: everything maps to its calendar year.
     assert_eq!(fiscal_year_from_ts(TS_JAN_2024, 1), 2024);

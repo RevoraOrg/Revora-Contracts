@@ -1,10 +1,11 @@
 #![cfg(test)]
+extern crate alloc;
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger, LedgerInfo},
-    Address, BytesN, Env, Symbol, Vec,
+    Address, BytesN, Env, Symbol, TryIntoVal, Vec,
 };
 
 /// Advance the test ledger by `secs` seconds.
@@ -26,7 +27,18 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let payout_asset = crate::test_utils::create_token(&env, &payout_asset_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }
@@ -39,9 +51,12 @@ fn set_jurisdiction(
     holder: &Address,
     jurisdiction: Symbol,
 ) {
+    // Tests in this file register offerings under namespace "ns"; the helper
+    // must target the same namespace or the contract rejects the call with
+    // OfferingNotFound.
     client.set_holder_jurisdiction(
         issuer,
-        &symbol_short!("def"),
+        &symbol_short!("ns"),
         token,
         holder,
         &jurisdiction,
@@ -49,7 +64,7 @@ fn set_jurisdiction(
     );
     client.set_allowed_jurisdictions(
         issuer,
-        &symbol_short!("def"),
+        &symbol_short!("ns"),
         token,
         &soroban_sdk::vec![
             &client.env,
@@ -77,11 +92,13 @@ fn test_set_and_get_transfer_cooldown() {
     let cd = client.get_transfer_cooldown(&issuer, &symbol_short!("def"), &token, &jurisdiction);
     assert_eq!(cd, 3600, "cooldown should be 3600 after set");
 
-    // Verify event was emitted
+    // Verify event was emitted (EVENT_TRANSFER_COOLDOWN_SET = "tr_cool")
     let events = env.events().all();
-    let found = events.iter().any(|e| {
-        let topic_str = format!("{:?}", e.0);
-        topic_str.contains("tr_cool")
+    let found = events.iter().any(|(_, topics, _)| match topics.first() {
+        Some(t) => {
+            t.try_into_val(&env) as Result<Symbol, _> == Ok(crate::EVENT_TRANSFER_COOLDOWN_SET)
+        }
+        None => false,
     });
     assert!(found, "cooldown set event should have been emitted");
 }
@@ -99,11 +116,27 @@ fn test_transfer_blocked_by_cooldown() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     // Assign jurisdiction to holder1
@@ -120,6 +153,7 @@ fn test_transfer_blocked_by_cooldown() {
 
     // Attempt another transfer immediately — should fail with TransferCooldownActive
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert_eq!(
@@ -142,14 +176,33 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
+    // PR-#857: the jurisdiction allowlist applies to recipients too, so every
+    // transfer participant must carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a 1-hour cooldown
@@ -163,6 +216,7 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
 
     // Second transfer should now succeed
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "transfer should succeed after cooldown elapsed");
@@ -181,14 +235,33 @@ fn test_cooldown_exactly_at_boundary_rejects() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
+    // PR-#857: the jurisdiction allowlist applies to recipients too, so every
+    // transfer participant must carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a 60-second cooldown
@@ -201,6 +274,7 @@ fn test_cooldown_exactly_at_boundary_rejects() {
     advance_ledger(&env, 59);
 
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert_eq!(
@@ -230,14 +304,33 @@ fn test_cooldown_zero_means_disabled() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
+    // PR-#857: the jurisdiction allowlist applies to recipients too, so every
+    // transfer participant must carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set cooldown to 0 — should be disabled
@@ -248,6 +341,7 @@ fn test_cooldown_zero_means_disabled() {
 
     // Immediate second transfer should succeed (cooldown=0 = disabled)
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "transfer should succeed when cooldown=0");
@@ -266,12 +360,28 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder_us = Address::generate(&env);
     let holder_sg = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
 
     // Set up jurisdictions
     set_jurisdiction(&client, &issuer, &token, &holder_us, symbol_short!("us"));
@@ -279,6 +389,7 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
 
     client.set_holder_share(&issuer, &ns, &token, &holder_us, &100, &1);
     client.set_holder_share(&issuer, &ns, &token, &holder_sg, &100, &1);
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
 
     // Set different cooldowns for each jurisdiction
     client.set_transfer_cooldown(&issuer, &ns, &token, &symbol_short!("us"), &3600); // 1 hour
@@ -290,6 +401,7 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
 
     // Both transfers should be blocked immediately
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category);
     assert_eq!(
@@ -339,11 +451,27 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
 
     // Set empty allowed jurisdictions (gating disabled)
     client.set_allowed_jurisdictions(&issuer, &ns, &token, &soroban_sdk::vec![&env]);
@@ -361,6 +489,7 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
 
     // Second immediate transfer should also succeed
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "second transfer should also succeed when sender has no jurisdiction");
@@ -381,14 +510,33 @@ fn test_estimate_transfer_cooldown_consistency() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
+    // PR-#857: the jurisdiction allowlist applies to recipients too, so every
+    // transfer participant must carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a cooldown
@@ -447,14 +595,33 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
+    // Start off epoch 0: last_xfer == 0 is the "no prior transfer" sentinel in
+    // the cooldown path, so the first transfer must happen at a real timestamp.
+    advance_ledger(&env, 1_000_000);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // PR-#857: recipients must also carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
+    // PR-#857: the jurisdiction allowlist applies to recipients too, so every
+    // transfer participant must carry an allowed jurisdiction tag.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // NO cooldown configured for "us" jurisdiction
@@ -464,6 +631,7 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
 
     // Second transfer — should also succeed immediately since no cooldown is configured
     let holder3 = Address::generate(&env);
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(
