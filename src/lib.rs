@@ -451,6 +451,8 @@ mod test_utils;
 #[cfg(test)]
 mod test_platform_fee_per_asset;
 #[cfg(test)]
+mod test_pause_safety_adversarial;
+#[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
