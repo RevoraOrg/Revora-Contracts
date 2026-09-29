@@ -1,7 +1,11 @@
 #![cfg(test)]
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::{Address as _, Events}, Address, Env, Vec, IntoVal};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, Vec,
+};
 
 fn make_client(env: &Env) -> RevoraRevenueShareClient<'static> {
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -15,16 +19,16 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let issuer = Address::generate(env);
     let token = Address::generate(env);
     client.register_offering(
-        &issuer, 
-        &Vec::new(env), 
-        &1u32, 
-        &symbol_short!("def"), 
-        &token, 
-        &1_000, 
-        &token, 
-        &0, 
-        &symbol_short!(""), 
-        &0
+        &issuer,
+        &Vec::new(env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
     );
     (issuer, token)
 }
@@ -47,7 +51,7 @@ fn test_reject_issuer_transfer_success() {
     // Verify it was rejected by checking we can't accept it anymore
     let accept_res = client.try_accept_issuer_transfer(&new_issuer, &namespace, &token);
     assert_eq!(accept_res, Err(Ok(RevoraError::NoTransferPending)));
-    
+
     // Check events
     let events = env.events().all();
     let mut found_reject = false;

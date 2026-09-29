@@ -19,11 +19,7 @@
 #![cfg(test)]
 
 use crate::{DataKey, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TenantId};
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol, Vec};
 
 // ── Test Setup Helpers ────────────────────────────────────────────────────────
 
