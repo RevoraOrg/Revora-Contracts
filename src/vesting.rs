@@ -86,16 +86,16 @@ pub enum VestingError {
     NothingToClaimYet = 104,
     /// Caller is not authorised for this operation.
     Unauthorized = 105,
-    /// Vesting has started but the cliff duration has not yet elapsed.
-    VestingCliffNotReached = 110,
-    /// Curve parameters are invalid or cannot be evaluated safely.
-    InvalidCurveParameters = 109,
     /// A vesting schedule is pre-cliff and blocks issuer transfer migration.
     SchedulePreCliff = 106,
     /// Acceleration trigger already processed for this beneficiary.
     AlreadyAccelerated = 107,
     /// Acceleration bps must not exceed 10000.
     InvalidAccelerationBps = 108,
+    /// Curve parameters are invalid or cannot be evaluated safely.
+    InvalidCurveParameters = 109,
+    /// Vesting cliff period has not been reached yet.
+    VestingCliffNotReached = 110,
 }
 
 /// Shared schema version for vesting events.

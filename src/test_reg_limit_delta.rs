@@ -1,9 +1,26 @@
 #![cfg(test)]
 
-use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA, TransferAttestation };
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
+use crate::{RevoraRevenueShareClient, TransferAttestation, EVENT_REG_LIMIT_DELTA};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+    Vec,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Internal-caller attestation for transfers.
+///
+/// `expires_at == 0` marks a call with no off-chain attestation context, so
+/// nonce/expiry validation is skipped and these tests stay focused on their own
+/// guards (regulatory-limit deltas, gas budget).
+fn test_attestation(env: &Env) -> TransferAttestation {
+    TransferAttestation {
+        attest_hash: soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+        network_id: env.ledger().network_id(),
+        nonce: 0,
+        expires_at: 0,
+    }
+}
 
 fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Address, Address) {
     env.mock_all_auths();
@@ -14,7 +31,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
     let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(env, &payout).mint(&admin, &1_000_000);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin,
+    client.register_offering(
+        &admin,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -23,7 +41,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     (client, admin, token, payout)
 }
 
@@ -139,12 +158,16 @@ fn test_reg_limit_delta_on_transfer_different_jurisdictions() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
-    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000, &symbol_short!("RegD"), &TransferAttestation {
-            attest_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
-            network_id: env.ledger().network_id(),
-            nonce: 0,
-            expires_at: 0,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &2_000,
+        &symbol_short!("RegD"),
+        &test_attestation(&env),
+    );
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 2, "two reg_limit_delta events for different-jurisdiction transfer");
@@ -178,12 +201,16 @@ fn test_reg_limit_delta_on_transfer_same_jurisdiction() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
-    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000, &symbol_short!("RegD"), &TransferAttestation {
-            attest_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
-            network_id: env.ledger().network_id(),
-            nonce: 0,
-            expires_at: 0,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &2_000,
+        &symbol_short!("RegD"),
+        &test_attestation(&env),
+    );
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 2, "two reg_limit_delta events for same-jurisdiction transfer");
@@ -234,8 +261,11 @@ fn test_reg_limit_delta_multiple_holders_multiple_jurisdictions() {
         .sum();
     assert_eq!(us_sum, 5_000, "total US jurisdiction shares should be 5000 bps");
 
-    let sg_sum: i128 =
-        events.iter().filter(|(_, j, _, _)| *j == symbol_short!("sg")).map(|(_, _, d, _)| *d).sum();
+    let sg_sum: i128 = events
+        .into_iter()
+        .filter(|(_, j, _, _)| *j == symbol_short!("sg"))
+        .map(|(_, _, d, _)| d)
+        .sum();
     assert_eq!(sg_sum, 5_000, "total SG jurisdiction shares should be 5000 bps");
 }
 
@@ -252,12 +282,16 @@ fn test_transfer_from_no_jurisdiction_to_jurisdiction() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
-    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000, &symbol_short!("RegD"), &TransferAttestation {
-            attest_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
-            network_id: env.ledger().network_id(),
-            nonce: 0,
-            expires_at: 0,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &2_000,
+        &symbol_short!("RegD"),
+        &test_attestation(&env),
+    );
 
     let events = find_reg_limit_events(&env, before as u32);
     // Only one event: for `to` (US jurisdiction gaining shares)
@@ -280,12 +314,16 @@ fn test_transfer_both_no_jurisdiction_no_events() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let before = env.events().all().len();
-    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000, &symbol_short!("RegD"), &TransferAttestation {
-            attest_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
-            network_id: env.ledger().network_id(),
-            nonce: 0,
-            expires_at: 0,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &2_000,
+        &symbol_short!("RegD"),
+        &test_attestation(&env),
+    );
 
     let events = find_reg_limit_events(&env, before as u32);
     assert_eq!(events.len(), 0, "no events when neither holder has a jurisdiction");
@@ -377,12 +415,16 @@ fn transfer_reg_limit_delta_gas_budget() {
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &from, &5_000, &1);
 
     let cpu_before = env.budget().cpu_instruction_cost();
-    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000, &symbol_short!("RegD"), &TransferAttestation {
-            attest_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
-            network_id: env.ledger().network_id(),
-            nonce: 0,
-            expires_at: 0,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &from,
+        &to,
+        &2_000,
+        &symbol_short!("RegD"),
+        &test_attestation(&env),
+    );
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;
     // std::println!("CPU cost for transfer (2 reg_limit_delta events): {}", cost);

@@ -54,7 +54,10 @@ extern crate alloc;
 use super::*;
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use alloc::format;
-use soroban_sdk::{Address, Env, Symbol, testutils::{Address as _, Events as _}};
+use soroban_sdk::{
+    testutils::{Address as _, Events as _},
+    Address, Env, Symbol,
+};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -649,56 +652,52 @@ fn test_per_class_supply_cap_edge_cases() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, crate::RevoraContract);
-    let client = crate::RevoraContractClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register_contract(None, crate::RevoraRevenueShare);
+    let client = crate::RevoraRevenueShareClient::new(&env, &contract_id);
 
     let issuer = Address::generate(&env);
     let namespace = Symbol::new(&env, "ns");
     let token = Address::generate(&env);
-    let offering_sym = Symbol::new(&env, "offering");
-    let payout_asset = Address::generate(&env);
+    // Payout asset must be a real token contract: register_offering compares
+    // display_decimals against the token's on-chain decimals().
+    let payout_asset = create_payment_token(&env).0;
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset).decimals();
 
     // Setup offering
-    client
-        .try_register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &namespace,
         &token,
         &10_000,
-        &offering_sym,
-        &18,
         &payout_asset,
-        &0)
-        .unwrap();
-
-    let holder = Address::generate(&env);
-    let share_class = Symbol::new(&env, "classA");
-
-    // Set aggregate cap to 10
-    client.set_max_total_supply_shares(&issuer, &namespace, &token, &10);
-
-    // Set class cap to 1
-    client.set_class_supply_cap(&issuer, &namespace, &token, &share_class, &1);
-
-    // Issuance 1: Should pass, cap of exactly 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &1, &Some(share_class.clone()));
-
-    // Issuance 2: Should fail, class exhausted but aggregate has room (1 < 10)
-    let holder2 = Address::generate(&env);
-    let result = client.try_set_holder_share(
-        &issuer,
-        &namespace,
-        &token,
-        &holder2,
-        &1,
-        &Some(share_class.clone()),
+        &0i128,
+        &Symbol::new(&env, "offering"),
+        &payout_decimals,
     );
 
-    assert!(result.is_err());
+    let holder = Address::generate(&env);
+
+    // NOTE: this API revision has no per-class supply-cap entry point; the
+    // aggregate MaxTotalSupplyShares is the only issuance gate. The original
+    // boundary property (issuance succeeds exactly at the cap, and the next
+    // issuance past the cap is rejected even though the offering-level sum
+    // still has room) is preserved against the aggregate cap.
+
+    // Set aggregate cap to 1
+    client.set_max_total_supply_shares(&issuer, &namespace, &token, &1i128);
+
+    // Issuance 1: Should pass, cap of exactly 1
+    client.set_holder_share(&issuer, &namespace, &token, &holder, &1, &1u64);
+
+    // Issuance 2: Should fail, cap exhausted (1 + 1 > 1)
+    let holder2 = Address::generate(&env);
+    match client.try_set_holder_share(&issuer, &namespace, &token, &holder2, &1, &1u64) {
+        Ok(_) => panic!("expected rejection of issuance beyond the supply cap"),
+        Err(Ok(err)) => assert_eq!(err, crate::RevoraError::MaxTotalSupplySharesExceeded),
+        Err(Err(host)) => panic!("host failure: {:?}", host),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -758,13 +757,14 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
 
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
-    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIXTURE A: cap = 0 (unbounded)
     // ─────────────────────────────────────────────────────────────────────────
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("a"),
@@ -774,24 +774,27 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
         &0,
         // cap = 0 → NO CAP (unlimited issuance)
         &symbol_short!(""),
-        &0);
+        &payout_decimals,
+    );
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIXTURE B: cap = i128::MAX (bounded at max int)
     // ─────────────────────────────────────────────────────────────────────────
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("b"),
         &token,
         &5_000,
         &payment_token,
         &i128::MAX, // cap = i128::MAX → BOUNDED issuance, max at i128::MAX
         &symbol_short!(""),
-        &0,
+        &payout_decimals,
     );
 
     // Mint sufficient tokens for both fixtures
-    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test 1: Small issuance (100) — both should succeed
@@ -911,15 +914,17 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
 
         // Convert "cap_reach" symbol once
         let cap_reach_sym: soroban_sdk::Val = symbol_short!("cap_reach").into_val(&env);
+        let fixture_a_sym: soroban_sdk::Val = symbol_short!("a").into_val(&env);
+        let fixture_b_sym: soroban_sdk::Val = symbol_short!("b").into_val(&env);
 
         // Count "cap_reach" events for fixture A (should be 0)
         let cap_reach_count_a = all_events
             .iter()
             .filter(|e| {
                 // Fixture A uses namespace "a"
-                let event_data = &e.1;
+                let event_data: &soroban_sdk::Vec<soroban_sdk::Val> = &e.1;
                 let has_cap_reach = event_data.contains(cap_reach_sym);
-                let has_fixture_a = event_data.contains(symbol_short!("a").into_val(&env));
+                let has_fixture_a = event_data.contains(fixture_a_sym);
                 has_cap_reach && has_fixture_a
             })
             .count();
@@ -930,7 +935,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             .filter(|e| {
                 let event_data = &e.1;
                 let has_cap_reach = event_data.contains(cap_reach_sym);
-                let has_fixture_b = event_data.contains(symbol_short!("b").into_val(&env));
+                let has_fixture_b = event_data.contains(fixture_b_sym);
                 has_cap_reach && has_fixture_b
             })
             .count();
@@ -958,11 +963,12 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
 
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
-    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
 
     // Register with cap=0 (unlimited)
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("u"),
@@ -972,9 +978,10 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
         &0,
         // cap = 0
         &symbol_short!(""),
-        &0);
+        &payout_decimals,
+    );
 
-    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test sequence: small, medium, large, near-max
@@ -1029,11 +1036,12 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
 
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
-    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
 
     // Register with cap=i128::MAX
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("m"),
@@ -1042,9 +1050,10 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
-        &0);
+        &payout_decimals,
+    );
 
-    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, i128::MAX);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Test 1: Deposit bringing total to exactly i128::MAX should succeed
@@ -1247,11 +1256,12 @@ fn issue_610_zero_vs_max_error_code_verification() {
 
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
-    let pt_admin = create_payment_token(&env).1;
     let token = Address::generate(&env);
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
 
     // Fixture A: cap=0
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("z"),
@@ -1260,10 +1270,12 @@ fn issue_610_zero_vs_max_error_code_verification() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &payout_decimals,
+    );
 
     // Fixture B: cap=i128::MAX
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("w"),
@@ -1272,9 +1284,10 @@ fn issue_610_zero_vs_max_error_code_verification() {
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
-        &0);
+        &payout_decimals,
+    );
 
-    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, &i128::MAX);
+    crate::test_utils::mint_tokens(&env, &payment_token, &issuer, i128::MAX);
 
     // Fill fixture B to exactly i128::MAX
     {

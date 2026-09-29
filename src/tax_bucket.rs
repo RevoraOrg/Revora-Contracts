@@ -1,4 +1,4 @@
-use crate::{DataKey2, OfferingId};
+use crate::{DataKey3, OfferingId};
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 pub const EVENT_TAX_ROLLOVER: Symbol = symbol_short!("tax_roll");
@@ -128,7 +128,7 @@ pub fn fiscal_year_from_ts(ts: u64, fiscal_start_month: u32) -> u64 {
 pub const DEFAULT_FISCAL_START_MONTH: u32 = 1;
 
 pub fn track_cost_basis(env: &Env, offering_id: &OfferingId, holder: &Address, cost_basis: i128) {
-    let key = DataKey2::RemainingBasis(offering_id.clone(), holder.clone());
+    let key = DataKey3::RemainingBasis(offering_id.clone(), holder.clone());
     env.storage().persistent().set(&key, &cost_basis);
 }
 
@@ -145,7 +145,7 @@ pub fn update_tax_year_accumulator(
     capital_gains: i128,
     return_of_capital: i128,
 ) {
-    let year_key = DataKey2::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
+    let year_key = DataKey3::TaxYearEntry(offering_id.clone(), holder.clone(), fiscal_year);
     let mut summary: TaxYearSummary = env
         .storage()
         .persistent()
@@ -165,7 +165,7 @@ pub fn rollover_distribution(
     period_id: u64,
     timestamp: u64,
 ) -> TaxBucketResult {
-    let key = DataKey2::RemainingBasis(offering_id.clone(), holder.clone());
+    let key = DataKey3::RemainingBasis(offering_id.clone(), holder.clone());
     let remaining_basis: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
     let (return_of_capital, capital_gains) = if remaining_basis >= amount {

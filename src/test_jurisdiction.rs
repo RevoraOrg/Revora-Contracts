@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use crate::{
-    DataKey2, JurisdictionMigrationState, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,, TransferAttestation };
+    DataKey2, JurisdictionMigrationState, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
+};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger, LedgerInfo},
@@ -758,12 +759,19 @@ fn transfer_blocked_by_jurisdiction_allowlist_returns_jurisdiction_blocked() {
     let category = Symbol::new(&env, "General");
     let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
     let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    let result = client.try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
-            attest_hash: attestation_hash,
-            network_id: network_id,
-            nonce: 1u64,
-            expires_at: u64::MAX,
-        },);
+    let result = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::JurisdictionBlocked,
@@ -814,12 +822,19 @@ fn transfer_allowed_when_destination_jurisdiction_in_allowlist() {
     let category = Symbol::new(&env, "General");
     let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
     let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
-            attest_hash: attestation_hash,
-            network_id: network_id,
-            nonce: 1u64,
-            expires_at: u64::MAX,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder1), 50);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder2), 50);
@@ -862,12 +877,19 @@ fn empty_allowlist_allows_all_transfers() {
     let category = Symbol::new(&env, "General");
     let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
     let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
-            attest_hash: attestation_hash,
-            network_id: network_id,
-            nonce: 1u64,
-            expires_at: u64::MAX,
-        },);
+    client.transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &holder2), 50);
 }
@@ -913,12 +935,19 @@ fn single_jurisdiction_allowlist_rejects_other_jurisdictions() {
     let category = Symbol::new(&env, "General");
     let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
     let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    let result = client.try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
-            attest_hash: attestation_hash,
-            network_id: network_id,
-            nonce: 1u64,
-            expires_at: u64::MAX,
-        },);
+    let result = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::JurisdictionBlocked,
@@ -967,12 +996,19 @@ fn jurisdiction_allowlist_reject_emits_audit_event() {
     let category = Symbol::new(&env, "General");
     let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
     let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    let _ = client.try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &TransferAttestation {
-            attest_hash: attestation_hash,
-            network_id: network_id,
-            nonce: 1u64,
-            expires_at: u64::MAX,
-        },);
+    let _ = client.try_transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &holder1,
+        &holder2,
+        &50,
+        &category,
+        &attestation_hash,
+        &network_id,
+        &1u64,
+        &u64::MAX,
+    );
 
     // Audit event should be emitted on jurisdiction rejection
     assert!(env.events().all().len() > events_before);
