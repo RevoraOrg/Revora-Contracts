@@ -2776,5 +2776,5 @@ See `src/test.rs::regression::regression_template_example` for a complete templa
 
 ## Handsoff notes
 
-<!-- handsoff-issue-1128 -->
-- #1128: Add adversarial coverage for get_checkpoint_threshold in lib
+<!-- handsoff-issue-1101 -->
+- #1101: Add adversarial coverage for get_blacklist_size in lib
