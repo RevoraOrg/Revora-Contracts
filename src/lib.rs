@@ -399,27 +399,29 @@ mod test_compute_share_invariants;
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
+#[cfg(test)]
+mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
-mod test_pending_issuer_transfer;
-#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-#[cfg(test)]
-mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
-mod proptest_helpers;
+mod test_accrual_reconciliation_prop;
 #[cfg(test)]
 mod test_accrual_reconciliation_prop;
+#[cfg(test)]
+mod test_close_period;
 #[cfg(test)]
 mod test_close_period;
 #[cfg(test)]
@@ -427,14 +429,12 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
-mod test_get_payment_token;
-#[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
-mod test_freeze_reason_bitmask;
+mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -445,13 +445,6 @@ mod test_reg_limit_delta;
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
-#[cfg(test)]
-mod test_utils;
-
-#[cfg(test)]
-mod test_platform_fee_per_asset;
-#[cfg(test)]
-mod test_revenue_deposit_with_snapshot;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -12346,6 +12339,81 @@ impl RevoraRevenueShare {
 
     // ââ Fiscal year configuration âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
+    /// Return the total pending dividend balance for `holder` as recorded by
+    /// the report-time accrual ledger.
+    ///
+    /// This is distinct from `get_holder_accrued_unclaimed` (which uses the
+    /// deposit-time ledger).  The report-time ledger is updated by every
+    /// accepted `report_revenue` call and is settled into a per-holder
+    /// `accrued_owed` checkpoint on every `set_holder_share` call.
+    ///
+    /// ### Formula
+    ///
+    /// ```text
+    /// unsettled = (global_report_acc - holder.last_report_acc) * current_share / SCALE
+    /// total     = holder.accrued_owed + unsettled
+    /// ```
+    ///
+    /// ### Returns
+    ///
+    /// `i128` — the total amount currently pending for this holder across all
+    /// reported (but not necessarily deposited) revenue periods.  Returns `0`
+    /// for blacklisted holders.
+    ///
+    /// ### Gas
+    ///
+    /// O(1) — reads three storage keys regardless of the number of periods.
+    pub fn get_holder_pending_report_accrual(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> i128 {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if Self::is_blacklisted(env.clone(), issuer, namespace, token, holder.clone()) {
+            return 0;
+        }
+
+        let global_key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let global_acc: i128 = env.storage().persistent().get(&global_key).unwrap_or(0);
+
+        let ledger_key = DataKey2::HolderReportLedger(offering_id.clone(), holder.clone());
+        let ledger: HolderReportAccrual = env
+            .storage()
+            .persistent()
+            .get(&ledger_key)
+            .unwrap_or(HolderReportAccrual { last_report_acc_e18: global_acc, accrued_owed: 0 });
+
+        // Unsettled portion since last share-change settlement.
+        let unsettled = if global_acc > ledger.last_report_acc_e18 {
+            let current_share: u32 = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            if current_share == 0 {
+                0
+            } else {
+                let delta = global_acc.saturating_sub(ledger.last_report_acc_e18);
+                delta
+                    .checked_mul(current_share as i128)
+                    .unwrap_or(i128::MAX)
+                    .checked_div(ACCRUAL_SCALE_E18)
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+
+        ledger.accrued_owed.saturating_add(unsettled)
+    }
+
     /// Set the fiscal year start month for an offering.
     ///
     /// `month` must be 1 (January) through 12 (December).  The default is 1.
@@ -16052,9 +16120,13 @@ impl RevoraRevenueShare {
 #[cfg(test)]
 mod test_deferred_priority;
 #[cfg(test)]
-mod test_deposit_revenue_adversarial;
+mod test_get_blacklist_attestation_adversarial;
 #[cfg(test)]
 mod test_merkle_proof_depth;
+#[cfg(test)]
+mod test_merkle_proof_depth;
+#[cfg(test)]
+mod test_merkle_root_rotation;
 #[cfg(test)]
 mod test_snapshot_voting_weight;
 #[cfg(test)]
