@@ -17,7 +17,10 @@
 
 use crate::merkle_helpers::{build_merkle_root, canonical_leaves};
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, xdr::ToXdr, Address, Bytes, BytesN, Env};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, xdr::ToXdr, Address, Bytes,
+    BytesN, Env, Vec,
+};
 
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
     let env = Env::default();
@@ -28,7 +31,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer,
+    client.register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -37,7 +41,8 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
     (env, client, issuer, token)
 }
