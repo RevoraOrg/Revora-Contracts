@@ -36,6 +36,7 @@ struct TestContext {
 fn setup() -> (Env, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().set_network_id([0x01; 32]);
 
     // Deploy a mock token (Stellar asset contract)
     let token_admin = Address::generate(&env);

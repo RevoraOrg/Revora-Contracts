@@ -42,6 +42,7 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
     // Register offering with 0 claim delay → all periods immediately mature.
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
         &soroban_sdk::Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -50,6 +51,7 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
         &payout_asset,
         &0,
         &symbol_short!(""),
+        &0u32,
         &payout_decimals,
     );
 

@@ -417,6 +417,9 @@ mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
+mod test_close_period;
 mod proptest_helpers;
 #[cfg(test)]
 mod test_accrual_reconciliation_prop;
@@ -9412,6 +9415,57 @@ impl RevoraRevenueShare {
                     .persistent()
                     .get(&DataKey3::HolderShareClass(offering_id.clone(), holder.clone(), sc))
                     .unwrap_or(0);
+                let delta = (share_bps as i128) - (old_share as i128);
+                temp_total_shares = temp_total_shares.saturating_add(delta);
+                temp_deltas.push_back((holder.clone(), delta));
+            }
+            if temp_total_shares > max_shares {
+                return Err(RevoraError::MaxTotalSupplySharesExceeded);
+            }
+            if temp_total_shares == max_shares {
+                env.events().publish(
+                    (
+                        EVENT_SUPPLY_CAP_SATURATED,
+                        offering_id.issuer.clone(),
+                        offering_id.namespace.clone(),
+                        offering_id.token.clone(),
+                    ),
+                    (temp_total_shares, max_shares),
+                );
+            }
+        }
+
+        // Now apply the changes
+        for i in 0..batch_len {
+            let (holder, share_bps) = holders.get(i).unwrap();
+            let slot = start_index.saturating_add(i);
+
+            // Write indexed slot for deterministic enumeration.
+            env.storage().persistent().set(
+                &DataKey::SnapshotHolder(offering_id.clone(), snapshot_ref, slot),
+                &(holder.clone(), share_bps),
+            );
+
+            // Write address-keyed entry for O(1) vote-weight lookup (issue #557).
+            env.storage().persistent().set(
+                &DataKey::SnapshotHolderShare(offering_id.clone(), snapshot_ref, holder.clone()),
+                &share_bps,
+            );
+
+            if slot.saturating_add(1) > slot_count {
+                slot_count = slot.saturating_add(1);
+            }
+
+            // Compute delta against previously persisted holder share.
+            let old_share: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+
+            let new_total = current_total.saturating_sub(old_share).saturating_add(share_bps);
+            if new_total > 10_000 {
+                return Err(RevoraError::InvalidShareBps);
                 total_share += share;
             }
             total_share
@@ -12345,6 +12399,81 @@ impl RevoraRevenueShare {
     }
 
     // ââ Fiscal year configuration âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    /// Return the total pending dividend balance for `holder` as recorded by
+    /// the report-time accrual ledger.
+    ///
+    /// This is distinct from `get_holder_accrued_unclaimed` (which uses the
+    /// deposit-time ledger).  The report-time ledger is updated by every
+    /// accepted `report_revenue` call and is settled into a per-holder
+    /// `accrued_owed` checkpoint on every `set_holder_share` call.
+    ///
+    /// ### Formula
+    ///
+    /// ```text
+    /// unsettled = (global_report_acc - holder.last_report_acc) * current_share / SCALE
+    /// total     = holder.accrued_owed + unsettled
+    /// ```
+    ///
+    /// ### Returns
+    ///
+    /// `i128` — the total amount currently pending for this holder across all
+    /// reported (but not necessarily deposited) revenue periods.  Returns `0`
+    /// for blacklisted holders.
+    ///
+    /// ### Gas
+    ///
+    /// O(1) — reads three storage keys regardless of the number of periods.
+    pub fn get_holder_pending_report_accrual(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> i128 {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        if Self::is_blacklisted(env.clone(), issuer, namespace, token, holder.clone()) {
+            return 0;
+        }
+
+        let global_key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let global_acc: i128 = env.storage().persistent().get(&global_key).unwrap_or(0);
+
+        let ledger_key = DataKey2::HolderReportLedger(offering_id.clone(), holder.clone());
+        let ledger: HolderReportAccrual = env
+            .storage()
+            .persistent()
+            .get(&ledger_key)
+            .unwrap_or(HolderReportAccrual { last_report_acc_e18: global_acc, accrued_owed: 0 });
+
+        // Unsettled portion since last share-change settlement.
+        let unsettled = if global_acc > ledger.last_report_acc_e18 {
+            let current_share: u32 = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            if current_share == 0 {
+                0
+            } else {
+                let delta = global_acc.saturating_sub(ledger.last_report_acc_e18);
+                delta
+                    .checked_mul(current_share as i128)
+                    .unwrap_or(i128::MAX)
+                    .checked_div(ACCRUAL_SCALE_E18)
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+
+        ledger.accrued_owed.saturating_add(unsettled)
+    }
 
     /// Set the fiscal year start month for an offering.
     ///

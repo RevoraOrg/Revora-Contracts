@@ -468,6 +468,9 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &1,
     );
 
+    // Mint payout tokens to the issuer so they can deposit revenue
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);
+
     revora.deposit_revenue(
         &issuer,
         &symbol_short!("def"),

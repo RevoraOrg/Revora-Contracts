@@ -664,6 +664,20 @@ fn test_per_class_supply_cap_edge_cases() {
     let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset).decimals();
 
     // Setup offering
+    client
+        .try_register_offering(
+            &issuer,
+            &Vec::new(&env),
+            &1u32,
+            &namespace,
+            &token,
+            &10_000,
+            &offering_sym,
+            &18,
+            &payout_asset,
+            &0,
+        )
+        .unwrap();
     client.register_offering(
         &issuer,
         &Vec::new(&env),
@@ -774,6 +788,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
         &0,
         // cap = 0 → NO CAP (unlimited issuance)
         &symbol_short!(""),
+        &0,
         &payout_decimals,
     );
 
@@ -978,6 +993,7 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
         &0,
         // cap = 0
         &symbol_short!(""),
+        &0,
         &payout_decimals,
     );
 
@@ -1050,6 +1066,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
+        &0,
         &payout_decimals,
     );
 
@@ -1270,6 +1287,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
         &payment_token,
         &0,
         &symbol_short!(""),
+        &0,
         &payout_decimals,
     );
 
@@ -1284,6 +1302,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
         &payment_token,
         &i128::MAX,
         &symbol_short!(""),
+        &0,
         &payout_decimals,
     );
 

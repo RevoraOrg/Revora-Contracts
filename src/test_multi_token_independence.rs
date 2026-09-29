@@ -57,6 +57,8 @@ fn test_multi_token_offering_independence() {
     let payTokenY = Address::generate(&env);
 
     // Register Offerings
+    register_offering(&client, &issuer, namespace, &tokenA);
+    register_offering(&client, &issuer, namespace, &tokenB);
     register_offering(&client, &issuer, &namespace, &tokenA);
     register_offering(&client, &issuer, &namespace, &tokenB);
 
@@ -69,6 +71,8 @@ fn test_multi_token_offering_independence() {
     client.deposit_revenue(&issuer, &namespace, &tokenB, &payTokenY, &amountB, &1);
 
     // Assert get_payment_token returns correct for each
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX));
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY));
     assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX.clone()));
     assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY.clone()));
 
