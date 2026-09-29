@@ -390,6 +390,8 @@ pub mod security_assertions;
 pub mod kani_harness;
 
 #[cfg(test)]
+mod test_accept_issuer_transfer;
+#[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
 mod test_claim_transfer_fail;
@@ -399,21 +401,27 @@ mod test_compute_share_invariants;
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
+#[cfg(test)]
+mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
+mod test_issuer_transfer_cancel;
+#[cfg(test)]
 mod test_merkle_canonical_order;
+#[cfg(test)]
+mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_pending_issuer_transfer;
 #[cfg(test)]
-mod test_min_revenue_threshold_boundary;
+mod test_propose_transfer_with_expiry;
+#[cfg(test)]
+mod test_replace_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-#[cfg(test)]
-mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -427,14 +435,14 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
-mod test_get_payment_token;
-#[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
 mod test_freeze_reason_bitmask;
+#[cfg(test)]
+mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
