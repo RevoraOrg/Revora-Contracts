@@ -7639,9 +7639,7 @@ impl RevoraRevenueShare {
         category: Symbol,
     ) -> Option<TransferRestrictions> {
         let offering_id = OfferingId { issuer, namespace, token };
-        env.storage()
-            .persistent()
-            .get(&DataKey2::TransferRestrictions(offering_id, category))
+        env.storage().persistent().get(&DataKey2::TransferRestrictions(offering_id, category))
     }
 
     #[allow(clippy::too_many_arguments)]

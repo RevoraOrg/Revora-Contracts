@@ -15,7 +15,7 @@
 extern crate std;
 
 use super::*;
-use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RevoraError, TransferRestrictions};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TransferRestrictions};
 use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 fn client() -> (Env, RevoraRevenueShareClient<'static>) {
@@ -109,7 +109,9 @@ fn caps_are_isolated_per_offering() {
     c.set_transfer_restrictions(&issuer, &namespace_a, &token_a, &category, &5);
 
     assert_eq!(
-        c.get_transfer_restrictions(&issuer, &namespace_a, &token_a, &category).unwrap().max_holders,
+        c.get_transfer_restrictions(&issuer, &namespace_a, &token_a, &category)
+            .unwrap()
+            .max_holders,
         5
     );
     assert_eq!(c.get_transfer_restrictions(&issuer, &namespace_b, &token_a, &category), None);
