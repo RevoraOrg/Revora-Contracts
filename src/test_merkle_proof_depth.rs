@@ -23,7 +23,7 @@ use crate::MAX_PROOF_DEPTH;
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::BytesN as _, testutils::Events as _, Address,
-    BytesN, Env, IntoVal, Symbol, Vec,
+    BytesN, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

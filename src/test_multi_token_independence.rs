@@ -57,8 +57,8 @@ fn test_multi_token_offering_independence() {
     let payTokenY = Address::generate(&env);
 
     // Register Offerings
-    register_offering(&client, &issuer, &namespace, &tokenA);
-    register_offering(&client, &issuer, &namespace, &tokenB);
+    register_offering(&client, &issuer, namespace, &tokenA);
+    register_offering(&client, &issuer, namespace, &tokenB);
 
     // Deposit tokenX to A
     let amountA = 1000;
@@ -69,8 +69,8 @@ fn test_multi_token_offering_independence() {
     client.deposit_revenue(&issuer, &namespace, &tokenB, &payTokenY, &amountB, &1);
 
     // Assert get_payment_token returns correct for each
-    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX.clone()));
-    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY.clone()));
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX));
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY));
 
     // Assert cross-deposit fails (tokenY into A)
     let res = client.try_deposit_revenue(&issuer, &namespace, &tokenA, &payTokenY, &amountB, &2);
