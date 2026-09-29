@@ -27,7 +27,7 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, Val, Vec,
 };
 
-use crate::{DataKey, OfferingId, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, SignedAttestation};
+use crate::{DataKey, OfferingId, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, SignedAttestation, TransferAttestation };
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -117,19 +117,12 @@ fn transfer_blocked_when_frozen() {
 
     client.freeze();
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     // State must be unchanged
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -148,19 +141,12 @@ fn transfer_blocked_when_paused() {
     client.set_admin(&admin);
     client.pause_admin(&admin);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -173,19 +159,12 @@ fn self_transfer_is_noop() {
     let holder = Address::generate(&env);
     set_share(&client, &issuer, &token, &holder, 2_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &holder,
-        &holder,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &holder, &holder, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     // Self-transfer is allowed as a no-op (returns Ok, state unchanged)
     assert_eq!(result, Ok(Ok(())));
     // Share is unchanged
@@ -202,19 +181,12 @@ fn zero_shares_rejected() {
     let to = Address::generate(&env);
     set_share(&client, &issuer, &token, &from, 1_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &0u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &0u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
 }
@@ -232,19 +204,12 @@ fn unknown_offering_rejected() {
     let to = Address::generate(&env);
 
     // No offering registered
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
@@ -256,19 +221,12 @@ fn wrong_issuer_rejected() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    let result = client.try_transfer_with_attestation(
-        &fake_issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&fake_issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
@@ -285,19 +243,12 @@ fn transfer_blocked_when_offering_frozen() {
     // Freeze the offering
     client.freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::OfferingFrozen)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
 }
@@ -314,19 +265,12 @@ fn blacklisted_from_rejected() {
 
     client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &from);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     // Share unchanged
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -343,19 +287,12 @@ fn blacklisted_to_rejected() {
 
     client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &to);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::HolderBlacklisted)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
@@ -375,19 +312,12 @@ fn whitelist_unlisted_from_rejected() {
     // Enable whitelist: only `to` is listed; `from` is not
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &to);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
@@ -405,19 +335,12 @@ fn whitelist_unlisted_to_rejected() {
     // Enable whitelist: only `from` is listed; `to` is not
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &from);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
@@ -435,19 +358,12 @@ fn whitelist_both_listed_succeeds() {
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &from);
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &to);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 500);
@@ -465,19 +381,12 @@ fn no_whitelist_transfer_unrestricted() {
     // Whitelist is empty (disabled) — no whitelist check should fire
     assert!(!client.is_whitelist_enabled(&issuer, &symbol_short!("def"), &token));
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
 }
 
@@ -492,19 +401,12 @@ fn insufficient_shares_rejected() {
     // from has 500 bps but tries to transfer 600
     set_share(&client, &issuer, &token, &from, 500);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &600u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &600u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
@@ -519,19 +421,12 @@ fn zero_holder_share_rejected() {
     let to = Address::generate(&env);
     // from has no share (default 0)
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &1u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &1u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
 }
 
@@ -547,19 +442,12 @@ fn recipient_share_cap_rejected() {
     set_share(&client, &issuer, &token, &from, 3_000);
     set_share(&client, &issuer, &token, &to, 8_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &3_000u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &3_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
     // State unchanged
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 3_000);
@@ -576,19 +464,12 @@ fn recipient_share_at_cap_boundary_allowed() {
     set_share(&client, &issuer, &token, &from, 5_000);
     set_share(&client, &issuer, &token, &to, 5_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &5_000u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &5_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 10_000);
@@ -605,19 +486,12 @@ fn happy_path_full_transfer() {
     let to = Address::generate(&env);
     set_share(&client, &issuer, &token, &from, 4_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &4_000u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &4_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 0);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 4_000);
@@ -633,19 +507,12 @@ fn happy_path_partial_transfer() {
     set_share(&client, &issuer, &token, &from, 6_000);
     set_share(&client, &issuer, &token, &to, 1_000);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &2_500u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 3_500);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 3_500);
@@ -660,19 +527,12 @@ fn minimum_granularity_one_bps() {
     let to = Address::generate(&env);
     set_share(&client, &issuer, &token, &from, 100);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &from,
-        &to,
-        &1u32,
-        &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &1u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 99);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 1);
@@ -714,8 +574,12 @@ fn share_total_invariant_after_transfer() {
     let total_before = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_before, 6_000);
 
-    client2.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &test_nonce(), &test_expires_at());
+    client2.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
 
     let total_after = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_after, 6_000, "HolderShareTotal must be invariant across peer-to-peer transfer");
@@ -739,13 +603,12 @@ fn subsequent_set_holder_share_respects_post_transfer_state() {
     set_share(&client, &issuer, &token, &bob, 3_000);
 
     // Transfer 2000 from alice to bob → alice=2000, bob=5000 (total=7000)
-    client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &alice, &bob, &2_000u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &alice, &bob, &2_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &alice), 2_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &bob), 5_000);
 
@@ -774,10 +637,12 @@ fn event_payload_correct() {
     let nonce = 7u64;
     let expires_at = u64::MAX;
 
-    client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &symbol_short!("def"),
-        &hash, &test_network_id(&env, 0x01), &nonce, &expires_at,
-    );
+    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &2_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: hash,
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
 
     let events = env.events().all();
     assert!(events.len() > before, "at least one event must be emitted");
@@ -832,13 +697,12 @@ fn exactly_one_xfer_att_event_per_transfer() {
     let xfer_att_sym = symbol_short!("xfer_att");
     let before = env.events().all().len();
 
-    client.transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    client.transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
 
     let events = env.events().all();
     let count = (before..events.len())
@@ -864,13 +728,12 @@ fn zero_attest_hash_accepted() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &zero_hash,
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: zero_hash,
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
 }
 
@@ -884,13 +747,12 @@ fn all_ones_attest_hash_accepted() {
     set_share(&client, &issuer, &token, &from, 1_000);
 
     let ones_hash = BytesN::from_array(&env, &[0xffu8; 32]);
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &ones_hash,
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: ones_hash,
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
 }
 
@@ -905,13 +767,12 @@ fn matching_network_id_is_accepted() {
     let network_id = test_network_id(&env, 0x42);
     env.ledger().set_network_id([0x42u8; 32]);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &network_id,
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: network_id,
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Ok(Ok(())));
 }
 
@@ -926,13 +787,12 @@ fn mismatched_network_id_is_rejected() {
     env.ledger().set_network_id([0x42u8; 32]);
     let mismatched_network_id = test_network_id(&env, 0x43);
 
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &mismatched_network_id,
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: mismatched_network_id,
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
     assert_eq!(result, Err(Ok(RevoraError::NetworkIdMismatch)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &to), 0);
@@ -953,13 +813,12 @@ fn expired_attestation_rejected() {
     env.ledger().set_timestamp(1000);
     let expiry = 500u64;
 
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &expiry,
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: expiry,
+        },);
     assert_eq!(result, Err(Ok(RevoraError::SignatureExpired)));
     // State must be unchanged
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 1_000);
@@ -978,24 +837,22 @@ fn replayed_attestation_nonce_rejected() {
     let expires_at = u64::MAX;
 
     // First use should succeed
-    let r1 = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &nonce,
-        &expires_at,
-    );
+    let r1 = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
     assert_eq!(r1, Ok(Ok(())));
 
     // Second use with same nonce (and different `to`) should fail as replay
     let to2 = Address::generate(&env);
-    let r2 = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to2, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &nonce,
-        &expires_at,
-    );
+    let r2 = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to2, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
     assert_eq!(r2, Err(Ok(RevoraError::SignatureReplay)));
 }
 
@@ -1015,24 +872,22 @@ fn nonce_is_per_signer() {
     let expires_at = u64::MAX;
 
     // Alice uses nonce 99
-    let r1 = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &alice, &charlie, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &nonce,
-        &expires_at,
-    );
+    let r1 = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &alice, &charlie, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
     assert_eq!(r1, Ok(Ok(())));
 
     // Bob uses nonce 99 — should succeed (per-signer scoping)
     let to2 = Address::generate(&env);
-    let r2 = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &bob, &to2, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &nonce,
-        &expires_at,
-    );
+    let r2 = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &bob, &to2, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: expires_at,
+        },);
     assert_eq!(r2, Ok(Ok(())));
 }
 
@@ -1050,13 +905,12 @@ fn attestation_used_at_exact_expiry() {
     env.ledger().set_timestamp(now);
     let nonce = 7u64;
 
-    let result = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &nonce,
-        &now,
-    );
+    let result = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: nonce,
+            expires_at: now,
+        },);
     // now == expires_at, transfer should succeed (expires_at is an inclusive upper bound)
     assert_eq!(result, Ok(Ok(())));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &from), 500);
@@ -1078,11 +932,19 @@ fn chained_transfers_maintain_total() {
     let ns = symbol_short!("def");
 
     // A→B: 2000
-    client.transfer_with_attestation(&issuer, &ns, &token, &a, &b, &2_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
+    client.transfer_with_attestation(&issuer, &ns, &token, &a, &b, &2_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: 1u64,
+            expires_at: u64::MAX,
+        },);
     // B→C: 1000
-    client.transfer_with_attestation(&issuer, &ns, &token, &b, &c, &1_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &2u64, &u64::MAX);
+    client.transfer_with_attestation(&issuer, &ns, &token, &b, &c, &1_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: 2u64,
+            expires_at: u64::MAX,
+        },);
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &a), 4_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &b), 1_000);
@@ -1101,10 +963,18 @@ fn multiple_transfers_from_same_holder() {
     set_share(&client, &issuer, &token, &from, 9_000);
 
     let ns = symbol_short!("def");
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to1, &3_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to2, &3_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &2u64, &u64::MAX);
+    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to1, &3_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: 1u64,
+            expires_at: u64::MAX,
+        },);
+    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to2, &3_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: 2u64,
+            expires_at: u64::MAX,
+        },);
 
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 3_000);
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &to1), 3_000);
@@ -1155,8 +1025,12 @@ fn transfer_does_not_affect_other_offerings() {
     client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000, &1);
 
     // Transfer on offering A only
-    client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &attest(&env),
-        &test_network_id(&env, 0x01), &1u64, &u64::MAX);
+    client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: 1u64,
+            expires_at: u64::MAX,
+        },);
 
     // Offering A shares updated
     assert_eq!(client.get_holder_share(&issuer, &ns, &token_a, &from), 2_000);
@@ -1185,13 +1059,12 @@ fn transfer_without_from_auth_causes_host_panic() {
     let to = Address::generate(&env);
     set_share(&client, &issuer, &token, &from, 1_000);
     // This will abort the host — cannot be caught by try_
-    let _ = client.try_transfer_with_attestation(
-        &issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"),
-        &attest(&env),
-        &test_network_id(&env, 0x01),
-        &test_nonce(),
-        &test_expires_at(),
-    );
+    let _ = client.try_transfer_with_attestation(&issuer, &symbol_short!("def"), &token, &from, &to, &500u32, &symbol_short!("def"), &TransferAttestation {
+            attest_hash: attest(&env),
+            network_id: test_network_id(&env, 0x01),
+            nonce: test_nonce(),
+            expires_at: test_expires_at(),
+        },);
 }
 
 // ── Network-id domain separator tests (closes #578) ──────────────────────────

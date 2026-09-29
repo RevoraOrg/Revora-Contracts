@@ -1284,6 +1284,28 @@ pub struct SignedAttestation {
     pub digest: BytesN<32>,
 }
 
+/// Off-chain transfer attestation supplied with `transfer_with_attestation`.
+///
+/// The four attestation fields are carried as one contract argument because a
+/// Soroban contract export may take at most 10 parameters (including `env`).
+/// Grouping them keeps `transfer_with_attestation` exportable while preserving
+/// every field the off-chain signer commits to.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferAttestation {
+    /// Digest over the domain-separated transfer preimage.
+    pub attest_hash: BytesN<32>,
+    /// Stellar network id the attestation is bound to.
+    pub network_id: BytesN<32>,
+    /// Monotonic per-attestation nonce; replays and out-of-order values are rejected.
+    pub nonce: u64,
+    /// Ledger timestamp after which the attestation is no longer accepted.
+    ///
+    /// `0` marks an internal caller (e.g. `atomic_swap`) with no off-chain
+    /// attestation context; nonce and expiry validation are then skipped.
+    pub expires_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Issuers {
@@ -4152,6 +4174,12 @@ impl RevoraRevenueShare {
             buyer.clone(),
             amount_bps,
             category,
+            TransferAttestation {
+                attest_hash: zero_hash,
+                network_id: net_id,
+                nonce: 0,
+                expires_at: 0,
+            },
         )?;
 
         // ── Emit swap_v1 event ─────────────────────────────────────────────────
@@ -7928,7 +7956,27 @@ impl RevoraRevenueShare {
         to: Address,
         amount_bps: u32,
         category: Symbol,
+        attestation: TransferAttestation,
     ) -> Result<(), RevoraError> {
+        // Domain-separation guard: the attestation commits to one Stellar
+        // network id, so a digest signed for testnet can never be replayed on
+        // mainnet (see `compute_attestation_digest`).
+        if attestation.network_id != env.ledger().network_id() {
+            return Err(RevoraError::NetworkIdMismatch);
+        }
+
+        // Replay/expiry guard. `expires_at == 0` marks an internal caller that
+        // carries no off-chain attestation, so it is exempt by design. The
+        // nonce is only consumed once every other guard has passed.
+        if attestation.expires_at != 0 {
+            Self::require_valid_meta_nonce_and_expiry(
+                &env,
+                &from,
+                attestation.nonce,
+                attestation.expires_at,
+            )?;
+        }
+
         Self::check_transfer_eligibility(
             &env, &issuer, &namespace, &token, &from, &to, amount_bps, &category,
         )?;
@@ -8003,6 +8051,12 @@ impl RevoraRevenueShare {
                     }
                 }
             }
+        }
+
+        // Every guard passed, so the attestation is consumed. Consuming last
+        // keeps the nonce reusable by a corrected retry after a rejection.
+        if attestation.expires_at != 0 {
+            Self::mark_meta_nonce_used(&env, &from, attestation.nonce);
         }
 
         Ok(())

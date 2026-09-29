@@ -1,12 +1,26 @@
 #![cfg(test)]
 
-use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
+use crate::{RevoraRevenueShareClient, TransferAttestation, EVENT_REG_LIMIT_DELTA};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
     Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Internal-caller attestation for transfers.
+///
+/// `expires_at == 0` marks a call with no off-chain attestation context, so
+/// nonce/expiry validation is skipped and these tests stay focused on their own
+/// guards (regulatory-limit deltas, gas budget).
+fn test_attestation(env: &Env) -> TransferAttestation {
+    TransferAttestation {
+        attest_hash: soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+        network_id: env.ledger().network_id(),
+        nonce: 0,
+        expires_at: 0,
+    }
+}
 
 fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Address, Address) {
     env.mock_all_auths();
@@ -152,6 +166,7 @@ fn test_reg_limit_delta_on_transfer_different_jurisdictions() {
         &to,
         &2_000,
         &symbol_short!("RegD"),
+        &test_attestation(&env),
     );
 
     let events = find_reg_limit_events(&env, before as u32);
@@ -194,6 +209,7 @@ fn test_reg_limit_delta_on_transfer_same_jurisdiction() {
         &to,
         &2_000,
         &symbol_short!("RegD"),
+        &test_attestation(&env),
     );
 
     let events = find_reg_limit_events(&env, before as u32);
@@ -274,6 +290,7 @@ fn test_transfer_from_no_jurisdiction_to_jurisdiction() {
         &to,
         &2_000,
         &symbol_short!("RegD"),
+        &test_attestation(&env),
     );
 
     let events = find_reg_limit_events(&env, before as u32);
@@ -305,6 +322,7 @@ fn test_transfer_both_no_jurisdiction_no_events() {
         &to,
         &2_000,
         &symbol_short!("RegD"),
+        &test_attestation(&env),
     );
 
     let events = find_reg_limit_events(&env, before as u32);
@@ -405,6 +423,7 @@ fn transfer_reg_limit_delta_gas_budget() {
         &to,
         &2_000,
         &symbol_short!("RegD"),
+        &test_attestation(&env),
     );
     let cpu_after = env.budget().cpu_instruction_cost();
     let cost = cpu_after - cpu_before;

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TransferAttestation};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger, LedgerInfo},
@@ -12,6 +12,20 @@ use std::format;
 fn advance_ledger(env: &Env, secs: u64) {
     let info = env.ledger().get();
     env.ledger().set(LedgerInfo { timestamp: info.timestamp.saturating_add(secs), ..info });
+}
+
+/// Internal-caller attestation for transfers.
+///
+/// `expires_at == 0` marks a call with no off-chain attestation context, so
+/// nonce/expiry validation is skipped and these tests stay focused on their own
+/// guards (cooldown, jurisdiction, …).
+fn test_attestation(env: &Env) -> TransferAttestation {
+    TransferAttestation {
+        attest_hash: soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+        network_id: env.ledger().network_id(),
+        nonce: 0,
+        expires_at: 0,
+    }
 }
 
 fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
@@ -139,12 +153,12 @@ fn test_transfer_blocked_by_cooldown() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer should succeed (no prior transfer timestamp)
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // Attempt another transfer immediately — should fail with TransferCooldownActive
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::TransferCooldownActive,
@@ -190,7 +204,7 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // Advance ledger past the cooldown window
     advance_ledger(&env, 3601);
@@ -198,7 +212,7 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
     // Second transfer should now succeed
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert!(result.is_ok(), "transfer should succeed after cooldown elapsed");
 }
 
@@ -240,14 +254,14 @@ fn test_cooldown_exactly_at_boundary_rejects() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &60);
 
     // First transfer
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // Advance exactly to the boundary (59 seconds — still too early)
     advance_ledger(&env, 59);
 
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::TransferCooldownActive,
@@ -258,7 +272,7 @@ fn test_cooldown_exactly_at_boundary_rejects() {
     advance_ledger(&env, 2);
 
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert!(result.is_ok(), "transfer at 61s should succeed (cooldown=60)");
 }
 
@@ -300,12 +314,12 @@ fn test_cooldown_zero_means_disabled() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &0);
 
     // First transfer
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // Immediate second transfer should succeed (cooldown=0 = disabled)
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert!(result.is_ok(), "transfer should succeed when cooldown=0");
 }
 
@@ -352,13 +366,13 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &symbol_short!("sg"), &60); // 1 minute
 
     // Both holders transfer
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder2, &25, &category);
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder2, &25, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder2, &25, &category, &test_attestation(&env));
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder2, &25, &category, &test_attestation(&env));
 
     // Both transfers should be blocked immediately
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category, &test_attestation(&env));
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::TransferCooldownActive,
@@ -366,7 +380,7 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
     );
 
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder3, &25, &category, &test_attestation(&env));
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::TransferCooldownActive,
@@ -378,12 +392,12 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
 
     // SG holder should now be able to transfer
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder3, &25, &category, &test_attestation(&env));
     assert!(result.is_ok(), "SG holder should be able to transfer after 61s (cooldown=60)");
 
     // US holder should still be blocked
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category, &test_attestation(&env));
     assert_eq!(
         result.unwrap_err().unwrap(),
         RevoraError::TransferCooldownActive,
@@ -434,13 +448,13 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
     // Transfer — should succeed because holder1 has no jurisdiction
     // (cooldown check only applies when holder has a jurisdiction)
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
     assert!(result.is_ok(), "transfer should succeed when sender has no jurisdiction tag");
 
     // Second immediate transfer should also succeed
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert!(result.is_ok(), "second transfer should also succeed when sender has no jurisdiction");
 }
 
@@ -484,7 +498,7 @@ fn test_estimate_transfer_cooldown_consistency() {
     client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer to establish timestamp
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // estimate_transfer should also return TransferCooldownActive
     let result = client.try_estimate_transfer(
@@ -560,12 +574,12 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
     // NO cooldown configured for "us" jurisdiction
 
     // Transfer — should succeed and NOT record last transfer time
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category, &test_attestation(&env));
 
     // Second transfer — should also succeed immediately since no cooldown is configured
     let holder3 = Address::generate(&env);
     let result = client
-        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
+        .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category, &test_attestation(&env));
     assert!(
         result.is_ok(),
         "transfer should succeed when no cooldown is configured for the jurisdiction"

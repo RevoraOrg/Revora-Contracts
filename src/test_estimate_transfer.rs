@@ -25,12 +25,26 @@
 
 #![cfg(test)]
 
-use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TransferAttestation};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger as _},
     Address, BytesN, Env, Symbol, Vec,
 };
+
+/// Internal-caller attestation for transfers.
+///
+/// `expires_at == 0` marks a call with no off-chain attestation context, so
+/// nonce/expiry validation is skipped and these tests stay focused on estimator
+/// versus real-path parity.
+fn test_attestation(env: &Env) -> TransferAttestation {
+    TransferAttestation {
+        attest_hash: BytesN::from_array(env, &[0u8; 32]),
+        network_id: env.ledger().network_id(),
+        nonce: 0,
+        expires_at: 0,
+    }
+}
 
 /// A registered offering plus the network id its attestations are pinned to.
 struct Ctx {
@@ -447,6 +461,7 @@ fn estimate_reports_cooldown_active_then_allows_after_expiry() {
             &to,
             &50,
             &ctx.category,
+            &test_attestation(&ctx.env),
         )
         .is_ok());
 
@@ -566,6 +581,7 @@ fn estimate_matches_the_real_transfer_verdict() {
             &to,
             &60,
             &ctx.category,
+            &test_attestation(&ctx.env),
         )
         .is_ok());
 
@@ -579,6 +595,7 @@ fn estimate_matches_the_real_transfer_verdict() {
             &to,
             &90,
             &ctx.category,
+            &test_attestation(&ctx.env),
         ),
         Err(Ok(RevoraError::InvalidAmount)),
         "the real path must reject what the estimator rejects"
