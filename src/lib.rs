@@ -399,21 +399,21 @@ mod test_compute_share_invariants;
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
+#[cfg(test)]
+mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
-mod test_pending_issuer_transfer;
-#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-#[cfg(test)]
-mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -427,14 +427,14 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
-mod test_get_payment_token;
-#[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
 mod test_freeze_reason_bitmask;
+#[cfg(test)]
+mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -16064,3 +16064,5 @@ mod test_storage_layout_version;
 mod secondary_market_royalty_adversarial_test;
 #[cfg(test)]
 mod test_offering_count_adversarial;
+#[cfg(test)]
+mod test_register_offering_adversarial;
