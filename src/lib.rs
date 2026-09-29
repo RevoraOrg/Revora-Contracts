@@ -407,6 +407,8 @@ mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
+mod test_min_revenue_threshold_adversarial;
+#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_pending_issuer_transfer;
