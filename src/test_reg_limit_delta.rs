@@ -3,7 +3,6 @@
 use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
-    Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
