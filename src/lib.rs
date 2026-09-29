@@ -7626,6 +7626,22 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
+    /// Return the transfer restriction configured for an `(offering, category)`
+    /// pair, or `None` when no cap has been set.
+    ///
+    /// Read-only; no authorization required. Exposes the cap written by
+    /// [`set_transfer_restrictions`] so its effect is observable and testable (#1111).
+    pub fn get_transfer_restrictions(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        category: Symbol,
+    ) -> Option<TransferRestrictions> {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage().persistent().get(&DataKey2::TransferRestrictions(offering_id, category))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn estimate_transfer(
         env: Env,
@@ -16064,3 +16080,6 @@ mod test_storage_layout_version;
 mod secondary_market_royalty_adversarial_test;
 #[cfg(test)]
 mod test_offering_count_adversarial;
+
+#[cfg(test)]
+mod test_set_transfer_restrictions_adversarial;
