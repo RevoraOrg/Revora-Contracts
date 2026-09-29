@@ -163,7 +163,9 @@ proptest! {
             .unwrap();
 
             if let Some(ref expected) = baseline {
-                prop_assert_eq!(result.payouts, expected.payouts);
+                // `expected` is behind a shared reference and soroban `Vec`
+                // is not `Copy`; clone the preview payouts for the comparison.
+                prop_assert_eq!(result.payouts, expected.payouts.clone());
                 prop_assert_eq!(result.total_distributed, expected.total_distributed);
             } else {
                 baseline = Some(result);
@@ -245,7 +247,7 @@ fn close_period_zero_period_id_rejected() {
 fn close_period_unknown_offering_returns_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -407,7 +409,7 @@ fn measure_cpu_for_n_holders(n: u32) -> u64 {
 /// Compute R² (coefficient of determination) for a linear fit of (x,y) points.
 fn r_squared(points: &[(f64, f64)]) -> f64 {
     let n = points.len() as f64;
-    if n < 2 {
+    if n < 2.0 {
         return 0.0;
     }
 
@@ -440,7 +442,9 @@ fn r_squared(points: &[(f64, f64)]) -> f64 {
 #[test]
 fn close_period_cpu_grows_linearly_with_holders() {
     let test_counts = [1u32, 10u32, 100u32, 1000u32];
-    let mut points = Vec::new();
+    // `Vec` in scope is `soroban_sdk::Vec`; the CPU-fit table is a plain
+    // host-side std collection of (holder_count, cpu_instructions) points.
+    let mut points: std::vec::Vec<(f64, f64)> = std::vec::Vec::new();
 
     for n in test_counts {
         let cpu = measure_cpu_for_n_holders(n) as f64;
@@ -491,7 +495,7 @@ fn close_period_zero_holders_has_constant_cost() {
 fn setup_dual_sig_offering(
     env: &Env,
     client: &RevoraRevenueShareClient,
-) -> (Address, Address, Address, Address, Address) {
+) -> (Address, Address, Address, Address, Symbol) {
     env.mock_all_auths();
     let issuer = Address::generate(env);
     let co_issuer = Address::generate(env);
@@ -521,7 +525,7 @@ fn setup_dual_sig_offering(
 #[test]
 fn set_dual_sig_config_enables_mode() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Single-sig close_period should now fail with DualSigNotConfigured.
@@ -532,7 +536,7 @@ fn set_dual_sig_config_enables_mode() {
 #[test]
 fn close_period_dual_sig_happy_path() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     assert!(!client.is_period_closed(&issuer, &ns, &token, &1));
@@ -544,7 +548,7 @@ fn close_period_dual_sig_happy_path() {
 #[test]
 fn close_period_dual_sig_same_signer_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // Both sig_a and sig_b are the issuer — must be rejected.
@@ -557,7 +561,7 @@ fn close_period_dual_sig_same_signer_rejected() {
 fn close_period_dual_sig_not_configured() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let co_issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -587,7 +591,7 @@ fn close_period_dual_sig_not_configured() {
 fn close_period_dual_sig_unauthorized_signer_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, _co, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     let attacker = Address::generate(&env);
@@ -600,7 +604,7 @@ fn close_period_dual_sig_unauthorized_signer_rejected() {
 #[test]
 fn close_period_dual_sig_emits_event() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     env.ledger().with_mut(|l| l.timestamp = 2_000);
@@ -614,7 +618,7 @@ fn close_period_dual_sig_emits_event() {
 #[test]
 fn close_period_dual_sig_double_close_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     // First close succeeds.
@@ -628,7 +632,7 @@ fn close_period_dual_sig_double_close_rejected() {
 #[test]
 fn close_period_dual_sig_zero_period_id_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, co_issuer, token, _payment, ns) = setup_dual_sig_offering(&env, &client);
 
     let result = client.try_close_period_dual_sig(&issuer, &ns, &token, &0, &issuer, &co_issuer);
@@ -639,7 +643,7 @@ fn close_period_dual_sig_zero_period_id_rejected() {
 fn close_period_dual_sig_unknown_offering_returns_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let co_issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -663,10 +667,11 @@ fn close_period_dual_sig_unknown_offering_returns_not_found() {
 // Architecture note:
 //   `DeferredDataKey::DeferredReports(period_id: u32)` stores one deferred
 //   distribution amount per period_id in persistent storage.
-//   The internal `RevoraRevenueShare::close_period(env, period_id)` reads,
-//   removes, and emits the deferred entry for a single period_id — O(1) per
-//   call. Testing 1000 sequential flushes therefore exercises the cumulative
-//   I/O cost of a realistic worst-case release scenario.
+//   The crate-internal helper `issue_370_373_tests::close_period(env,
+//   period_id)` reads, removes, and emits the deferred entry for a single
+//   period_id — O(1) per call. Testing 1000 sequential flushes therefore
+//   exercises the cumulative I/O cost of a realistic worst-case release
+//   scenario.
 //
 // Budget rationale (Soroban network limits):
 //   - Network CPU limit per transaction:   100,000,000 instructions
@@ -711,7 +716,11 @@ fn flush_deferred_queue(env: &Env, contract_id: &Address, count: u32) -> u64 {
     let before = env.budget().cpu_instruction_cost();
     env.as_contract(contract_id, || {
         for i in 0..count {
-            RevoraRevenueShare::close_period(env.clone(), i);
+            // O(1) deferred-flush helper declared in the crate's
+            // `issue_370_373_tests` test module (free fn, not a method on
+            // `RevoraRevenueShare`, whose `close_period` takes the full
+            // issuer/namespace/token/period_id argument set).
+            crate::issue_370_373_tests::close_period(env.clone(), i);
         }
     });
     let after = env.budget().cpu_instruction_cost();
@@ -762,7 +771,7 @@ fn close_period_single_deferred_flush_within_per_call_budget() {
 
     let before = env.budget().cpu_instruction_cost();
     env.as_contract(&contract_id, || {
-        RevoraRevenueShare::close_period(env.clone(), 0);
+        crate::issue_370_373_tests::close_period(env.clone(), 0);
     });
     let after = env.budget().cpu_instruction_cost();
     let cpu = after.saturating_sub(before);
@@ -787,7 +796,7 @@ fn close_period_flush_absent_entry_is_noop_within_budget() {
     // Do NOT populate any entries; period_id 999 has no deferred data.
     let before = env.budget().cpu_instruction_cost();
     env.as_contract(&contract_id, || {
-        RevoraRevenueShare::close_period(env.clone(), 999);
+        crate::issue_370_373_tests::close_period(env.clone(), 999);
     });
     let after = env.budget().cpu_instruction_cost();
     let cpu = after.saturating_sub(before);
@@ -851,7 +860,7 @@ fn close_period_deferred_queue_flush_leaves_no_residue() {
     // Flush all entries.
     env.as_contract(&contract_id, || {
         for i in 0..N {
-            RevoraRevenueShare::close_period(env.clone(), i);
+            crate::issue_370_373_tests::close_period(env.clone(), i);
         }
     });
 

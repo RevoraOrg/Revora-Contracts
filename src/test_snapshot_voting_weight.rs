@@ -22,7 +22,7 @@ use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, BytesN as _, Events as _},
     xdr::ToXdr,
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, Vec,
+    Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -179,8 +179,9 @@ fn weight_pin_event_emitted_on_vote() {
     let events = env.events().all();
     let wt_pin_sym = symbol_short!("wt_pin");
     let found = events.iter().any(|e| {
-        // topics is a Vec<Val>; first element is the event name symbol.
-        let topics = e.0;
+        // The event tuple is (contract_address, topics, data); topics is a
+        // Vec<Val> whose first element is the event name symbol.
+        let topics = e.1;
         if let Some(first) = topics.get(0) {
             let sym: Result<Symbol, _> = first.try_into_val(&env);
             sym.map(|s| s == wt_pin_sym).unwrap_or(false)
@@ -204,7 +205,7 @@ fn gov_new_event_emitted_on_proposal_creation() {
     let events = env.events().all();
     let gov_new_sym = symbol_short!("gov_new");
     let found = events.iter().any(|e| {
-        let topics = e.0;
+        let topics = e.1;
         if let Some(first) = topics.get(0) {
             let sym: Result<Symbol, _> = first.try_into_val(&env);
             sym.map(|s| s == gov_new_sym).unwrap_or(false)
@@ -230,7 +231,7 @@ fn gov_vote_event_emitted_on_cast_vote() {
     let events = env.events().all();
     let gov_vote_sym = symbol_short!("gov_vote");
     let found = events.iter().any(|e| {
-        let topics = e.0;
+        let topics = e.1;
         if let Some(first) = topics.get(0) {
             let sym: Result<Symbol, _> = first.try_into_val(&env);
             sym.map(|s| s == gov_vote_sym).unwrap_or(false)

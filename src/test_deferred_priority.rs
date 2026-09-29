@@ -83,7 +83,7 @@ fn enqueue_deferred_emits_deferred_priority_set_event() {
     // Find the deferred_priority_set event by topic
     let def_pset_event = events.iter().rev().find(|(_contract_id, topics_val, _data)| {
         let topics: soroban_sdk::Vec<soroban_sdk::Val> = topics_val.clone().into_val(&env);
-        if let Ok(first_topic) = topics.get(0).map(|v| v.into_val(&env)) {
+        if let Some(first_topic) = topics.get(0).map(|v| v.into_val(&env)) {
             let sym: Symbol = first_topic;
             sym == EVENT_DEFERRED_PRIORITY_SET
         } else {
@@ -375,10 +375,17 @@ fn large_queue_maintains_correct_order() {
     let (_env, client, issuer, namespace, token) = setup_offering();
 
     // Enqueue 50 entries with varying timestamps and priorities
-    for i in 0..50 {
-        let timestamp = 1000 + (i % 10) * 100; // 10 distinct timestamps
-        let priority = i % 5; // 5 distinct priorities
-        client.enqueue_deferred(&issuer, &namespace, &token, &timestamp, &priority, &(1000 + i));
+    for i in 0u32..50u32 {
+        let timestamp: u64 = 1000 + (i as u64 % 10) * 100; // 10 distinct timestamps
+        let priority: u32 = i % 5; // 5 distinct priorities
+        client.enqueue_deferred(
+            &issuer,
+            &namespace,
+            &token,
+            &timestamp,
+            &priority,
+            &(1000 + i as u64),
+        );
     }
 
     let queue = client.get_deferred_queue(&issuer, &namespace, &token);

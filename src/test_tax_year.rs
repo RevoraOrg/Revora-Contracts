@@ -4,7 +4,7 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

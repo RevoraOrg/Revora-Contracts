@@ -3,6 +3,7 @@
 use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+    Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -244,8 +245,11 @@ fn test_reg_limit_delta_multiple_holders_multiple_jurisdictions() {
         .sum();
     assert_eq!(us_sum, 5_000, "total US jurisdiction shares should be 5000 bps");
 
-    let sg_sum: i128 =
-        events.iter().filter(|(_, j, _, _)| *j == symbol_short!("sg")).map(|(_, _, d, _)| *d).sum();
+    let sg_sum: i128 = events
+        .into_iter()
+        .filter(|(_, j, _, _)| *j == symbol_short!("sg"))
+        .map(|(_, _, d, _)| d)
+        .sum();
     assert_eq!(sg_sum, 5_000, "total SG jurisdiction shares should be 5000 bps");
 }
 

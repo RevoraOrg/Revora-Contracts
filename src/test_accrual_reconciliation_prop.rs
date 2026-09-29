@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env, Symbol, Vec,
+    Address, Env, Symbol,
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -35,11 +35,14 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
     let payout_admin = Address::generate(&env);
     let payout_asset = crate::test_utils::create_token(&env, &payout_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 10_000_000);
+    // register_offering rejects payout assets whose on-chain decimals() differ
+    // from the supplied display_decimals, so read the real value back.
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset).decimals();
 
     // Register offering with 0 claim delay → all periods immediately mature.
     client.register_offering(
         &issuer,
-        &Vec::new(&env),
+        &soroban_sdk::Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
         &token,
@@ -47,7 +50,7 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &payout_decimals,
     );
 
     (env, client, issuer, token, payout_asset)
@@ -120,10 +123,12 @@ fn rebalance_shares(
     current_bps: &mut [u32],
     changed_idx: usize,
     new_bps: u32,
+    nonce: &mut u64,
 ) {
     let old_bps = current_bps[changed_idx];
     current_bps[changed_idx] = new_bps;
-    client.set_holder_share(issuer, ns, token, &holders[changed_idx], &new_bps, &1);
+    *nonce += 1;
+    client.set_holder_share(issuer, ns, token, &holders[changed_idx], &new_bps, nonce);
 
     let delta = (new_bps as i64) - (old_bps as i64);
 
@@ -140,7 +145,8 @@ fn rebalance_shares(
         let adjusted = other_share.saturating_sub(delta);
         if adjusted >= 0 && adjusted <= 10_000i64 {
             current_bps[j] = adjusted as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &(adjusted as u32), &1);
+            *nonce += 1;
+            client.set_holder_share(issuer, ns, token, &holders[j], &(adjusted as u32), nonce);
             return;
         }
     }
@@ -156,13 +162,15 @@ fn rebalance_shares(
             // Need to reduce others; take up to `delta` from this one.
             let take = other_share.min(remainder);
             current_bps[j] = (other_share - take) as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], &1);
+            *nonce += 1;
+            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], nonce);
             remainder -= take;
         } else {
             // Need to increase others; add up to `-delta`.
             let give = (10_000i64 - other_share).min(-remainder);
             current_bps[j] = (other_share + give) as u32;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], &1);
+            *nonce += 1;
+            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], nonce);
             remainder += give;
         }
     }
@@ -180,7 +188,7 @@ fn check_invariant(
     total_deposited: i128,
     total_claimed_by_holder: &[i128],
     op_label: &str,
-) {
+) -> Result<(), TestCaseError> {
     let mut sum_accrued: i128 = 0;
     for holder in holders {
         let accrued = client.get_holder_accrued_unclaimed(issuer, ns, token, holder);
@@ -200,6 +208,8 @@ fn check_invariant(
         lhs,
         total_deposited,
     );
+
+    Ok(())
 }
 
 // ── Edge-case tests (standalone, outside proptest) ───────────────────────────
@@ -262,7 +272,6 @@ proptest! {
         // At least 512 sequences as required.  Use a deterministic RNG for
         // reproducibility: failing seeds can be re-run directly.
         cases: 512,
-        max_local_rng: None,
         ..ProptestConfig::default()
     })]
 
@@ -283,8 +292,12 @@ proptest! {
         let mut current_bps: Vec<u32> = vec![base_share; holders.len()];
         current_bps[0] = base_share + remainder; // holder 0 gets any rounding dust
 
+        // `set_holder_share` enforces strictly increasing nonces per holder, so
+        // one monotonically increasing counter is threaded through every call.
+        let mut share_nonce: u64 = 0;
         for (i, holder) in holders.iter().enumerate() {
-            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i], &1);
+            share_nonce += 1;
+            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i], &share_nonce);
         }
 
         // ── Running state ────────────────────────────────────────────────
@@ -296,7 +309,7 @@ proptest! {
         check_invariant(
             &client, &issuer, &ns, &token, &holders,
             total_deposited, &total_claimed_by_holder, "initial",
-        );
+        )?;
 
         // ── Execute sequence ─────────────────────────────────────────────
         for op in &ops {
@@ -305,14 +318,14 @@ proptest! {
                     let h = idx % holders.len();
                     rebalance_shares(
                         &client, &issuer, &ns, &token,
-                        &holders, &mut current_bps, h, bps,
+                        &holders, &mut current_bps, h, bps, &mut share_nonce,
                     );
 
                     check_invariant(
                         &client, &issuer, &ns, &token, &holders,
                         total_deposited, &total_claimed_by_holder,
                         &format!("SetShare({}, {})", h, bps),
-                    );
+                    )?;
                 }
                 AccrualOp::Deposit(amount) => {
                     // Advance timestamp so claim-delay checks pass.
@@ -327,7 +340,7 @@ proptest! {
                         &client, &issuer, &ns, &token, &holders,
                         total_deposited, &total_claimed_by_holder,
                         &format!("Deposit({})", amount),
-                    );
+                    )?;
                 }
                 AccrualOp::Claim(idx, max_periods) => {
                     let h = idx % holders.len();
@@ -335,7 +348,7 @@ proptest! {
                     let result = client.try_claim(
                         &holders[h], &issuer, &ns, &token, &max_periods,
                     );
-                    if let Ok(payout) = result {
+                    if let Ok(Ok(payout)) = result {
                         total_claimed_by_holder[h] =
                             total_claimed_by_holder[h].saturating_add(payout);
                     }
@@ -344,7 +357,7 @@ proptest! {
                         &client, &issuer, &ns, &token, &holders,
                         total_deposited, &total_claimed_by_holder,
                         &format!("Claim({}, {})", h, max_periods),
-                    );
+                    )?;
                 }
             }
         }
@@ -362,6 +375,6 @@ proptest! {
         check_invariant(
             &client, &issuer, &ns, &token, &holders,
             total_deposited, &total_claimed_by_holder, "final",
-        );
+        )?;
     }
 }

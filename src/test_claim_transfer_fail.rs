@@ -42,7 +42,7 @@
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
-    String,
+    String, Vec,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -467,9 +467,6 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &10_000,
         &1,
     );
-
-    // Mint payout tokens to the issuer so they can deposit revenue
-    soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);
 
     revora.deposit_revenue(
         &issuer,

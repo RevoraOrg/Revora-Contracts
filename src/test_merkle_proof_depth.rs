@@ -16,12 +16,14 @@
 
 use crate::merkle_helpers::{
     build_merkle_root, canonical_leaves, verify_merkle_proof as helper_verify, MerkleError,
-    MAX_PROOF_DEPTH,
 };
+// `MAX_PROOF_DEPTH` lives at the crate root (it is not re-exported from
+// `merkle_helpers`), so importing it from there raises E0603.
+use crate::MAX_PROOF_DEPTH;
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::BytesN as _, testutils::Events as _, Address,
-    BytesN, Env, Vec,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -45,7 +47,8 @@ fn make_leaf_hash(env: &Env, holder: &Address, share_bps: u32) -> BytesN<32> {
     input.push_back(0x00u8);
     input.append(&holder.to_xdr(env));
     input.append(&share_bps.to_xdr(env));
-    env.crypto().sha256(&input)
+    // `sha256` yields a `crypto::Hash<32>`; helpers and events speak `BytesN<32>`.
+    env.crypto().sha256(&input).to_bytes()
 }
 
 /// Internal-node hash matching the on-chain construction:
@@ -59,7 +62,7 @@ fn make_node_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32
     input.push_back(0x01u8);
     input.append(&lo);
     input.append(&hi);
-    env.crypto().sha256(&input)
+    env.crypto().sha256(&input).to_bytes()
 }
 
 /// Build a synthetic proof chain of `depth` sibling hashes.
@@ -251,7 +254,8 @@ fn contract_proof_one_over_max_depth_err_proof_too_deep() {
     assert_eq!(proof.len(), MAX_PROOF_DEPTH + 1);
 
     let result = client.try_verify_merkle_proof(&caller, &leaf, &root, &proof);
-    assert_eq!(result.err(), Some(Ok(RevoraError::ProofTooDeep)));
+    // `try_` results are doubly nested: Ok/Err per conversion, then per contract error.
+    assert!(matches!(result.err(), Some(Ok(RevoraError::ProofTooDeep))));
 }
 
 /// Contract entrypoint: proof of depth 100 → Err(ProofTooDeep).
@@ -268,7 +272,7 @@ fn contract_proof_depth_100_err_proof_too_deep() {
     }
 
     let result = client.try_verify_merkle_proof(&caller, &leaf, &root, &proof);
-    assert_eq!(result.err(), Some(Ok(RevoraError::ProofTooDeep)));
+    assert!(matches!(result.err(), Some(Ok(RevoraError::ProofTooDeep))));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -294,9 +298,15 @@ fn contract_oversized_proof_emits_proof_reject_depth_event() {
     assert!(!all_events.is_empty(), "at least one event must be emitted");
 
     let reject_sym = symbol_short!("prf_rej_d");
-    let found = all_events
-        .iter()
-        .any(|(_cid, topics, _data)| topics.get(0) == Some(soroban_sdk::Val::from(reject_sym)));
+    // `soroban_sdk::Val` has no `PartialEq`, so decode the first topic back to a
+    // `Symbol` (which does) before comparing against the expected event tag.
+    let found = all_events.iter().any(|(_cid, topics, _data)| match topics.get(0) {
+        Some(first_topic) => {
+            let first: Symbol = first_topic.into_val(&env);
+            first == reject_sym
+        }
+        None => false,
+    });
     assert!(found, "prf_rej_d event must appear in the event log");
 }
 
@@ -312,9 +322,13 @@ fn contract_valid_depth_proof_no_reject_event() {
 
     let all_events = env.events().all();
     let reject_sym = symbol_short!("prf_rej_d");
-    let found = all_events
-        .iter()
-        .any(|(_cid, topics, _data)| topics.get(0) == Some(soroban_sdk::Val::from(reject_sym)));
+    let found = all_events.iter().any(|(_cid, topics, _data)| match topics.get(0) {
+        Some(first_topic) => {
+            let first: Symbol = first_topic.into_val(&env);
+            first == reject_sym
+        }
+        None => false,
+    });
     assert!(!found, "prf_rej_d must NOT be emitted for valid-depth proofs");
 }
 

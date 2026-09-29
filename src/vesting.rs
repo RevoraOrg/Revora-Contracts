@@ -94,6 +94,8 @@ pub enum VestingError {
     InvalidAccelerationBps = 108,
     /// Curve parameters are invalid or cannot be evaluated safely.
     InvalidCurveParameters = 109,
+    /// Vesting cliff period has not been reached yet.
+    VestingCliffNotReached = 110,
 }
 
 /// Shared schema version for vesting events.
@@ -445,6 +447,7 @@ pub fn migrate_legacy_schedule(
         end_ts: legacy.end_ts,
         curve: VestingCurve::Linear,
         accelerated_amount: legacy.accelerated_amount,
+        cliff_secs: legacy.cliff_ts.saturating_sub(legacy.start_ts),
     })
 }
 
@@ -564,7 +567,7 @@ fn fixed_pow(mut value: i128, exponent: u32) -> Result<i128, VestingError> {
 }
 
 /// Helper: compute total vested tokens at a given timestamp.
-fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
+pub fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
     if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
         return 0;
     }
@@ -618,7 +621,7 @@ fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
 }
 
 /// Helper: compute claimable tokens given prior claimed amount.
-fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64) -> i128 {
+pub fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64) -> i128 {
     let vested = compute_vested(schedule, now);
     let claimable = vested.saturating_sub(already_claimed);
     if claimable < 0 {

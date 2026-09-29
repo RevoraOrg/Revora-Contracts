@@ -6,6 +6,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     Address, BytesN, Env, Symbol, Vec,
 };
+use std::format;
 
 /// Advance the test ledger by `secs` seconds.
 fn advance_ledger(env: &Env, secs: u64) {
