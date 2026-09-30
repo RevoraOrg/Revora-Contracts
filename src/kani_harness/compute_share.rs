@@ -764,17 +764,12 @@ mod share_and_dust_adversarial_tests {
         let (result, dust) = share_and_dust(1_000, MAX_BPS + 1, RoundingMode::Truncation);
         assert_eq!(result, 0);
         assert_eq!(dust, 1_000 * (MAX_BPS as i128 + 1));
-        assert_eq!(
-            compute_share(1_000, MAX_BPS + 1, RoundingMode::RoundHalfUp),
-            0
-        );
+        assert_eq!(compute_share(1_000, MAX_BPS + 1, RoundingMode::RoundHalfUp), 0);
     }
 
     #[test]
     fn round_half_up_never_undershoots_truncation_for_positive_amounts() {
-        let bps_values = [
-            1_u32, 2, 3, 7, 50, 4_999, 5_000, 5_001, 7_500, 9_999, MAX_BPS,
-        ];
+        let bps_values = [1_u32, 2, 3, 7, 50, 4_999, 5_000, 5_001, 7_500, 9_999, MAX_BPS];
         for amount in 1_i128..=200 {
             for bps in bps_values {
                 let trunc = compute_share(amount, bps, RoundingMode::Truncation);
@@ -803,14 +798,8 @@ mod share_and_dust_adversarial_tests {
     fn i128_min_is_exact_via_the_decomposition_path() {
         // `i128::MIN * 10_000` overflows, but `compute_share` decomposes and
         // clamps, returning the whole (negative) amount.
-        assert_eq!(
-            compute_share(i128::MIN, MAX_BPS, RoundingMode::Truncation),
-            i128::MIN
-        );
-        assert_eq!(
-            compute_share(i128::MIN, MAX_BPS, RoundingMode::RoundHalfUp),
-            i128::MIN
-        );
+        assert_eq!(compute_share(i128::MIN, MAX_BPS, RoundingMode::Truncation), i128::MIN);
+        assert_eq!(compute_share(i128::MIN, MAX_BPS, RoundingMode::RoundHalfUp), i128::MIN);
         // Lower bps is also safe: result stays inside [MIN, 0].
         let result = compute_share(i128::MIN, 5_000, RoundingMode::Truncation);
         assert!(result >= i128::MIN && result <= 0);
@@ -844,10 +833,7 @@ mod share_and_dust_adversarial_tests {
         ];
         for (amount, bps) in cases {
             let (result, dust) = share_and_dust(amount, bps, RoundingMode::Truncation);
-            assert_eq!(
-                result * BPS_DENOM + dust,
-                naive_product_or_panic(amount, bps)
-            );
+            assert_eq!(result * BPS_DENOM + dust, naive_product_or_panic(amount, bps));
         }
     }
 }
