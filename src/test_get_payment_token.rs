@@ -14,11 +14,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    symbol_short,
-    testutils::{Address as _, Events as _},
-    Address, Env, Vec,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Vec};
 
 fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
@@ -27,8 +23,10 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
-    let payment_token = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let payment_token = env.register_stellar_asset_contract_v2(admin.clone()).address();
 
+    client.initialize(&issuer, &None::<Address>, &None::<bool>);
     client.register_offering(
         &issuer,
         &Vec::new(&env),
@@ -39,7 +37,23 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
+    );
+
+    // `get_payment_token` resolves to `Some` only once the offering's first
+    // successful deposit has locked the payment token in.
+    soroban_sdk::token::StellarAssetClient::new(&env, &payment_token).mint(&issuer, &1_000_000);
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("ns"),
+        &offering_token,
+        &payment_token,
+        &100_000,
+        &1,
     );
 
     (env, client, issuer, offering_token, payment_token)

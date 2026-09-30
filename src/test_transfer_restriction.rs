@@ -21,7 +21,7 @@ fn setup_test() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Ad
     let namespace = symbol_short!("ns");
 
     client.initialize(&admin, &None, &None);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token, &10_000, &payout_asset, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     (env, client, admin, issuer, token, namespace)
 }
@@ -125,7 +125,7 @@ fn test_multiple_offerings_single_holder() {
 
     let token2 = Address::generate(&env);
     let payout_asset2 = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token2, &10_000, &payout_asset2, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token2, &10_000, &payout_asset2, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.set_transfer_restriction(&admin, &category, &1);
     client.set_holder_category(&admin, &holder, &category);

@@ -55,7 +55,11 @@ fn register_offering(
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     (issuer, ns, token)
 }
@@ -213,13 +217,19 @@ fn unique_address_not_double_counted_for_same_requester_in_window() {
         &payout2,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout2)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let requester = Address::generate(&env);
     // First call on offering 1
     client.faucet_seed_holders(&requester, &issuer, &ns, &token, &1);
-    // Second call on offering 2 (no cooldown conflict — different offering)
+    // Second call on offering 2 — the per-address cooldown is global, so
+    // wait it out first; the same window is retained for the metrics check.
+    set_ts(&env, FAUCET_METRICS_WINDOW_SECS + DEFAULT_FAUCET_COOLDOWN_SECONDS);
     client.faucet_seed_holders(&requester, &issuer2, &ns2, &token2, &1);
 
     // unique_addresses in window must still be 1 (addr already counted)

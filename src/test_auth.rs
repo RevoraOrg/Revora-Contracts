@@ -102,7 +102,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let issuer = Address::generate(env);
     let token = Address::generate(env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     (issuer, token)
 }
 
@@ -128,7 +128,7 @@ fn setup_whitelist_offering(
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0),
     );
 
     (env, client, admin, issuer, namespace, token)
@@ -737,7 +737,7 @@ fn blacklist_remove_wrong_caller_no_mutation() {
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
     let attacker = Address::generate(&env);
     // Any authenticated caller can remove; with mock_all_auths this succeeds.
@@ -786,8 +786,8 @@ fn cross_offering_confusion_wrong_issuer_no_mutation() {
     let token_b = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
+    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Issuer B tries to set a share on Issuer A's token.
     let result = client.try_set_holder_share(
@@ -816,8 +816,8 @@ fn cross_offering_concentration_limit_wrong_issuer() {
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
+    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_set_concentration_limit(
         &issuer_a,
@@ -847,7 +847,7 @@ fn cross_namespace_confusion_wrong_namespace() {
     let holder = Address::generate(&env);
 
     // Register only in namespace "ns1".
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns1"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns1"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Attempt to set a share in the unregistered namespace "ns2".
     let result = client.try_set_holder_share(
@@ -1195,8 +1195,8 @@ fn two_issuers_independent_settings() {
     let token_b = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &2_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
+    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &2_000, &token_b, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Issuer A sets a holder share.
     client.set_holder_share(&issuer_a, &symbol_short!("def"), &token_a, &holder, &1_000u32, &1);

@@ -37,7 +37,11 @@ fn setup_fresh_env() -> (Env, RevoraRevenueShareClient<'static>, Address, Addres
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 10_000_000);
     // register_offering rejects payout assets whose on-chain decimals() differ
     // from the supplied display_decimals, so read the real value back.
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // Register offering with 0 claim delay → all periods immediately mature.
     client.register_offering(

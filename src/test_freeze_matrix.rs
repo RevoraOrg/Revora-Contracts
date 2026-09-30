@@ -59,7 +59,7 @@ fn frozen_setup(
     let issuer = admin.clone();
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Freeze the contract — all subsequent mutating calls must return ContractFrozen.
     client.freeze();
@@ -452,7 +452,7 @@ fn frozen_claim_is_not_blocked() {
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32, &1);
@@ -502,7 +502,7 @@ fn frozen_set_holder_share_no_partial_write() {
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
@@ -713,8 +713,8 @@ fn freeze_is_scoped_to_offering() {
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0, &symbol_short!(""), &0u32);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Freeze holder on token_a offering
     client.emergency_freeze_holder(
@@ -851,7 +851,7 @@ fn ofac_setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Add
         &token,
         &1_000,
         &payout,
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     
     (client, admin, issuer, token)
 }

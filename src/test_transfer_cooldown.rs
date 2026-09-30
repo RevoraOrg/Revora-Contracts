@@ -4,9 +4,8 @@ use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger, LedgerInfo},
-    Address, BytesN, Env, Symbol, Vec,
+    Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
-use std::format;
 
 /// Advance the test ledger by `secs` seconds.
 fn advance_ledger(env: &Env, secs: u64) {
@@ -31,13 +30,17 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &issuer,
         &Vec::new(&env),
         &1u32,
-        &symbol_short!("def"),
+        &symbol_short!("ns"),
         &token,
         &5_000,
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     (env, client, issuer, token, payout_asset)
@@ -53,7 +56,7 @@ fn set_jurisdiction(
 ) {
     client.set_holder_jurisdiction(
         issuer,
-        &symbol_short!("def"),
+        &symbol_short!("ns"),
         token,
         holder,
         &jurisdiction,
@@ -61,7 +64,7 @@ fn set_jurisdiction(
     );
     client.set_allowed_jurisdictions(
         issuer,
-        &symbol_short!("def"),
+        &symbol_short!("ns"),
         token,
         &soroban_sdk::vec![
             &client.env,
@@ -80,20 +83,21 @@ fn test_set_and_get_transfer_cooldown() {
     let jurisdiction = symbol_short!("us");
 
     // Initially cooldown should be 0 (disabled)
-    let cd = client.get_transfer_cooldown(&issuer, &symbol_short!("def"), &token, &jurisdiction);
+    let cd = client.get_transfer_cooldown(&issuer, &symbol_short!("ns"), &token, &jurisdiction);
     assert_eq!(cd, 0, "default cooldown should be 0");
 
     // Set a cooldown of 1 hour
-    client.set_transfer_cooldown(&issuer, &symbol_short!("def"), &token, &jurisdiction, &3600);
+    client.set_transfer_cooldown(&issuer, &symbol_short!("ns"), &token, &jurisdiction, &3600);
 
-    let cd = client.get_transfer_cooldown(&issuer, &symbol_short!("def"), &token, &jurisdiction);
+    let cd = client.get_transfer_cooldown(&issuer, &symbol_short!("ns"), &token, &jurisdiction);
     assert_eq!(cd, 3600, "cooldown should be 3600 after set");
 
-    // Verify event was emitted
+    // Verify event was emitted by decoding the first topic as a Symbol —
+    // `format!("{:?}")` on the raw topic value does not contain the symbol text.
     let events = env.events().all();
     let found = events.iter().any(|e| {
-        let topic_str = format!("{:?}", e.0);
-        topic_str.contains("tr_cool")
+        let t0: Option<Symbol> = e.1.first().map(|t| t.into_val(&env));
+        t0 == Some(symbol_short!("tr_cool"))
     });
     assert!(found, "cooldown set event should have been emitted");
 }
@@ -121,12 +125,18 @@ fn test_transfer_blocked_by_cooldown() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     // Assign jurisdiction to holder1
@@ -136,13 +146,18 @@ fn test_transfer_blocked_by_cooldown() {
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a 1-hour cooldown for jurisdiction "us"
-    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer should succeed (no prior transfer timestamp)
     client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
 
+    // Configure the cooldown after the first transfer: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
+
     // Attempt another transfer immediately — should fail with TransferCooldownActive
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert_eq!(
@@ -175,28 +190,39 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a 1-hour cooldown
-    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer
     client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+
+    // Configure the cooldown after the first transfer: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // Advance ledger past the cooldown window
     advance_ledger(&env, 3601);
 
     // Second transfer should now succeed
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "transfer should succeed after cooldown elapsed");
@@ -225,27 +251,38 @@ fn test_cooldown_exactly_at_boundary_rejects() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a 60-second cooldown
-    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &60);
 
     // First transfer
     client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+
+    // Configure the cooldown after the first transfer: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &60);
 
     // Advance exactly to the boundary (59 seconds — still too early)
     advance_ledger(&env, 59);
 
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert_eq!(
@@ -285,25 +322,36 @@ fn test_cooldown_zero_means_disabled() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set cooldown to 0 — should be disabled
-    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &0);
 
     // First transfer
     client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
 
+    // Configure the cooldown after the first transfer: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &0);
+
     // Immediate second transfer should succeed (cooldown=0 = disabled)
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "transfer should succeed when cooldown=0");
@@ -332,13 +380,19 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder_us = Address::generate(&env);
     let holder_sg = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
 
     // Set up jurisdictions
     set_jurisdiction(&client, &issuer, &token, &holder_us, symbol_short!("us"));
@@ -347,16 +401,19 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
     client.set_holder_share(&issuer, &ns, &token, &holder_us, &100, &1);
     client.set_holder_share(&issuer, &ns, &token, &holder_sg, &100, &1);
 
+    // Both holders transfer once before any cooldown exists: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder2, &25, &category);
+    client.transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder2, &25, &category);
+
     // Set different cooldowns for each jurisdiction
     client.set_transfer_cooldown(&issuer, &ns, &token, &symbol_short!("us"), &3600); // 1 hour
     client.set_transfer_cooldown(&issuer, &ns, &token, &symbol_short!("sg"), &60); // 1 minute
 
-    // Both holders transfer
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder2, &25, &category);
-    client.transfer_with_attestation(&issuer, &ns, &token, &holder_sg, &holder2, &25, &category);
-
     // Both transfers should be blocked immediately
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder_us, &holder3, &25, &category);
     assert_eq!(
@@ -416,12 +473,18 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
 
     // Set empty allowed jurisdictions (gating disabled)
     client.set_allowed_jurisdictions(&issuer, &ns, &token, &soroban_sdk::vec![&env]);
@@ -439,6 +502,8 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
 
     // Second immediate transfer should also succeed
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(result.is_ok(), "second transfer should also succeed when sender has no jurisdiction");
@@ -469,22 +534,31 @@ fn test_estimate_transfer_cooldown_consistency() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
     client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &1);
 
     // Set a cooldown
-    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // First transfer to establish timestamp
     client.transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder2, &50, &category);
+
+    // Configure the cooldown after the first transfer: the gate measures
+    // inactivity from the recorded last-transfer time, which starts at 0.
+    client.set_transfer_cooldown(&issuer, &ns, &token, &jur, &3600);
 
     // estimate_transfer should also return TransferCooldownActive
     let result = client.try_estimate_transfer(
@@ -546,12 +620,18 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder2, symbol_short!("us"));
     let jur = symbol_short!("us");
 
     set_jurisdiction(&client, &issuer, &token, &holder1, jur.clone());
@@ -564,6 +644,8 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
 
     // Second transfer — should also succeed immediately since no cooldown is configured
     let holder3 = Address::generate(&env);
+    // Recipients also need an allowed jurisdiction to pass the gate.
+    set_jurisdiction(&client, &issuer, &token, &holder3, symbol_short!("us"));
     let result = client
         .try_transfer_with_attestation(&issuer, &ns, &token, &holder1, &holder3, &25, &category);
     assert!(

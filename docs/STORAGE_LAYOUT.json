@@ -501,6 +501,13 @@
     },
     {
       "module": "revora_revenue_share",
+      "key": "DataKey3::FaucetMetricsWindowEmitted",
+      "value_type": "u64",
+      "ownership": "contract",
+      "version": 5
+    },
+    {
+      "module": "revora_revenue_share",
       "key": "DataKey3::FaucetSeedCount(OfferingId)",
       "value_type": "u32",
       "ownership": "offering",

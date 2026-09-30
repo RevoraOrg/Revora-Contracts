@@ -110,7 +110,7 @@ fn setup_with_holder(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
         &issuer,
@@ -154,7 +154,7 @@ fn get_dispute_window_returns_default_when_unset() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let window = client.get_dispute_window(&issuer, &symbol_short!("ns"), &token);
     assert_eq!(window, DEFAULT_DISPUTE_WINDOW_SECS);
@@ -169,7 +169,7 @@ fn get_dispute_window_returns_configured_value() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &5_000_000);
     let window = client.get_dispute_window(&issuer, &symbol_short!("ns"), &token);
@@ -185,7 +185,7 @@ fn set_dispute_window_by_issuer_succeeds() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let r = client.try_set_dispute_window(&issuer, &symbol_short!("ns"), &token, &10_000);
     assert!(r.is_ok());
@@ -201,7 +201,7 @@ fn set_dispute_window_by_unauthorized_fails() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let unauthorized = Address::generate(&env);
     let r = client.try_set_dispute_window(&unauthorized, &symbol_short!("ns"), &token, &10_000);
@@ -231,7 +231,7 @@ fn set_dispute_window_emits_event() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let before = env.events().all().len();
     client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &12345);

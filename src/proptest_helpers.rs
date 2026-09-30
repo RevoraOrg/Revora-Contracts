@@ -34,7 +34,7 @@ use proptest::prelude::*;
 extern crate alloc;
 
 use alloc::vec::Vec;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 /// Return a reproducible shuffled copy of a slice using a deterministic local PRNG.
 /// Useful for regression tests that need to exercise many re-orderings of the same fixture.

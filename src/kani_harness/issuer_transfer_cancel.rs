@@ -673,16 +673,16 @@ mod tests {
             } else {
                 None
             };
-            
+
             let mut storage = StorageModel {
                 pending,
                 offering: OfferingState { issuer: offering_issuer },
                 offering_issuer_lookup: lookup_issuer,
             };
-            
+
             let baseline = storage.clone();
             let result = model_cancel(&mut storage, caller);
-            
+
             if offering_issuer == 0 {
                 assert_eq!(result, Err(TransferError::OfferingNotFound));
                 assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
@@ -713,7 +713,7 @@ mod tests {
                 offering: OfferingState { issuer: offering_issuer },
                 offering_issuer_lookup: lookup_issuer,
             };
-            
+
             if offering_issuer == lookup_issuer {
                 assert_issuer_lookup_consistent(&storage);
             } else {
@@ -744,7 +744,9 @@ mod tests {
 #[cfg(test)]
 mod orphan_pending_guard_tests {
     use super::*;
+    use std::boxed::Box;
     use std::panic::catch_unwind;
+    use std::string::{String, ToString};
 
     /// Guard message asserted by the negative cases.
     const GUARD_MESSAGE: &str = "PendingIssuerTransfer key must be absent after cancel";

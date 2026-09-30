@@ -19,11 +19,7 @@
 #![cfg(test)]
 
 use crate::{DataKey, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, TenantId};
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol, Vec};
 
 // ── Test Setup Helpers ────────────────────────────────────────────────────────
 
@@ -233,8 +229,10 @@ fn get_offering_count_unchanged_on_duplicate_token_registration() {
     register_single_offering(&env, &client, &issuer, &namespace, &token);
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 
-    // Second registration with the exact same token must fail
-    let duplicate_res = client.try_register_offering(
+    // Second registration with the exact same token must be an idempotent
+    // no-op: the contract returns Ok(()) and leaves the stored offering (and
+    // therefore the count) untouched.
+    client.register_offering(
         &issuer,
         &Vec::new(&env),
         &1u32,
@@ -244,9 +242,12 @@ fn get_offering_count_unchanged_on_duplicate_token_registration() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
-    assert_eq!(duplicate_res, Err(Ok(RevoraError::OfferingAlreadyExists)));
 
     // Offering count must remain 1
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);

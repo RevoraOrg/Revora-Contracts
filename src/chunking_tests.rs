@@ -45,7 +45,7 @@ fn setup_with_offering() -> (Env, RevoraRevenueShareClient, Address, Address, Ad
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
     (env, client, issuer, token, payment_token, pt_admin)
 }
@@ -68,7 +68,7 @@ fn get_revenue_range_chunk_matches_full_sum() {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Report revenue for periods 1..=10
     for p in 1u64..=10u64 {
@@ -119,7 +119,7 @@ fn get_revenue_range_chunk_inverted_range_returns_zero() {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // inverted range: from > to
     let (sum, next) = client.get_revenue_range_chunk(&issuer, &symbol_short!("def"), &token, &10u64, &1u64, &5u32);
@@ -148,7 +148,7 @@ fn get_revenue_range_chunk_cap_clamps_and_returns_next_start() {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Report revenue for periods 1..=201 with amount 1 each
     for p in 1u64..=201u64 {
@@ -188,7 +188,7 @@ fn get_revenue_range_chunk_chunked_iteration_off_by_one_sequence() {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Report revenue for periods 1..=5 with increasing amounts for easier validation
     for p in 1u64..=5u64 {
@@ -249,7 +249,7 @@ fn pending_periods_page_and_claimable_chunk_consistent() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // Mint to issuer so deposit_revenue token transfer succeeds
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
@@ -377,7 +377,7 @@ fn get_claimable_chunk_table_driven_invariants() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     let test_cases = vec![
@@ -563,7 +563,7 @@ fn get_claimable_chunk_table_driven_invariants() {
             &payment_token,
             &0i128,
             &symbol_short!(""),
-            &0);
+            &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
         // Set up test case conditions
@@ -670,7 +670,7 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);
@@ -745,7 +745,7 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
@@ -811,7 +811,7 @@ fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);

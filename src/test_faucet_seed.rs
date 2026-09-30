@@ -79,7 +79,11 @@ fn register_offering(
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     (issuer, ns, token)
 }
@@ -205,6 +209,8 @@ fn faucet_returns_correct_seed_count_for_various_inputs() {
     for count in [1u32, 2, 3, 5, 10, 20, 50] {
         let seeds = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
         assert_eq!(seeds.len(), count, "count={count}: wrong seed count");
+        // Respect the global per-address cooldown before the next request.
+        env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_FAUCET_COOLDOWN_SECONDS);
     }
 }
 
@@ -215,6 +221,8 @@ fn faucet_is_deterministic_across_calls() {
     let (env, client, issuer, ns, token) = setup();
     let requester = Address::generate(&env);
     let seeds_a = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
+    // The per-address cooldown is global, so wait it out before re-requesting.
+    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_FAUCET_COOLDOWN_SECONDS);
     let seeds_b = client.faucet_seed_holders(&requester, &issuer, &ns, &token, &4);
     assert_eq!(seeds_a.len(), seeds_b.len());
     for i in 0..seeds_a.len() {
@@ -259,11 +267,17 @@ fn faucet_seeds_differ_between_distinct_offerings() {
         &payout2,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout2)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let requester = Address::generate(&env);
     let seeds1 = client.faucet_seed_holders(&requester, &issuer1, &ns1, &token1, &3);
+    // The per-address cooldown is global across offerings; wait it out.
+    env.ledger().set_timestamp(env.ledger().timestamp() + DEFAULT_FAUCET_COOLDOWN_SECONDS);
     let seeds2 = client.faucet_seed_holders(&requester, &issuer2, &ns2, &token2, &3);
 
     assert_ne!(
@@ -550,7 +564,11 @@ fn faucet_reset_does_not_affect_other_offerings() {
         &payout_b,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_b)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let requester = Address::generate(&env);

@@ -88,7 +88,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     (env, client, contract_id, issuer, offering_token, payment_token, pt_admin)
 }
@@ -433,7 +433,7 @@ fn transfer_fail_in_one_offering_does_not_affect_sibling_offering() {
         &payment_token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Fund only offering B
     mint(&env, &payment_token_b, &issuer, 100_000);

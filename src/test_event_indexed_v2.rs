@@ -48,7 +48,11 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
         &payout,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     (env, client, issuer, ns, token, payout)
 }
@@ -227,7 +231,11 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let holder = Address::generate(&env);
@@ -276,7 +284,11 @@ fn event_indexed_v2_claim_period_id_always_zero() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let holder = Address::generate(&env);
@@ -317,7 +329,11 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
         &payout_a,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_a)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.register_offering(
         &issuer,
@@ -329,7 +345,11 @@ fn event_indexed_v2_payout_asset_bound_correctly_per_offering() {
         &payout_b,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_b)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let before_a = env.events().all().len();

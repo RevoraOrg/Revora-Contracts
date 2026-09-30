@@ -60,6 +60,10 @@ fn setup() -> Ctx {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
+    // blacklist_add / freeze resolve the contract admin unconditionally, so
+    // the contract must be initialized before those entrypoints are exercised.
+    client.initialize(&issuer, &None::<Address>, &None::<bool>);
+
     let _ = client.register_offering(
         &issuer,
         &Vec::new(&env),
@@ -70,32 +74,33 @@ fn setup() -> Ctx {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     env.ledger().set_network_id([0x01u8; 32]);
     let network = BytesN::from_array(&env, &[0x01u8; 32]);
 
-    Ctx {
-        env,
-        client,
-        issuer,
-        token,
-        category: symbol_short!("cat"),
-        network,
-    }
+    Ctx { env, client, issuer, token, category: symbol_short!("cat"), network }
 }
 
 impl Ctx {
     /// Grant `holder` a transferable share of the offering.
     fn give_share(&self, holder: &Address, share_bps: u32) {
+        // The nonce must be strictly greater than the last accepted one, so
+        // always derive the next valid nonce from the contract's counter.
+        let next_nonce =
+            self.client.get_holder_share_nonce(&self.issuer, &ns(), &self.token, holder) + 1;
         let _ = self.client.set_holder_share(
             &self.issuer,
             &ns(),
             &self.token,
             holder,
             &share_bps,
-            &0u64,
+            &next_nonce,
         );
     }
 
@@ -125,7 +130,10 @@ impl Ctx {
         category: &Symbol,
         network: &BytesN<32>,
         attest_hash: &BytesN<32>,
-    ) -> Result<(), Result<RevoraError, soroban_sdk::InvokeError>> {
+    ) -> Result<
+        Result<(), soroban_sdk::ConversionError>,
+        Result<RevoraError, soroban_sdk::InvokeError>,
+    > {
         self.client.try_estimate_transfer(
             &self.issuer,
             &ns(),
@@ -141,35 +149,22 @@ impl Ctx {
 
     /// Assert the estimator allows the transfer.
     fn expect_allowed(&self, from: &Address, to: &Address, amount_bps: u32) {
-        let result = self.estimate(
-            from,
-            to,
-            amount_bps,
-            &self.category,
-            &self.network,
-            &attest(&self.env),
-        );
-        assert!(
-            result.is_ok(),
-            "expected the estimate to allow the transfer, got {result:?}"
-        );
+        let result =
+            self.estimate(from, to, amount_bps, &self.category, &self.network, &attest(&self.env));
+        assert!(result.is_ok(), "expected the estimate to allow the transfer, got {result:?}");
     }
 
     /// Assert the estimator rejects the transfer with a specific error.
-    fn expect_rejected(&self, from: &Address, to: &Address, amount_bps: u32, expected: RevoraError) {
-        let result = self.estimate(
-            from,
-            to,
-            amount_bps,
-            &self.category,
-            &self.network,
-            &attest(&self.env),
-        );
-        assert_eq!(
-            result,
-            Err(Ok(expected)),
-            "estimator reported the wrong verdict"
-        );
+    fn expect_rejected(
+        &self,
+        from: &Address,
+        to: &Address,
+        amount_bps: u32,
+        expected: RevoraError,
+    ) {
+        let result =
+            self.estimate(from, to, amount_bps, &self.category, &self.network, &attest(&self.env));
+        assert_eq!(result, Err(Ok(expected)), "estimator reported the wrong verdict");
     }
 }
 
@@ -267,14 +262,7 @@ fn estimate_rejects_network_id_mismatch() {
     ctx.give_share(&from, 100);
 
     let wrong_network = BytesN::from_array(&ctx.env, &[0x02u8; 32]);
-    let result = ctx.estimate(
-        &from,
-        &to,
-        50,
-        &ctx.category,
-        &wrong_network,
-        &attest(&ctx.env),
-    );
+    let result = ctx.estimate(&from, &to, 50, &ctx.category, &wrong_network, &attest(&ctx.env));
     assert_eq!(
         result,
         Err(Ok(RevoraError::NetworkIdMismatch)),
@@ -291,14 +279,7 @@ fn estimate_rejects_every_network_when_ledger_network_is_unset() {
     ctx.give_share(&from, 100);
     ctx.env.ledger().set_network_id([0x07u8; 32]);
 
-    let stale = ctx.estimate(
-        &from,
-        &to,
-        50,
-        &ctx.category,
-        &ctx.network,
-        &attest(&ctx.env),
-    );
+    let stale = ctx.estimate(&from, &to, 50, &ctx.category, &ctx.network, &attest(&ctx.env));
     assert_eq!(stale, Err(Ok(RevoraError::NetworkIdMismatch)));
 
     let fresh = BytesN::from_array(&ctx.env, &[0x07u8; 32]);
@@ -346,10 +327,7 @@ fn estimate_rejects_blacklisted_recipient() {
     let to = Address::generate(&ctx.env);
 
     ctx.give_share(&from, 100);
-    assert!(ctx
-        .client
-        .try_blacklist_add(&ctx.issuer, &ctx.issuer, &ns(), &ctx.token, &to)
-        .is_ok());
+    assert!(ctx.client.try_blacklist_add(&ctx.issuer, &ctx.issuer, &ns(), &ctx.token, &to).is_ok());
 
     ctx.expect_rejected(&from, &to, 50, RevoraError::HolderBlacklisted);
 }
@@ -361,10 +339,7 @@ fn estimate_allows_transfer_after_blacklist_removal() {
     let to = Address::generate(&ctx.env);
 
     ctx.give_share(&from, 100);
-    assert!(ctx
-        .client
-        .try_blacklist_add(&ctx.issuer, &ctx.issuer, &ns(), &ctx.token, &to)
-        .is_ok());
+    assert!(ctx.client.try_blacklist_add(&ctx.issuer, &ctx.issuer, &ns(), &ctx.token, &to).is_ok());
     ctx.expect_rejected(&from, &to, 50, RevoraError::HolderBlacklisted);
 
     assert!(ctx
@@ -427,14 +402,16 @@ fn estimate_reports_cooldown_active_then_allows_after_expiry() {
     let jurisdiction = symbol_short!("us");
 
     ctx.give_share(&from, 100);
-    ctx.set_jurisdiction(&from, jurisdiction);
-    let _ = ctx.client.set_transfer_cooldown(
-        &ctx.issuer,
-        &ns(),
-        &ctx.token,
-        &jurisdiction,
-        &3_600u64,
-    );
+    ctx.set_jurisdiction(&from, jurisdiction.clone());
+    // Registering a jurisdiction activates the offering's allow-list, so the
+    // recipient needs one too before it can receive shares.
+    ctx.set_jurisdiction(&to, jurisdiction.clone());
+    let _ =
+        ctx.client.set_transfer_cooldown(&ctx.issuer, &ns(), &ctx.token, &jurisdiction, &3_600u64);
+
+    // Move the clock past epoch 0: an untransferred holder's last-transfer time
+    // reads as 0, so at t=0 the cooldown window would wrongly appear active.
+    ctx.env.ledger().with_mut(|l| l.timestamp = 10_000);
 
     // A real transfer records the holder's last-transfer timestamp.
     assert!(ctx
@@ -509,18 +486,13 @@ fn estimate_does_not_create_whitelist_or_lockup_state() {
 
     ctx.give_share(&from, 100);
 
-    let had_lockup = ctx
-        .client
-        .get_lockup_schedule(&ctx.issuer, &ns(), &ctx.token)
-        .is_some();
+    let had_lockup = ctx.client.get_lockup_schedule(&ctx.issuer, &ns(), &ctx.token).is_some();
 
     ctx.expect_allowed(&from, &to, 25);
     ctx.expect_rejected(&from, &to, 5_000, RevoraError::InvalidAmount);
 
     assert_eq!(
-        ctx.client
-            .get_lockup_schedule(&ctx.issuer, &ns(), &ctx.token)
-            .is_some(),
+        ctx.client.get_lockup_schedule(&ctx.issuer, &ns(), &ctx.token).is_some(),
         had_lockup,
         "estimate_transfer must not create a lockup schedule"
     );

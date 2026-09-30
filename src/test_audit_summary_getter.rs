@@ -141,7 +141,9 @@ fn summary_is_none_on_an_uninitialized_contract_instance() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    assert!(RevoraRevenueShare::get_admin(env.clone()).is_none());
+    assert!(
+        env.as_contract(&contract_id, || { RevoraRevenueShare::get_admin(env.clone()).is_none() })
+    );
     assert_eq!(read(&client, &issuer, &default_ns(), &token), None);
 }
 
@@ -181,7 +183,7 @@ fn empty_and_long_namespace_symbols_keep_independent_summaries() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let short_ns = default_ns();
     let empty_ns = symbol_short!("");
-    let long_ns = Symbol::new(&env, "audit-long-ns");
+    let long_ns = Symbol::new(&env, "audit_long_ns");
     register(&client, &env, &issuer, &empty_ns, &token, &payout);
     register(&client, &env, &issuer, &long_ns, &token, &payout);
 
@@ -193,7 +195,7 @@ fn empty_and_long_namespace_symbols_keep_independent_summaries() {
     // The `def` offering was never reported on.
     assert_eq!(read(&client, &issuer, &short_ns, &token), None);
     // A prefix of the registered long namespace is a different key.
-    assert_eq!(read(&client, &issuer, &Symbol::new(&env, "audit-long"), &token), None);
+    assert_eq!(read(&client, &issuer, &Symbol::new(&env, "audit_long"), &token), None);
 }
 
 /// Reads are pure: repeated calls are byte-identical, consume no authorization
@@ -206,6 +208,9 @@ fn repeated_reads_are_deterministic_side_effect_free_and_unauthenticated() {
     client.report_revenue(&issuer, &ns, &token, &payout, &250, &1, &false);
     client.report_revenue(&issuer, &ns, &token, &payout, &25, &2, &false);
 
+    // Warm-up read flushes any stale mock-auth queue entries left over from
+    // the setup calls above so the baseline below is attributable to reads.
+    let _ = read(&client, &issuer, &ns, &token);
     let auths_before = env.auths().len();
     let events_before = env.events().all().len();
     let mut observed = alloc::vec::Vec::new();
@@ -341,20 +346,24 @@ fn frozen_offering_and_frozen_contract_keep_the_summary_readable() {
     assert_eq!(read(&client, &issuer, &ns, &token), Some((100, 1)));
 
     // Per-offering freeze.
-    RevoraRevenueShare::freeze_offering(
-        env.clone(),
-        issuer.clone(),
-        issuer.clone(),
-        ns.clone(),
-        token.clone(),
-    )
-    .unwrap();
-    assert!(RevoraRevenueShare::is_offering_frozen(
-        env.clone(),
-        issuer.clone(),
-        ns.clone(),
-        token.clone()
-    ));
+    env.as_contract(&contract_id, || {
+        RevoraRevenueShare::freeze_offering(
+            env.clone(),
+            issuer.clone(),
+            issuer.clone(),
+            ns.clone(),
+            token.clone(),
+        )
+        .unwrap();
+    });
+    assert!(env.as_contract(&contract_id, || {
+        RevoraRevenueShare::is_offering_frozen(
+            env.clone(),
+            issuer.clone(),
+            ns.clone(),
+            token.clone(),
+        )
+    }));
     assert_eq!(
         client.try_report_revenue(&issuer, &ns, &token, &payout, &500, &2, &false),
         Err(Ok(RevoraError::OfferingFrozen))
@@ -362,26 +371,35 @@ fn frozen_offering_and_frozen_contract_keep_the_summary_readable() {
     assert_eq!(read(&client, &issuer, &ns, &token), Some((100, 1)));
 
     // Unfreezing restores reporting and the summary tracks the accepted report.
-    RevoraRevenueShare::unfreeze_offering(
-        env.clone(),
-        issuer.clone(),
-        issuer.clone(),
-        ns.clone(),
-        token.clone(),
-    )
-    .unwrap();
-    assert!(!RevoraRevenueShare::is_offering_frozen(
-        env.clone(),
-        issuer.clone(),
-        ns.clone(),
-        token.clone()
-    ));
+    env.as_contract(&contract_id, || {
+        RevoraRevenueShare::unfreeze_offering(
+            env.clone(),
+            issuer.clone(),
+            issuer.clone(),
+            ns.clone(),
+            token.clone(),
+        )
+        .unwrap();
+    });
+    assert!(!env.as_contract(&contract_id, || {
+        RevoraRevenueShare::is_offering_frozen(
+            env.clone(),
+            issuer.clone(),
+            ns.clone(),
+            token.clone(),
+        )
+    }));
     client.report_revenue(&issuer, &ns, &token, &payout, &500, &2, &false);
     assert_eq!(read(&client, &issuer, &ns, &token), Some((600, 2)));
 
     // Global freeze.
-    RevoraRevenueShare::set_freeze(env.clone(), FreezeReason::Compliance).unwrap();
-    assert_eq!(RevoraRevenueShare::get_freeze_reason(env.clone()), Some(FreezeReason::Compliance));
+    env.as_contract(&contract_id, || {
+        RevoraRevenueShare::set_freeze(env.clone(), FreezeReason::Compliance).unwrap();
+    });
+    assert_eq!(
+        env.as_contract(&contract_id, || RevoraRevenueShare::get_freeze_reason(env.clone())),
+        Some(FreezeReason::Compliance)
+    );
     assert_eq!(
         client.try_report_revenue(&issuer, &ns, &token, &payout, &7, &3, &false),
         Err(Ok(RevoraError::ContractFrozen))
@@ -401,10 +419,12 @@ fn repair_audit_summary_rewrites_the_value_the_getter_returns() {
     assert_eq!(read(&client, &issuer, &ns, &token), Some((160, 2)));
 
     // Inject drift straight into the cache to emulate a corrupted summary.
-    env.storage().persistent().set(
-        &DataKey::AuditSummary(offering_id(&issuer, &ns, &token)),
-        &AuditSummary { total_revenue: 1, report_count: 99 },
-    );
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::AuditSummary(offering_id(&issuer, &ns, &token)),
+            &AuditSummary { total_revenue: 1, report_count: 99 },
+        );
+    });
     assert_eq!(read(&client, &issuer, &ns, &token), Some((1, 99)));
     assert!(!client.reconcile_audit_summary(&issuer, &ns, &token).is_consistent);
 
@@ -455,29 +475,33 @@ fn unauthorized_callers_cannot_mutate_the_summary_while_reads_stay_open() {
         Err(Ok(RevoraError::NotAuthorized))
     );
     assert_eq!(
-        client.try_set_min_revenue_threshold(&attacker, &issuer, &ns, &token, &0),
+        client.try_set_min_revenue_threshold(&attacker, &ns, &token, &0),
         Err(Ok(RevoraError::OfferingNotFound))
     );
     assert_eq!(
-        RevoraRevenueShare::freeze_offering(
-            env.clone(),
-            attacker.clone(),
-            issuer.clone(),
-            ns.clone(),
-            token.clone(),
-        ),
+        env.as_contract(&contract_id, || {
+            RevoraRevenueShare::freeze_offering(
+                env.clone(),
+                attacker.clone(),
+                issuer.clone(),
+                ns.clone(),
+                token.clone(),
+            )
+        }),
         Err(RevoraError::NotAuthorized)
     );
 
     // Nothing moved.
     assert_eq!(read(&client, &issuer, &ns, &token), Some((100, 1)));
     assert_eq!(client.get_min_revenue_threshold(&issuer, &ns, &token), 0);
-    assert!(!RevoraRevenueShare::is_offering_frozen(
-        env.clone(),
-        issuer.clone(),
-        ns.clone(),
-        token.clone()
-    ));
+    assert!(!env.as_contract(&contract_id, || {
+        RevoraRevenueShare::is_offering_frozen(
+            env.clone(),
+            issuer.clone(),
+            ns.clone(),
+            token.clone(),
+        )
+    }));
 
     // The read path stays open but reveals nothing outside the offering, and
     // reading never consumes an authorization entry.

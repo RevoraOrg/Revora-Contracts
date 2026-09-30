@@ -524,7 +524,10 @@ pub fn evaluate_curve(
             let target = fixed_pow(linear, *k_num)?;
             let mut low = 0_i128;
             let mut high = 1_000_000_000_000_000_000_i128;
-            for _ in 0..60 {
+            for _ in 0..96 {
+                if high - low <= 1 {
+                    break;
+                }
                 let mid = low.checked_add(high).ok_or(VestingError::InvalidCurveParameters)? / 2;
                 if fixed_pow(mid, *k_den)? <= target {
                     low = mid;
@@ -532,7 +535,15 @@ pub fn evaluate_curve(
                     high = mid;
                 }
             }
-            low
+            // Snap to the exact fixed-point value when the true root is
+            // representable: `high` is the smallest candidate with
+            // high^k_den > target, so if high itself satisfies the invariant
+            // it is the exact answer (e.g. linear = 1.0 → fraction = 1.0).
+            if fixed_pow(high, *k_den)? <= target {
+                high
+            } else {
+                low
+            }
         }
     };
     total
@@ -569,7 +580,10 @@ fn fixed_pow(mut value: i128, exponent: u32) -> Result<i128, VestingError> {
 /// Helper: compute total vested tokens at a given timestamp.
 pub fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
     if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
-        return 0;
+        // Before the cliff nothing from the schedule's curve is vested, but any
+        // pre-accelerated allocation is already owned by the beneficiary and
+        // vests immediately (capped at the schedule total).
+        return core::cmp::min(schedule.accelerated_amount, schedule.total_amount);
     }
 
     let base_vested = match &schedule.curve {

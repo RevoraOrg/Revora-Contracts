@@ -24,7 +24,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
         &token, 
         &0, 
         &symbol_short!(""), 
-        &0
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0)
     );
     (issuer, token)
 }

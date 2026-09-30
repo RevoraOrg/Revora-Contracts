@@ -103,7 +103,11 @@ fn setup() -> Tenant {
         &payout_asset,
         &0i128,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Seed the global issuer/namespace registries so `accept_issuer_transfer` /
@@ -236,7 +240,11 @@ fn pending_is_isolated_per_offering_identity() {
             &payout,
             &0i128,
             &symbol_short!(""),
-            &0u32,
+            &soroban_sdk::token::Client::new(&env, &payout)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
     }
 
@@ -260,7 +268,11 @@ fn pending_is_isolated_per_offering_identity() {
         &payout,
         &0i128,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     let new_alt = Address::generate(&env);
     client.propose_issuer_transfer(&issuer_a, &symbol_short!("alt"), &token_a, &new_alt);

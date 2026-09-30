@@ -20,7 +20,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0i128, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     (env, client, admin, issuer, ns, token)
 }
 
@@ -510,8 +510,8 @@ fn critical_dispute_freeze_isolation_across_offerings() {
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0i128, &symbol_short!(""), &0u32);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0i128, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_holder_share(&issuer, &ns, &token_a, &holder, &500u32, &1);
     client.set_holder_share(&issuer, &ns, &token_b, &holder, &500u32, &1);
 

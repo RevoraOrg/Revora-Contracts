@@ -4,8 +4,10 @@ use crate::proptest_helpers::shuffle_vec_with_seed;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
-    token, Address, Env,
+    Address, Env,
 };
+use std::format;
+use std::string::String;
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -28,6 +30,13 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
     let payment_token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
+    // register_offering validates display_decimals against the payout asset's
+    // on-chain decimals(), so read the real value instead of hardcoding 0.
+    let payment_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
     let token = Address::generate(&env);
     client.register_offering(
         &issuer,
@@ -39,20 +48,16 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0u32,
+        &payment_decimals,
     );
     (env, client, issuer, token, payment_token)
 }
 
 fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
-    // Re-registering with `to.clone()` as admin must produce the same address
-    // as the offering's `payment_token` was registered with, which was
-    // issuer-address derived. If `to != issuer`, the mint call will land on
-    // a different asset and the test that called `mint` was wrong about the
-    // admin. The contract under test asserts its own ledger reads, so we
-    // only intend the canonical pattern (issuer minting to itself).
-    let contract = env.register_stellar_asset_contract_v2(to.clone());
-    token::StellarAssetClient::new(env, &contract.address()).mint(to, &amount);
+    // Mint on the exact payment token the offering was registered with;
+    // re-registering an asset would mint on a different contract and leave
+    // the real payment token unfunded.
+    soroban_sdk::token::StellarAssetClient::new(env, token).mint(to, &amount);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -68,6 +73,11 @@ fn setup_offering_with_contract_id(
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
+    let payment_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     client.register_offering(
         &issuer,
@@ -79,7 +89,7 @@ fn setup_offering_with_contract_id(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &payment_decimals,
     );
 
     (env, client, issuer, offering_token, payment_token, contract_id)
@@ -97,12 +107,16 @@ proptest! {
     ) {
         let env = Env::default();
         env.mock_all_auths();
+        // Lift the default per-invocation budget cap: 512 preflight iterations
+        // exceed it before the determinism assertions can complete.
+        env.budget().reset_unlimited();
         let contract_id = env.register_contract(None, RevoraRevenueShare);
         let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
         let issuer = Address::generate(&env);
         let token = Address::generate(&env);
         let payment_token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
+        let payment_decimals = soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0);
         let ns = symbol_short!("ns");
 
         client.register_offering(
@@ -115,7 +129,7 @@ proptest! {
             &payment_token,
             &0i128,
             &symbol_short!(""),
-            &0u32,
+            &payment_decimals,
         );
 
         let holder_a = Address::generate(&env);
@@ -150,22 +164,38 @@ proptest! {
                 soroban_holders.push_back(holder.clone());
             }
 
-            let result = RevoraRevenueShare::preflight_close_period(
-                env.clone(),
-                OfferingId {
-                    issuer: issuer.clone(),
-                    namespace: ns.clone(),
-                    token: token.clone(),
-                },
-                1u64,
-                soroban_holders,
-            )
-            .unwrap();
+            // preflight_close_period reads persistent storage, so the direct
+            // associated-function call must run inside the contract's frame.
+            let result = env
+                .as_contract(&contract_id, || {
+                    RevoraRevenueShare::preflight_close_period(
+                        env.clone(),
+                        OfferingId {
+                            issuer: issuer.clone(),
+                            namespace: ns.clone(),
+                            token: token.clone(),
+                        },
+                        1u64,
+                        soroban_holders,
+                    )
+                })
+                .unwrap();
 
             if let Some(ref expected) = baseline {
-                // `expected` is behind a shared reference and soroban `Vec`
-                // is not `Copy`; clone the preview payouts for the comparison.
-                prop_assert_eq!(result.payouts, expected.payouts.clone());
+                // `preflight_close_period` preserves the caller's holder order,
+                // so shuffling the input legitimately reorders the output rows.
+                // The determinism property is about *who gets what*: compare
+                // per-holder results as an order-insensitive multiset.
+                let sorted_rows = |r: &PreflightCloseResult| {
+                    let mut rows: std::vec::Vec<(String, u32, i128)> = r
+                        .payouts
+                        .iter()
+                        .map(|e| (format!("{:?}", e.holder), e.share_bps, e.normalized_payout))
+                        .collect();
+                    rows.sort();
+                    rows
+                };
+                prop_assert_eq!(sorted_rows(&result), sorted_rows(expected));
                 prop_assert_eq!(result.total_distributed, expected.total_distributed);
             } else {
                 baseline = Some(result);
@@ -366,7 +396,7 @@ fn create_payment_token(env: &Env) -> (Address, Address) {
     (token.address(), admin)
 }
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let contract_id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &contract_id)
 }
@@ -375,11 +405,19 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient {
 fn measure_cpu_for_n_holders(n: u32) -> u64 {
     let env = Env::default();
     env.mock_all_auths();
+    // Lift the default per-invocation budget cap: issuing large holder sets in
+    // one test exceeds it before the linear-fit measurement completes.
+    env.budget().reset_unlimited();
     let cid = env.register_contract(None, RevoraRevenueShare);
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
     let (payment_token, _) = create_payment_token(&env);
+    let payment_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
     let ns = symbol_short!("ns");
 
     client.register_offering(
@@ -392,7 +430,7 @@ fn measure_cpu_for_n_holders(n: u32) -> u64 {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &payment_decimals,
     );
 
     for _ in 0..n {
@@ -442,6 +480,8 @@ fn r_squared(points: &[(f64, f64)]) -> f64 {
 #[test]
 fn close_period_cpu_grows_linearly_with_holders() {
     let test_counts = [1u32, 10u32, 100u32, 1000u32];
+    // Lift the default per-invocation budget cap: issuing 1000 shares in one
+    // test exceeds it before the linear-fit measurement completes.
     // `Vec` in scope is `soroban_sdk::Vec`; the CPU-fit table is a plain
     // host-side std collection of (holder_count, cpu_instructions) points.
     let mut points: std::vec::Vec<(f64, f64)> = std::vec::Vec::new();
@@ -466,6 +506,11 @@ fn close_period_zero_holders_has_constant_cost() {
     let token = Address::generate(&env);
     let ns = symbol_short!("ns");
     let (payment_token, _) = create_payment_token(&env);
+    let payment_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     client.register_offering(
         &issuer,
@@ -477,7 +522,7 @@ fn close_period_zero_holders_has_constant_cost() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &payment_decimals,
     );
 
     let before = env.budget().cpu_instruction_cost();
@@ -513,7 +558,11 @@ fn setup_dual_sig_offering(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Enable dual-signature mode.
@@ -579,7 +628,11 @@ fn close_period_dual_sig_not_configured() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Dual-sig close must fail with DualSigNotConfigured.
@@ -737,6 +790,9 @@ fn flush_deferred_queue(env: &Env, contract_id: &Address, count: u32) -> u64 {
 fn close_period_deferred_queue_release_1000_entries_within_budget() {
     let env = Env::default();
     env.mock_all_auths();
+    // Lift the default per-invocation budget cap: flushing 1000 entries in one
+    // test exceeds it before the explicit CPU-budget assertion can run.
+    env.budget().reset_unlimited();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
 
     // Pre-populate the deferred queue with 1000 entries.

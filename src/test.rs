@@ -682,7 +682,7 @@ fn get_whitelist_empty_before_any_add() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     for period_id in 1..=100_u64 {
         client.report_revenue(
@@ -903,7 +903,7 @@ fn blacklist_overrides_whitelist() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Add to both whitelist and blacklist
     client.whitelist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
@@ -1436,7 +1436,7 @@ fn multiple_reports_same_period_accumulate() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     for period_id in 1..=100_u64 {
         client.report_revenue(
@@ -1494,7 +1494,7 @@ fn get_revenue_range_sums_periods() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100, &1, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200, &2, &false);
     assert_eq!(client.get_revenue_range(&issuer, &symbol_short!("def"), &token, &1, &2), 300);
@@ -1528,7 +1528,7 @@ fn gas_characterization_report_revenue_with_large_blacklist() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     for _ in 0..30 {
         client.blacklist_add(
@@ -1588,7 +1588,7 @@ fn large_period_range_sums_correctly() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &1_000, &1, &false);
 }
 
@@ -1613,7 +1613,7 @@ fn concentration_limit_not_set_allows_report_revenue() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -1655,7 +1655,7 @@ fn set_concentration_limit_stores_config() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let config = client.get_concentration_limit(&issuer, &symbol_short!("def"), &token);
     assert_eq!(config.clone().unwrap().max_bps, 5000);
@@ -1682,7 +1682,7 @@ fn set_concentration_limit_bounds_check() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let res =
         client.try_set_concentration_limit(&issuer, &symbol_short!("def"), &token, &10001, &false, &0u64);
@@ -1706,7 +1706,7 @@ fn report_concentration_bounds_check() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let res = client.try_report_concentration(&issuer, &symbol_short!("def"), &token, &10001);
     assert!(res.is_err());
@@ -1732,7 +1732,7 @@ fn set_concentration_limit_respects_pause() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.pause_admin(&admin);
     let res =
@@ -1760,7 +1760,7 @@ fn report_concentration_respects_pause() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.pause_admin(&admin);
     let res = client.try_report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
@@ -1785,7 +1785,7 @@ fn report_concentration_emits_audit_event() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &3000);
@@ -1811,7 +1811,7 @@ fn report_concentration_emits_warning_when_over_limit() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     let before = env.events().all().len();
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
@@ -1839,7 +1839,7 @@ fn report_concentration_no_warning_when_below_limit() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &4000);
     assert_eq!(
@@ -1865,7 +1865,7 @@ fn concentration_enforce_blocks_report_revenue_when_over_limit() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &6000);
     let r = client.try_report_revenue(
@@ -1900,7 +1900,7 @@ fn concentration_enforce_allows_report_revenue_when_at_or_below_limit() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5000);
     client.report_revenue(
@@ -1941,7 +1941,7 @@ fn concentration_near_threshold_boundary() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &5001);
 
@@ -1991,7 +1991,7 @@ fn set_concentration_limit_requires_auth_before_state_read() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Now clear mocked auths — subsequent calls require real auth.
     let env2 = Env::default();
@@ -2034,7 +2034,7 @@ fn set_concentration_limit_auth_required_even_in_event_only_mode() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // With mock_all_auths the call succeeds (auth is satisfied).
     let result = client.try_set_concentration_limit(
@@ -2072,7 +2072,7 @@ fn set_concentration_limit_wrong_issuer_rejected_after_auth() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // attacker tries to set the limit on issuer's offering.
     let result = client.try_set_concentration_limit(
@@ -2109,7 +2109,7 @@ fn concentration_staleness_no_prior_report_rejected() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // enforce=true, max_staleness_secs=3600 — no report_concentration called yet
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
     let r = client.try_report_revenue(
@@ -2147,7 +2147,7 @@ fn concentration_staleness_stale_report_rejected() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     // Report concentration at t=1000
@@ -2191,7 +2191,7 @@ fn concentration_staleness_fresh_report_allowed() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     // Report concentration at t=1000
@@ -2230,7 +2230,7 @@ fn concentration_staleness_enforce_off_bypasses_guard() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // enforce=false — staleness guard must not fire
     client.set_concentration_limit(
         &issuer,
@@ -2271,7 +2271,7 @@ fn concentration_staleness_zero_secs_disables_guard() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // max_staleness_secs=0 — guard disabled
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     // No report_concentration called — should not be rejected for staleness
@@ -2305,7 +2305,7 @@ fn concentration_staleness_boundary_exact_window_allowed() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &3600u64);
 
     env.ledger().set_timestamp(1000);
@@ -2365,7 +2365,7 @@ fn set_rounding_mode_wrong_issuer_rejected_after_auth() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_set_rounding_mode(
         &attacker,
@@ -2397,7 +2397,7 @@ fn audit_summary_empty_before_any_report() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let summary = client.get_audit_summary(&issuer, &symbol_short!("def"), &token);
     assert!(summary.is_none());
 }
@@ -2419,7 +2419,7 @@ fn audit_summary_aggregates_revenue_and_count() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100, &1, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &200, &2, &false);
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &300, &3, &false);
@@ -2450,7 +2450,7 @@ fn audit_summary_per_offering_isolation() {
         &payout_asset_a,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -2460,7 +2460,7 @@ fn audit_summary_per_offering_isolation() {
         &payout_asset_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -2552,7 +2552,7 @@ fn set_and_get_rounding_mode() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
         RoundingMode::Truncation
@@ -2568,7 +2568,7 @@ fn set_and_get_rounding_mode() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
         RoundingMode::Truncation
@@ -2721,7 +2721,7 @@ fn claim_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, A
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0); // 50% revenue share
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0)); // 50% revenue share
 
     // Mint payment tokens to the issuer so they can deposit
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
@@ -2761,7 +2761,7 @@ fn register_offering_does_not_lock_payment_token_before_first_deposit() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &offering_token), None);
 }
@@ -2796,7 +2796,7 @@ fn failed_invalid_first_deposit_does_not_lock_payment_token() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -2885,7 +2885,7 @@ fn report_revenue_rejects_mismatched_payout_asset() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -2918,7 +2918,7 @@ fn first_deposit_uses_registered_payment_token_lock() {
         &configured_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &configured_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &configured_asset, &configured_admin, &issuer, &1_000_000);
 
     client.deposit_revenue(
@@ -2956,7 +2956,7 @@ fn failed_first_deposit_does_not_lock_payment_token_or_consume_period() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let failed = client.try_deposit_revenue(
         &issuer,
@@ -3060,7 +3060,7 @@ fn deposit_revenue_rejects_mismatched_token_after_lock() {
         &locked_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &locked_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &locked_token, &locked_admin, &issuer, &1_000_000);
     mint_tokens(&env, &other_token, &other_admin, &issuer, &1_000_000);
 
@@ -3101,7 +3101,7 @@ fn deposit_revenue_rejects_wrong_token_on_first_deposit() {
         &configured_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &configured_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &wrong_token, &wrong_admin, &issuer, &1_000_000);
 
     // First deposit with wrong token must be rejected
@@ -3154,7 +3154,7 @@ fn payment_token_lock_is_per_offering() {
         &asset_a,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &asset_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3164,7 +3164,7 @@ fn payment_token_lock_is_per_offering() {
         &asset_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &asset_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &asset_a, &admin_a, &issuer, &1_000_000);
     mint_tokens(&env, &asset_b, &admin_b, &issuer, &1_000_000);
@@ -3210,7 +3210,7 @@ fn payment_token_none_before_first_deposit() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
 }
 
@@ -3233,7 +3233,7 @@ fn payment_token_locked_after_first_successful_deposit() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payout, &admin, &issuer, &1_000_000);
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout, &100_000, &1);
     assert_eq!(
@@ -3262,7 +3262,7 @@ fn payment_token_mismatch_returns_correct_error_code() {
         &payout_a,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payout_a, &admin_a, &issuer, &1_000_000);
     mint_tokens(&env, &payout_b, &admin_b, &issuer, &1_000_000);
 
@@ -3304,7 +3304,7 @@ fn payment_token_not_locked_after_failed_first_deposit() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // No mint — transfer will fail
     let r = client.try_deposit_revenue(
         &issuer,
@@ -3404,7 +3404,7 @@ fn multi_offering_different_payment_tokens_independent() {
         &payment_token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3414,7 +3414,7 @@ fn multi_offering_different_payment_tokens_independent() {
         &payment_token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Mint tokens for issuer
     mint_tokens(&env, &payment_token_x, &admin_x, &issuer, &1_000_000);
@@ -3468,7 +3468,7 @@ fn multi_offering_cross_deposit_fails_with_payment_token_mismatch() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3478,7 +3478,7 @@ fn multi_offering_cross_deposit_fails_with_payment_token_mismatch() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -3541,7 +3541,7 @@ fn multi_offering_cross_deposit_does_not_mutate_state() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3551,7 +3551,7 @@ fn multi_offering_cross_deposit_does_not_mutate_state() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -3607,7 +3607,7 @@ fn multi_offering_independent_deposits_then_cross_fail() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3617,7 +3617,7 @@ fn multi_offering_independent_deposits_then_cross_fail() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -3673,7 +3673,7 @@ fn multi_offering_same_payment_token_both_offerings() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3683,7 +3683,7 @@ fn multi_offering_same_payment_token_both_offerings() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &payment_token, &admin, &issuer, &2_000_000);
 
@@ -3729,7 +3729,7 @@ fn multi_offering_independent_period_sequencing() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3739,7 +3739,7 @@ fn multi_offering_independent_period_sequencing() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
@@ -3790,7 +3790,7 @@ fn multi_offering_snapshot_deposits_independent() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3800,7 +3800,7 @@ fn multi_offering_snapshot_deposits_independent() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Enable snapshot for both
     client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
@@ -3864,7 +3864,7 @@ fn multi_offering_snapshot_locks_payment_token() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_snapshot_config(&issuer, &symbol_short!("multi"), &token_a, &true);
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
@@ -3919,7 +3919,7 @@ fn multi_offering_three_offerings_full_isolation() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3929,7 +3929,7 @@ fn multi_offering_three_offerings_full_isolation() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -3939,7 +3939,7 @@ fn multi_offering_three_offerings_full_isolation() {
         &token_z,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_z).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &1_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &1_000_000);
@@ -4003,7 +4003,7 @@ fn multi_offering_interleaved_deposits_maintain_isolation() {
         &token_x,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_x).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -4013,7 +4013,7 @@ fn multi_offering_interleaved_deposits_maintain_isolation() {
         &token_y,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_y).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint_tokens(&env, &token_x, &admin_x, &issuer, &5_000_000);
     mint_tokens(&env, &token_y, &admin_y, &issuer, &5_000_000);
@@ -4061,7 +4061,7 @@ fn get_payment_token_decimals_defaults_to_7() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 7);
 }
@@ -4085,7 +4085,7 @@ fn set_and_get_payment_token_decimals() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
 
     assert_eq!(client.get_payment_token_decimals(&issuer, &symbol_short!("def"), &token), 6);
@@ -4110,7 +4110,7 @@ fn set_payment_token_decimals_rejects_out_of_range() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &19);
     assert!(result.is_err());
@@ -4135,7 +4135,7 @@ fn set_payment_token_decimals_accepts_max_18() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &18);
     assert!(result.is_ok());
@@ -4161,7 +4161,7 @@ fn set_payment_token_decimals_accepts_zero() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let result = client.try_set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &0);
     assert!(result.is_ok());
@@ -4191,7 +4191,7 @@ fn claim_normalizes_6_decimal_token_revenue() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // Configure 6-decimal token (e.g., USDC)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1); // 50%
@@ -4233,7 +4233,7 @@ fn claim_normalizes_8_decimal_token_revenue() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // Configure 8-decimal token (e.g., WBTC)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &8);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1); // 50%
@@ -4276,7 +4276,7 @@ fn claim_with_7_decimal_token_is_unchanged() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // Default is 7 decimals — no explicit set needed
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1); // 50%
 
@@ -4310,7 +4310,7 @@ fn get_claimable_normalizes_6_decimal_token() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
 
@@ -4399,7 +4399,7 @@ fn deposit_revenue_exactly_at_supply_cap_succeeds() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     // exactly at cap should succeed
@@ -4426,7 +4426,7 @@ fn deposit_revenue_exceeds_supply_cap_fails() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     // Deposit exceeds cap should fail
@@ -4453,7 +4453,7 @@ fn deposit_revenue_multiple_deposits_exceeds_supply_cap_fails() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000);
 
     client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &50_000, &1);
@@ -4480,7 +4480,7 @@ fn set_investment_constraints_succeeds_for_valid_bounds() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
     
     let constraints = client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).unwrap();
@@ -4507,7 +4507,7 @@ fn set_investment_constraints_fails_when_max_less_than_min() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &1_000, &100);
     assert!(r.is_err());
 }
@@ -4531,7 +4531,7 @@ fn set_investment_constraints_fails_negative() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &-1, &100);
     assert!(r.is_err());
     
@@ -4558,7 +4558,7 @@ fn set_investment_constraints_emits_event() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     
     let before = legacy_events(&env).len();
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
@@ -4617,7 +4617,7 @@ fn get_deposited_revenue_returns_zero_before_any_deposit() {
         &payment_token,
         &100_000,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // No deposits yet — read API must return 0.
     assert_eq!(client.get_deposited_revenue(&issuer, &symbol_short!("cap"), &token), 0);
@@ -4664,7 +4664,7 @@ fn deposit_revenue_no_cap_is_unlimited() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint_tokens(&env, &payment_token, &pt_admin, &issuer, &10_000_000_000);
 
     let r = client.try_deposit_revenue(
@@ -4886,7 +4886,7 @@ fn get_supply_cap_returns_zero_when_no_cap_set() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     assert_eq!(client.get_supply_cap(&issuer, &symbol_short!("cap"), &token), 0);
 }
 
@@ -4955,7 +4955,7 @@ fn get_investment_constraints_returns_none_before_set() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // Read API must return None before constraints are configured.
     assert!(
         client.get_investment_constraints(&issuer, &symbol_short!("def"), &token).is_none(),
@@ -4983,7 +4983,7 @@ fn set_investment_constraints_both_zero_succeeds() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &0, &0,
     );
@@ -5014,7 +5014,7 @@ fn set_investment_constraints_equal_min_and_max_succeeds() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &1_000, &1_000,
     );
@@ -5045,7 +5045,7 @@ fn set_investment_constraints_min_zero_max_positive_succeeds() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     let r = client.try_set_investment_constraints(
         &issuer, &symbol_short!("def"), &token, &0, &5_000,
     );
@@ -5076,7 +5076,7 @@ fn set_investment_constraints_updates_replace_previous() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &200, &2_000);
 
@@ -5106,7 +5106,7 @@ fn set_investment_constraints_update_event_marks_previous_existed() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     // First call — no previous, event payload should have is_update = false.
     client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &1_000);
 
@@ -6057,7 +6057,7 @@ fn offering_isolation_claims_independent() {
         &pt_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &pt_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Create a second payment token for offering B
     mint_tokens(&env, &pt_b, &pt_b_admin, &issuer, &5_000_000);
@@ -6599,7 +6599,7 @@ fn freeze_offering_blocks_only_target_offering() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token_a);
@@ -7122,7 +7122,7 @@ fn testnet_mode_skips_concentration_enforcement() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
@@ -7232,7 +7232,7 @@ fn testnet_mode_disabled_enforces_concentration() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &true, &0u64);
     client.report_concentration(&issuer, &symbol_short!("def"), &token, &8000); // Over limit
 
@@ -7272,7 +7272,7 @@ fn testnet_mode_toggle_after_offerings_exist() {
         &payout_asset1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Set admin and enable testnet mode
     client.set_admin(&admin);
@@ -7321,7 +7321,7 @@ fn testnet_mode_affects_only_validation_not_storage() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Disable testnet mode
     client.set_testnet_mode(&false);
@@ -7356,7 +7356,7 @@ fn testnet_mode_multiple_offerings_with_varied_bps() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     }
 
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 5);
@@ -7385,7 +7385,7 @@ fn testnet_mode_concentration_warning_still_emitted() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &5000, &false, &0u64);
 
     // Warning should still be emitted in testnet mode
@@ -7831,7 +7831,7 @@ fn issuer_transfer_multiple_offerings_isolation() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Propose transfers for both (same issuer for both offerings)
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token_a, &new_issuer_a);
@@ -9135,7 +9135,7 @@ fn issuer_transfer_wrong_address_cannot_accept() {
         &payout2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client2.propose_issuer_transfer(&issuer2, &symbol_short!("def"), &token2, &new_issuer2);
 
     // Pending transfer is to new_issuer2; verify it is stored correctly
@@ -9605,7 +9605,7 @@ fn testnet_mode_normal_operations_unaffected() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -9674,7 +9674,7 @@ fn testnet_mode_pagination_unaffected() {
             &payout_asset,
             &0,
             &symbol_short!(""),
-            &0);
+            &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     }
 
     // Pagination should work normally
@@ -9774,7 +9774,7 @@ fn report_blocked_while_paused() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.pause_admin(&admin);
     assert!(client
         .try_report_revenue(
@@ -9835,7 +9835,7 @@ fn blacklist_add_blocked_while_paused() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.pause_admin(&admin);
     assert!(client
         .try_blacklist_add(&admin, &issuer, &symbol_short!("def"), &token, &investor)
@@ -9865,7 +9865,7 @@ fn blacklist_remove_blocked_while_paused() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.pause_admin(&admin);
     assert!(client
         .try_blacklist_remove(&admin, &issuer, &symbol_short!("def"), &token, &investor)
@@ -9888,7 +9888,7 @@ fn large_period_range_sums_correctly_full() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     for period in 1..=10 {
         client.report_revenue(
             &issuer,
@@ -10006,7 +10006,7 @@ proptest! {
         &pa,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &pa).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
                 }
                 TestOperation::ReportRevenue((i, ns, t, pa, amt, pid, ovr)) => {
                     client.report_revenue(&i, &ns, &t, &pa, &amt, &pid, &ovr);
@@ -10045,7 +10045,7 @@ proptest! {
         &token.clone(),
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token.clone()).decimals());
         
         // Execute background sequence
         for op in seq {
@@ -10133,7 +10133,7 @@ proptest! {
         &token.clone(),
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token.clone()).decimals());
         }));
         prop_assert!(result.is_err());
     }
@@ -10191,7 +10191,7 @@ proptest! {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         }
 
         assert_eq!(client.get_offering_count(&issuer, &ns), n as u32);
@@ -10272,7 +10272,7 @@ fn test_offerings_pagination_stress() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     }
 
     // 1. Verify MAX_PAGE_LIMIT enforcement
@@ -10318,7 +10318,7 @@ fn test_blacklist_pagination_stress() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let num_blacklisted = 45;
     for _ in 0..num_blacklisted {
@@ -10364,7 +10364,7 @@ fn test_whitelist_pagination_stress() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let num_whitelisted = 45;
     for _ in 0..num_whitelisted {
@@ -10442,7 +10442,7 @@ fn calculate_distribution_bps_100_percent() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let payout = client.calculate_distribution(
         &caller,
@@ -10479,7 +10479,7 @@ fn calculate_distribution_bps_25_percent() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let payout = client.calculate_distribution(
         &caller,
@@ -10626,7 +10626,7 @@ fn calculate_distribution_rounds_down() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let payout = client.calculate_distribution(
         &caller,
@@ -10661,7 +10661,7 @@ fn calculate_distribution_rounds_down_exact() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let payout = client.calculate_distribution(
         &caller,
@@ -10742,7 +10742,7 @@ fn calculate_distribution_multiple_holders_sum() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -10809,7 +10809,7 @@ fn calculate_distribution_requires_auth() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.calculate_distribution(
         &caller,
@@ -10850,7 +10850,7 @@ fn calculate_total_distributable_bps_100_percent() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let total =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -10875,7 +10875,7 @@ fn calculate_total_distributable_bps_25_percent() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let total =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -10909,7 +10909,7 @@ fn calculate_total_distributable_rounds_down() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let total = client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100);
 
@@ -10959,7 +10959,7 @@ fn calculate_distribution_offering_isolation() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let payout_a = client.calculate_distribution(
         &caller,
@@ -11000,7 +11000,7 @@ fn calculate_total_distributable_offering_isolation() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let total_a =
         client.calculate_total_distributable(&issuer, &symbol_short!("def"), &token, &100_000);
@@ -11110,7 +11110,7 @@ fn test_event_only_mode_register_and_report() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Verify event emitted (skip checking EVENT_INIT)
     let events = legacy_events(&env);
@@ -11210,7 +11210,7 @@ fn test_set_offering_metadata_success() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
     let result =
@@ -11235,7 +11235,7 @@ fn test_get_offering_metadata_returns_none_initially() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = client.get_offering_metadata(&issuer, &symbol_short!("def"), &token);
     assert_eq!(metadata, None);
@@ -11258,7 +11258,7 @@ fn test_update_offering_metadata_success() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata1);
@@ -11286,7 +11286,7 @@ fn test_get_offering_metadata_after_set() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "https://example.com/metadata.json");
     let r = client.try_set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -11313,7 +11313,7 @@ fn test_set_metadata_requires_auth() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -11354,7 +11354,7 @@ fn test_set_metadata_respects_freeze() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.freeze();
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -11384,7 +11384,7 @@ fn test_set_metadata_respects_pause() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.pause_admin(&admin);
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -11410,7 +11410,7 @@ fn test_set_metadata_empty_string() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "");
     let result =
@@ -11438,7 +11438,7 @@ fn test_set_metadata_max_length() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Create a 256-byte string (max allowed)
     let max_str = "a".repeat(256);
@@ -11465,7 +11465,7 @@ fn test_set_metadata_oversized_data() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Create a 257-byte string (exceeds max)
     let oversized_str = "a".repeat(257);
@@ -11492,7 +11492,7 @@ fn test_set_metadata_repeated_updates() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata_values =
         ["ipfs://QmTest0", "ipfs://QmTest1", "ipfs://QmTest2", "ipfs://QmTest3", "ipfs://QmTest4"];
@@ -11526,7 +11526,7 @@ fn test_metadata_scoped_per_offering() {
         &token_a,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -11536,7 +11536,7 @@ fn test_metadata_scoped_per_offering() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata_a = SdkString::from_str(&env, "ipfs://QmTokenA");
     let metadata_b = SdkString::from_str(&env, "ipfs://QmTokenB");
@@ -11569,7 +11569,7 @@ fn test_metadata_set_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let before = legacy_events(&env).len();
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
@@ -11604,7 +11604,7 @@ fn test_metadata_update_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata1 = SdkString::from_str(&env, "ipfs://QmFirst");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata1);
@@ -11642,7 +11642,7 @@ fn test_metadata_events_include_correct_data() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest123");
     client.set_offering_metadata(&issuer, &symbol_short!("def"), &token, &metadata);
@@ -11685,7 +11685,7 @@ fn test_metadata_multiple_offerings_same_issuer() {
         &token1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -11695,7 +11695,7 @@ fn test_metadata_multiple_offerings_same_issuer() {
         &token2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -11705,7 +11705,7 @@ fn test_metadata_multiple_offerings_same_issuer() {
         &token3,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token3).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let meta1 = SdkString::from_str(&env, "ipfs://Qm1");
     let meta2 = SdkString::from_str(&env, "ipfs://Qm2");
@@ -11738,7 +11738,7 @@ fn test_metadata_after_issuer_transfer() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "ipfs://QmOriginal");
     client.set_offering_metadata(&old_issuer, &symbol_short!("def"), &token, &metadata);
@@ -11776,7 +11776,7 @@ fn test_set_metadata_requires_issuer() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let metadata = SdkString::from_str(&env, "ipfs://QmTest");
     let result =
@@ -11801,7 +11801,7 @@ fn test_metadata_ipfs_cid_format() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Test typical IPFS CID (46 characters)
     let ipfs_cid = SdkString::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -11830,7 +11830,7 @@ fn test_metadata_https_url_format() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let https_url = SdkString::from_str(&env, "https://api.example.com/metadata/token123.json");
     let result =
@@ -11858,7 +11858,7 @@ fn test_metadata_content_hash_format() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // SHA256 hash as hex string
     let content_hash = SdkString::from_str(
@@ -11963,7 +11963,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
         // Assert: Verify correct behavior
         let offering = client.get_offering(&issuer, &symbol_short!("def"), &token);
@@ -12225,7 +12225,7 @@ mod regression {
             &payout_asset,
             &0,
             &symbol_short!(""),
-            &0);
+            &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         (client, admin, token, payout_asset)
     }
 
@@ -12461,7 +12461,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_secondary_market_royalty_bps(&issuer, &symbol_short!("fee"), &token, &payout_asset, &250);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12511,7 +12511,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
         crate::test_utils::mint_tokens(&env, &payment_asset, &buyer, 1_000);
@@ -12557,7 +12557,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12618,7 +12618,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12668,7 +12668,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12716,7 +12716,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         // Blacklist the seller
@@ -12762,7 +12762,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         // Seller has 100 bps but tries to sell 200
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &100, &1);
 
@@ -12806,7 +12806,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12849,7 +12849,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         let payment_asset = crate::test_utils::create_token(&env, &admin);
@@ -12893,7 +12893,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.set_holder_share(&issuer, &symbol_short!("fee"), &token, &seller, &5_000, &1);
 
         // Freeze the seller's address for this offering
@@ -13211,7 +13211,7 @@ mod regression {
         &p0,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p0).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13221,7 +13221,7 @@ mod regression {
         &p1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13231,7 +13231,7 @@ mod regression {
         &p2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13241,7 +13241,7 @@ mod regression {
         &p3,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p3).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
         assert_eq!(page.len(), 4);
         assert_eq!(page.get(0).clone().unwrap().token, t0);
@@ -13269,7 +13269,7 @@ mod regression {
         &p0,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p0).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13279,7 +13279,7 @@ mod regression {
         &p1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13289,7 +13289,7 @@ mod regression {
         &p2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -13299,7 +13299,7 @@ mod regression {
         &p3,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &p3).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         let (page, _) = client.get_offerings_page(&issuer, &symbol_short!("def"), &0, &10);
         assert_eq!(page.len(), 4);
         assert_eq!(page.get(0).clone().unwrap().token, t0);
@@ -13402,7 +13402,7 @@ mod regression {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         assert_eq!(client.get_version(), v0);
     }
 
@@ -13554,7 +13554,7 @@ mod regression {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
         let result = client.get_offering(&issuer, &symbol_short!("def"), &token);
         assert!(result.is_some());
@@ -13585,7 +13585,7 @@ mod regression {
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
             if i == 9 {
                 target_token = t;
             }
@@ -13616,7 +13616,7 @@ mod regression {
             &payout,
             &0,
             &symbol_short!(""),
-            &0);
+            &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
@@ -13649,7 +13649,7 @@ mod regression {
             &payout,
             &0,
             &symbol_short!(""),
-            &0);
+            &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
         client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
@@ -13958,7 +13958,7 @@ mod admin_rotation_edge {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
         client.propose_admin_rotation(&new_admin);
         client.finalize_admin_rotation(&new_admin);
@@ -14046,7 +14046,7 @@ mod admin_rotation_integration {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
         client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
 
         client.propose_admin_rotation(&new_admin);
@@ -14676,7 +14676,7 @@ fn test_offerings_page_pagination_25_offerings() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     }
 
     // Test 1: Page through with limit=10
@@ -14724,7 +14724,7 @@ fn test_offerings_page_edge_cases() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     }
 
     // Edge case 1: start == count (10 offerings, start at 10)
@@ -14771,7 +14771,7 @@ fn test_offerings_page_ordering_deterministic() {
         &t0,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t0).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -14781,7 +14781,7 @@ fn test_offerings_page_ordering_deterministic() {
         &t1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -14791,7 +14791,7 @@ fn test_offerings_page_ordering_deterministic() {
         &t2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -14801,7 +14801,7 @@ fn test_offerings_page_ordering_deterministic() {
         &t3,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t3).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Retrieve all pages and verify ordering
     let (page1, cursor1) = client.get_offerings_page(&issuer, &ns, &0, &2);
@@ -14862,7 +14862,7 @@ fn test_offerings_page_after_issuer_transfer() {
         &t1,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t1).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer1,
         &Vec::new(&env),
         &1u32,
@@ -14872,7 +14872,7 @@ fn test_offerings_page_after_issuer_transfer() {
         &t2,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t2).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer1,
         &Vec::new(&env),
         &1u32,
@@ -14882,7 +14882,7 @@ fn test_offerings_page_after_issuer_transfer() {
         &t3,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &t3).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Verify issuer1 has 3 offerings
     let (page1_before, _) = client.get_offerings_page(&issuer1, &ns, &0, &20);
@@ -14956,7 +14956,7 @@ fn config_migration_setup() -> (
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // 1. Set concentration limit and report current concentration.
     client.set_concentration_limit(&old_issuer, &ns, &token, &5000, &true, &0u64);
@@ -15425,7 +15425,7 @@ fn set_holder_share_exactly_at_max_supply_emits_cap_sat_event() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_max_total_supply_shares(&issuer, &symbol_short!("def"), &token, &5_000);
 
     let events_before = env.events().all().len();
@@ -15456,7 +15456,7 @@ fn set_holder_share_below_max_supply_does_not_emit_cap_sat_event() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_max_total_supply_shares(&issuer, &symbol_short!("def"), &token, &5_000);
 
     let events_before = env.events().all().len();

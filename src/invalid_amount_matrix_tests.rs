@@ -41,7 +41,7 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     (env, contract_id, issuer, token, payout_asset)
 }
@@ -66,7 +66,7 @@ fn setup_funded_offering() -> (Env, Address, Address, Address, Address) {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     mint(&env, &payment_token, &issuer, 1_000_000);
 
     (env, contract_id, issuer, token, payment_token)

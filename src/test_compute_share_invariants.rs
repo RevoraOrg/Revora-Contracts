@@ -661,7 +661,11 @@ fn test_per_class_supply_cap_edge_cases() {
     // Payout asset must be a real token contract: register_offering compares
     // display_decimals against the token's on-chain decimals().
     let payout_asset = create_payment_token(&env).0;
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payout_asset)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // Setup offering
     client.register_offering(
@@ -758,7 +762,11 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
     let token = Address::generate(&env);
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIXTURE A: cap = 0 (unbounded)
@@ -964,7 +972,11 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
     let token = Address::generate(&env);
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // Register with cap=0 (unlimited)
     client.register_offering(
@@ -1037,7 +1049,11 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
     let token = Address::generate(&env);
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // Register with cap=i128::MAX
     client.register_offering(
@@ -1257,7 +1273,11 @@ fn issue_610_zero_vs_max_error_code_verification() {
     let issuer = Address::generate(&env);
     let payment_token = create_payment_token(&env).0;
     let token = Address::generate(&env);
-    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token).decimals();
+    let payout_decimals = soroban_sdk::token::Client::new(&env, &payment_token)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
 
     // Fixture A: cap=0
     client.register_offering(

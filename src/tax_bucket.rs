@@ -111,16 +111,25 @@ pub fn timestamp_to_month(ts: u64) -> u32 {
 /// Compute the fiscal year that contains `ts`, given the fiscal year start
 /// month (1‑12) configured for the offering.
 ///
-/// For example, if the fiscal year starts in April (`fiscal_start_month = 4`):
-/// - Timestamps in Apr 2024 – Mar 2025 → fiscal year 2024.
-/// - Timestamps in Apr 2023 – Mar 2024 → fiscal year 2023.
+/// The fiscal year is numbered by the calendar year in which it ENDS:
+/// - For a January start the fiscal year coincides with the calendar year.
+/// - For example, with an April start (`fiscal_start_month = 4`):
+///   - Timestamps in Apr 2023 – Mar 2024 → fiscal year 2024.
+///   - Timestamps in Apr 2024 – Mar 2025 → fiscal year 2025.
 pub fn fiscal_year_from_ts(ts: u64, fiscal_start_month: u32) -> u64 {
     let year = timestamp_to_year(ts);
     let month = timestamp_to_month(ts);
+    if fiscal_start_month <= 1 {
+        // January start: fiscal year == calendar year.
+        return year as u64;
+    }
     if month < fiscal_start_month {
-        (year - 1) as u64
-    } else {
+        // Belongs to the fiscal year that started in the previous calendar year
+        // and ends in `year`.
         year as u64
+    } else {
+        // Belongs to the fiscal year starting this year and ending next year.
+        (year + 1) as u64
     }
 }
 
@@ -166,28 +175,35 @@ pub fn rollover_distribution(
     timestamp: u64,
 ) -> TaxBucketResult {
     let key = DataKey3::RemainingBasis(offering_id.clone(), holder.clone());
-    let remaining_basis: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
-    let (return_of_capital, capital_gains) = if remaining_basis >= amount {
-        let new_basis = remaining_basis - amount;
-        env.storage().persistent().set(&key, &new_basis);
-        (amount, 0i128)
-    } else {
-        let roc = remaining_basis;
-        let cg = amount - remaining_basis;
+    // A holder whose cost basis was never tracked (key absent) has its entire
+    // distribution treated as return of capital; the basis stays untracked.
+    // Once basis is tracked, it depletes toward capital gains as usual.
+    let (return_of_capital, capital_gains) = match env.storage().persistent().get::<_, i128>(&key) {
+        None => (amount, 0i128),
+        Some(remaining_basis) => {
+            if remaining_basis >= amount {
+                let new_basis = remaining_basis - amount;
+                env.storage().persistent().set(&key, &new_basis);
+                (amount, 0i128)
+            } else {
+                let roc = remaining_basis;
+                let cg = amount - remaining_basis;
 
-        env.events().publish(
-            (
-                EVENT_TAX_ROLLOVER,
-                offering_id.issuer.clone(),
-                offering_id.namespace.clone(),
-                offering_id.token.clone(),
-            ),
-            (holder.clone(), remaining_basis, 0i128),
-        );
+                env.events().publish(
+                    (
+                        EVENT_TAX_ROLLOVER,
+                        offering_id.issuer.clone(),
+                        offering_id.namespace.clone(),
+                        offering_id.token.clone(),
+                    ),
+                    (holder.clone(), remaining_basis, 0i128),
+                );
 
-        env.storage().persistent().set(&key, &0i128);
-        (roc, cg)
+                env.storage().persistent().set(&key, &0i128);
+                (roc, cg)
+            }
+        }
     };
 
     // Emit tax_lot_v1 event for every tax-bucket update

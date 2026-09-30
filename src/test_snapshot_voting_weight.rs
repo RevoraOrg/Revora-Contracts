@@ -20,9 +20,9 @@
 use crate::{GovProposalEntry, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, BytesN as _, Events as _},
+    testutils::{Address as _, Events as _},
     xdr::ToXdr,
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Vec,
+    Address, Bytes, BytesN, Env, Symbol, TryIntoVal, Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -47,7 +47,11 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
 

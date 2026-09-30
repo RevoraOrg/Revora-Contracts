@@ -232,7 +232,11 @@ fn setup_claim_fail() -> (
         &fail_token_id,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &fail_token_id)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1);
 
@@ -404,8 +408,26 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
 
     let holder2 = Address::generate(&env);
     // Give holder2 a share (adjust holder1 to 50% too)
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder2, &5_000, &1);
+    let h1_nonce =
+        revora.get_holder_share_nonce(&issuer, &symbol_short!("def"), &offering_token, &holder);
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &5_000,
+        &(h1_nonce + 1),
+    );
+    let h2_nonce =
+        revora.get_holder_share_nonce(&issuer, &symbol_short!("def"), &offering_token, &holder2);
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder2,
+        &5_000,
+        &(h2_nonce + 1),
+    );
 
     // Deposit period 2 while fail mode is temporarily off
     let dummy = Address::generate(&env);
@@ -457,7 +479,11 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &token_b_id,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token_b_id)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     revora.set_holder_share(
         &issuer,

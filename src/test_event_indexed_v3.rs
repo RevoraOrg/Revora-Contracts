@@ -41,7 +41,10 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let issuer = Address::generate(&env);
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
-    let payout = Address::generate(&env);
+    // The payout must be a real token contract: deposit_revenue transfers the
+    // deposited amount from the issuer, which fails on a non-token address.
+    let payout_admin = Address::generate(&env);
+    let payout = env.register_stellar_asset_contract_v2(payout_admin).address();
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.register_offering(
         &issuer,
@@ -53,7 +56,11 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     (env, client, issuer, ns, token, payout)
 }
@@ -67,8 +74,12 @@ fn commit_snapshot(
     token: &Address,
 ) -> u64 {
     let snapshot_ref: u64 = 1;
-    // apply_snapshot_shares writes SnapshotHolderShare entries and commits the ref.
-    // We call it with an empty holders vec just to create the commit ref.
+    // Snapshot gating must be enabled before any snapshot entrypoint works.
+    client.set_snapshot_config(issuer, ns, token, &true);
+    // Commit creates the SnapshotEntry and advances `LastSnapshotCommitRef`;
+    // an empty holder batch afterwards keeps the state consistent.
+    let content_hash = soroban_sdk::BytesN::from_array(&client.env, &[0u8; 32]);
+    client.commit_snapshot(issuer, ns, token, &snapshot_ref, &content_hash);
     client.apply_snapshot_shares(
         issuer,
         ns,
@@ -225,9 +236,13 @@ fn vote_v3_carries_correct_weight_from_snapshot() {
     let (env, client, issuer, ns, token, _payout) = setup();
     let voter = Address::generate(&env);
 
-    // Set holder share and commit snapshot so the weight is pinned.
+    // Set holder share, then enable snapshot gating, commit the ref and apply
+    // the holder batch so the weight is pinned to the snapshot.
     client.set_holder_share(&issuer, &ns, &token, &voter, &3000_u32, &1);
     let snapshot_ref: u64 = 1;
+    client.set_snapshot_config(&issuer, &ns, &token, &true);
+    let content_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    client.commit_snapshot(&issuer, &ns, &token, &snapshot_ref, &content_hash);
     client.apply_snapshot_shares(
         &issuer,
         &ns,
@@ -335,7 +350,11 @@ fn register_offering_emits_v2_and_v3_indexed_events() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     let events = env.events().all();
 
@@ -359,6 +378,8 @@ fn report_revenue_emits_v2_and_v3_indexed_events() {
 fn claim_emits_v2_and_v3_indexed_events() {
     let (env, client, issuer, ns, token, payout) = setup();
     client.set_holder_share(&issuer, &ns, &token, &issuer, &10_000, &1);
+    // Fund the issuer so the deposit transfer succeeds.
+    soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &1_000, &1);
 
     let before = env.events().all().len();
@@ -414,7 +435,11 @@ fn v2_only_subscribers_still_receive_v2_events() {
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // V2 events are still emitted alongside V3
@@ -486,6 +511,8 @@ fn report_revenue_event_emission_gas_budget() {
     // 2. With v2 compat shim active
     {
         let (env, client, issuer, ns, token, payout) = setup();
+        // An override requires a pre-existing report for the period.
+        client.report_revenue(&issuer, &ns, &token, &payout, &50, &1, &false);
         let cpu_before = env.budget().cpu_instruction_cost();
         let _ = client.report_revenue(&issuer, &ns, &token, &payout, &100, &1, &true);
         let cpu_after = env.budget().cpu_instruction_cost();

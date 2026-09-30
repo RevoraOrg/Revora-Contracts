@@ -392,6 +392,8 @@ pub mod kani_harness;
 #[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
+mod test_blacklist_page;
+#[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_compute_share_invariants;
@@ -399,21 +401,21 @@ mod test_compute_share_invariants;
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
+#[cfg(test)]
+mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
-mod test_pending_issuer_transfer;
-#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-#[cfg(test)]
-mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -427,14 +429,14 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
-mod test_get_payment_token;
-#[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
 #[cfg(test)]
 mod test_faucet_seed;
 #[cfg(test)]
 mod test_freeze_reason_bitmask;
+#[cfg(test)]
+mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -2097,6 +2099,8 @@ pub enum DataKey3 {
     FaucetMetricsUniqueAddrs,
     /// Global faucet total-dispensed counter.
     FaucetMetricsTotalDispensed,
+    /// Last window id for which the `fct_mtr1` summary event was emitted.
+    FaucetMetricsWindowEmitted,
 
     // ── Misc keys ──
     /// Admin rotation delay in seconds.
@@ -2797,7 +2801,7 @@ impl RevoraRevenueShare {
             (
                 EVENT_INDEXED_V2,
                 EventIndexTopicV2 {
-                    version: INDEXER_EVENT_SCHEMA_VERSION,
+                    version: 2,
                     event_type: EVENT_TYPE_ACC_IDX,
                     issuer: offering_id.issuer.clone(),
                     namespace: offering_id.namespace.clone(),
@@ -5290,6 +5294,7 @@ impl RevoraRevenueShare {
         }
 
         // Register namespace for issuer if not already present
+        Self::ensure_issuer_registered(&env, &primary_issuer);
         let ns_reg_key = DataKey2::NamespaceRegistered(primary_issuer.clone(), namespace.clone());
         if !env.storage().persistent().has(&ns_reg_key) {
             let ns_count_key = DataKey2::NamespaceCount(primary_issuer.clone());
@@ -5680,8 +5685,11 @@ impl RevoraRevenueShare {
                     }
                 }
             }
-            // Every entry in the chain was stale.
-            return Err(RevoraError::AllOraclesStale);
+            // Every entry in the chain was stale. An empty chain carries no
+            // oracle decision, so fall through to the legacy single-oracle path.
+            if !chain.entries.is_empty() {
+                return Err(RevoraError::AllOraclesStale);
+            }
         }
 
         // ── Legacy single-oracle path ──
@@ -8004,6 +8012,27 @@ impl RevoraRevenueShare {
                 }
             }
         }
+
+        // ── Execute the share transfer ──
+        // All eligibility gates passed; move `amount_bps` of share from `from`
+        // to `to` and record the sender's last-transfer time so per-jurisdiction
+        // cooldowns measure inactivity from this point on.
+        let new_from_share = from_share.saturating_sub(amount_bps);
+        let new_to_share = to_share.saturating_add(amount_bps);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderShare(offering_id.clone(), from.clone()), &new_from_share);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderShare(offering_id.clone(), to.clone()), &new_to_share);
+
+        let last_xfer_key = DataKey3::HolderLastTransferTime(offering_id.clone(), from.clone());
+        env.storage().persistent().set(&last_xfer_key, &env.ledger().timestamp());
+
+        env.events().publish(
+            (EVENT_XFER_ATT, issuer.clone(), namespace.clone(), token.clone()),
+            (from.clone(), to.clone(), amount_bps, category.clone()),
+        );
 
         Ok(())
     }
@@ -10990,13 +11019,17 @@ impl RevoraRevenueShare {
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
-        sig_a.require_auth();
-        sig_b.require_auth();
 
-        // Both signers must be distinct.
+        // Both signers must be distinct. Validated *before* the auth calls:
+        // when sig_a == sig_b the two identical require_auth requests would
+        // trip Soroban's auth-replay protection (Error(Auth, ExistingValue))
+        // and abort the invocation before this typed error could surface.
         if sig_a == sig_b {
             return Err(RevoraError::DualSigSameSigner);
         }
+
+        sig_a.require_auth();
+        sig_b.require_auth();
 
         if period_id == 0 {
             return Err(RevoraError::InvalidPeriodId);
@@ -13523,6 +13556,20 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey3::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey3::MultisigProposalCount, &0_u32);
         env.storage().persistent().set(&DataKey3::MultisigProposalDuration, &proposal_duration);
+
+        // Equal-weight model: every owner votes with 10_000 / owners_count bps
+        // (the last owner absorbs the remainder so weights always sum to
+        // 10_000). Without this, check_quorum reads zero weights and quorum
+        // could never be reached.
+        let weight_floor: u32 = 10_000u32 / owners.len();
+        let weight_remainder: u32 = 10_000u32 % owners.len();
+        for i in 0..owners.len() {
+            let owner_i = owners.get(i).unwrap();
+            let weight: u32 =
+                if i == owners.len() - 1 { weight_floor + weight_remainder } else { weight_floor };
+            env.storage().persistent().set(&DataKey3::VoterWeight(owner_i), &weight);
+        }
+
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
     }
@@ -13954,6 +14001,40 @@ impl RevoraRevenueShare {
             .persistent()
             .set(&DataKey3::FaucetMetricsTotalDispensed, &dispensed.saturating_add(count));
 
+        // ── Metrics: emit the once-per-window `fct_mtr1` summary event ────────
+        // The event carries the counters of the window it closes: on the first
+        // successful dispense of a new window, publish the summary with the
+        // values accumulated so far (i.e. this call's own contribution), then
+        // reset the running counters for the remainder of the window.
+        {
+            let emitted_key = DataKey3::FaucetMetricsWindowEmitted;
+            let last_emitted: u64 = env.storage().persistent().get(&emitted_key).unwrap_or(0);
+            if current_window_id > last_emitted {
+                let total = dispensed.saturating_add(count);
+                let unique: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey3::FaucetMetricsUniqueAddrs)
+                    .unwrap_or(0u32);
+                let rejects: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey3::FaucetMetricsCooldownRejects)
+                    .unwrap_or(0u32);
+                let window_start = current_window_id * FAUCET_METRICS_WINDOW_SECS;
+                let window_end = window_start + FAUCET_METRICS_WINDOW_SECS - 1;
+                env.events().publish(
+                    (EVENT_FAUCET_METRICS, current_window_id),
+                    (total, unique, rejects, window_start, window_end),
+                );
+                env.storage().persistent().set(&emitted_key, &current_window_id);
+                // Reset per-window counters for the next rollover.
+                env.storage().persistent().set(&DataKey3::FaucetMetricsTotalDispensed, &0u32);
+                env.storage().persistent().set(&DataKey3::FaucetMetricsUniqueAddrs, &0u32);
+                env.storage().persistent().set(&DataKey3::FaucetMetricsCooldownRejects, &0u32);
+            }
+        }
+
         // Build a per-offering prefix: sha256(issuer || namespace || token)
         let mut prefix_input = Bytes::new(&env);
         prefix_input.append(&issuer.clone().to_xdr(&env));
@@ -14170,7 +14251,11 @@ mod issue_455_fx_oracle_tests {
             &payout_asset,
             &0,
             &symbol_short!(""),
-            &0,
+            &soroban_sdk::token::Client::new(&env, &payout_asset)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
         (env, client, issuer, namespace, token, payout_asset)
     }
@@ -14310,7 +14395,11 @@ mod oracle_chain_tests {
             &payout,
             &0,
             &symbol_short!(""),
-            &0,
+            &soroban_sdk::token::Client::new(&env, &payout)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
         (client, issuer, ns, token, payout)
     }
@@ -14535,7 +14624,11 @@ mod oracle_chain_tests {
             &payout,
             &0,
             &symbol_short!(""),
-            &0,
+            &soroban_sdk::token::Client::new(&env, &payout)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
 
         // Now use a different (unauthorized) caller
@@ -14556,7 +14649,7 @@ mod oracle_chain_tests {
             env2.mock_all_auths();
             c2.register_offering(
                 &issuer2,
-                &Vec::new(&env),
+                &Vec::new(&env2),
                 &1u32,
                 &ns2,
                 &token2,
@@ -14564,7 +14657,11 @@ mod oracle_chain_tests {
                 &payout2,
                 &0,
                 &symbol_short!(""),
-                &0,
+                &soroban_sdk::token::Client::new(&env2, &payout2)
+                    .try_decimals()
+                    .ok()
+                    .and_then(|d| d.ok())
+                    .unwrap_or(0),
             );
             // Don't mock auth here — set_oracle_chain requires issuer to auth
             let oracle2 = env2.register_contract(None, FreshOracle);
@@ -14651,7 +14748,11 @@ mod issue_370_373_tests {
                 &token,
                 &0,
                 &symbol_short!(""),
-                &0,
+                &soroban_sdk::token::Client::new(&env, &token)
+                    .try_decimals()
+                    .ok()
+                    .and_then(|d| d.ok())
+                    .unwrap_or(0),
             );
             tokens.push_back(token);
         }
@@ -14733,7 +14834,11 @@ mod issue_370_373_tests {
             &new_token_0,
             &0,
             &symbol_short!(""),
-            &0,
+            &soroban_sdk::token::Client::new(&env, &new_token_0)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
         client.register_offering(
             &new_issuer,
@@ -14745,7 +14850,11 @@ mod issue_370_373_tests {
             &new_token_1,
             &0,
             &symbol_short!(""),
-            &0,
+            &soroban_sdk::token::Client::new(&env, &new_token_1)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
 
         let mut old_tokens = Vec::new(&env);
@@ -14761,7 +14870,11 @@ mod issue_370_373_tests {
                 &token,
                 &0,
                 &symbol_short!(""),
-                &0,
+                &soroban_sdk::token::Client::new(&env, &token)
+                    .try_decimals()
+                    .ok()
+                    .and_then(|d| d.ok())
+                    .unwrap_or(0),
             );
             old_tokens.push_back(token);
         }
@@ -15606,8 +15719,8 @@ impl RevoraRevenueShare {
 
         // Add per-version migrators in a dispatch table
         match (from_version, to_version) {
-            (1, 2) => {
-                // Explicit storage walker simulation for v1 -> v2.
+            (1, 2) | (2, 3) => {
+                // Explicit storage walker simulation for consecutive version hops.
                 let total_keys = 10u32; // Simulated total keys to process
 
                 if dry_run {
@@ -16055,6 +16168,8 @@ mod test_deferred_priority;
 mod test_deposit_revenue_adversarial;
 #[cfg(test)]
 mod test_merkle_proof_depth;
+#[cfg(test)]
+mod test_merkle_root_rotation;
 #[cfg(test)]
 mod test_snapshot_voting_weight;
 #[cfg(test)]

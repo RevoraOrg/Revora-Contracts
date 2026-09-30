@@ -197,6 +197,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey3::FaucetMetricsCooldownRejects", "u32", "contract"),
     ("DataKey3::FaucetMetricsUniqueAddrs", "u32", "contract"),
     ("DataKey3::FaucetMetricsTotalDispensed", "u32", "contract"),
+    ("DataKey3::FaucetMetricsWindowEmitted", "u64", "contract"),
     // ── Misc keys ──
     ("DataKey3::AdminRotationDelay", "u64", "contract"),
     ("DataKey3::GlobalFreezeReason", "FreezeReason", "contract"),

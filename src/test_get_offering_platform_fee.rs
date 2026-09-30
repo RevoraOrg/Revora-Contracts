@@ -68,7 +68,7 @@ fn setup() -> Ctx {
         &payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0),
     );
     Ctx { env, client, admin, issuer, ns, token, payout }
 }
@@ -212,7 +212,7 @@ fn getter_distinguishes_all_offerings_independently() {
         &c.payout,
         &0,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&c, &c.payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0),
     );
     c.client.set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &111, &t1);
     c.client.set_offering_platform_fee(&c.issuer, &ns2, &token2, &222, &t2);

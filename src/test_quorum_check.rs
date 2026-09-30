@@ -30,15 +30,21 @@ fn setup_multisig() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
 fn test_check_quorum_empty_approvals_returns_false() {
     let (env, client, _admin, _owner1, _owner2, _owner3) = setup_multisig();
 
-    let result = client.check_quorum(&0);
-    assert!(!result, "empty approvals should not meet quorum");
+    // A proposal must exist before quorum can be checked; propose one with a
+    // single initial approval (the proposer's own vote).
+    let proposal_id = client.propose_action(&_owner1, &ProposalAction::Freeze);
+    let result = client.check_quorum(&proposal_id);
+    assert!(!result, "single approval (3333 bps) should not meet quorum");
 }
 
 #[test]
 fn test_check_quorum_exact_meets_threshold() {
     let (_env, client, _admin, owner1, owner2, _owner3) = setup_multisig();
 
-    client.approve_action(&owner1, &0);
+    // Create proposal 0; the proposer (owner1) auto-approves.
+    let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
+    assert_eq!(proposal_id, 0);
+
     let result = client.check_quorum(&0);
     assert!(!result, "one owner (3333 bps) should not meet 5100 quorum");
 
@@ -81,16 +87,18 @@ fn test_check_quorum_proposal_not_found_panics() {
 
 #[test]
 fn test_quorum_enforced_at_execute_time() {
-    let (_env, client, _admin, owner1, _owner2, owner3) = setup_multisig();
+    let (_env, client, _admin, owner1, owner2, _owner3) = setup_multisig();
 
-    // Only one approval (proposer auto-approves, plus owner3's vote)
-    client.approve_action(&owner3, &0);
+    // Create the proposal; owner1 (proposer) auto-approves — 3333 bps, below
+    // the 5100 bps quorum.
+    let _proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
 
-    let result = client.try_execute_action(&owner3, &0);
+    // Only the proposer's 3333 bps approval exists — below the 5100 bps quorum.
+    let result = client.try_execute_action(&owner2, &0);
     assert!(result.is_err(), "quorum not met should block execution");
 
-    // Meet quorum
-    client.approve_action(&owner1, &0);
+    // Meet quorum with a second approval (owner2): 3333 + 3333 = 6666 bps.
+    client.approve_action(&owner2, &0);
     let result = client.try_execute_action(&owner1, &0);
     assert!(result.is_ok(), "quorum met should allow execution");
 }
@@ -99,7 +107,9 @@ fn test_quorum_enforced_at_execute_time() {
 fn test_check_quorum_all_owners_vote() {
     let (_env, client, _admin, owner1, owner2, owner3) = setup_multisig();
 
-    client.approve_action(&owner1, &0);
+    // Create the proposal; owner1 (proposer) auto-approves, then the other two
+    // owners add their approvals.
+    let _proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
     client.approve_action(&owner2, &0);
     client.approve_action(&owner3, &0);
 
