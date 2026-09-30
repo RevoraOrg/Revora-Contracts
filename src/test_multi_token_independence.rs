@@ -1,11 +1,7 @@
 extern crate alloc;
 
 use super::*;
-use soroban_sdk::{
-    symbol_short,
-    testutils::{Address as _, Events as _},
-    Address, Env,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
 fn setup_test() -> (Env, RevoraRevenueShareClient<'static>, Address) {
     let env = Env::default();
@@ -23,19 +19,28 @@ fn setup_test() -> (Env, RevoraRevenueShareClient<'static>, Address) {
 fn register_offering(
     client: &RevoraRevenueShareClient<'static>,
     issuer: &Address,
-    namespace: Symbol,
+    namespace: &Symbol,
     token: &Address,
 ) {
-    let payout_asset = Address::generate(&client.env);
+    // The payout asset must be a real token contract: `register_offering`
+    // cross-checks `display_decimals` against its on-chain `decimals()`.
+    let payout_asset = crate::test_utils::create_token(&client.env, issuer);
+    let decimals = soroban_sdk::token::Client::new(&client.env, &payout_asset)
+        .try_decimals()
+        .ok()
+        .and_then(|d| d.ok())
+        .unwrap_or(0);
     client.register_offering(
         issuer,
-        &namespace,
+        &Vec::new(&client.env),
+        &1u32,
+        namespace,
         token,
-        &5000,
+        &5000u32,
         &payout_asset,
-        &0,
-        &symbol_short!(""),
-        &0,
+        &0i128,
+        &symbol_short!("USD"),
+        &decimals,
     );
 }
 
@@ -44,31 +49,37 @@ fn test_multi_token_offering_independence() {
     let (env, client, issuer) = setup_test();
     let namespace = symbol_short!("ns");
 
-    let tokenA = Address::generate(&env);
-    let tokenB = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
 
     // Payment tokens
-    let payTokenX = Address::generate(&env);
-    let payTokenY = Address::generate(&env);
+    // Payment tokens must be real token contracts: deposit_revenue
+    // transfers the amount from the issuer.
+    let pay_token_x = crate::test_utils::create_token(&env, &issuer);
+    let pay_token_y = crate::test_utils::create_token(&env, &issuer);
 
     // Register Offerings
-    register_offering(&client, &issuer, namespace, &tokenA);
-    register_offering(&client, &issuer, namespace, &tokenB);
+    register_offering(&client, &issuer, &namespace, &token_a);
+    register_offering(&client, &issuer, &namespace, &token_b);
 
     // Deposit tokenX to A
-    let amountA = 1000;
-    client.deposit_revenue(&issuer, &namespace, &tokenA, &payTokenX, &amountA, &1);
+    let amount_a = 1000;
+    client.deposit_revenue(&issuer, &namespace, &token_a, &pay_token_x, &amount_a, &1);
 
     // Deposit tokenY to B
-    let amountB = 2000;
-    client.deposit_revenue(&issuer, &namespace, &tokenB, &payTokenY, &amountB, &1);
+    let amount_b = 2000;
+    client.deposit_revenue(&issuer, &namespace, &token_b, &pay_token_y, &amount_b, &1);
 
     // Assert get_payment_token returns correct for each
-    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX));
-    assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY));
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &token_a), Some(pay_token_x.clone()));
+    assert_eq!(client.get_payment_token(&issuer, &namespace, &token_b), Some(pay_token_y.clone()));
 
     // Assert cross-deposit fails (tokenY into A)
-    let res = client.try_deposit_revenue(&issuer, &namespace, &tokenA, &payTokenY, &amountB, &2);
-    assert!(res.is_err());
-    assert_eq!(res.unwrap_err().unwrap(), RevoraError::PaymentTokenMismatch as u32);
+    let res =
+        client.try_deposit_revenue(&issuer, &namespace, &token_a, &pay_token_y, &amount_b, &2);
+    match res {
+        Ok(_) => panic!("cross-token deposit must be rejected"),
+        Err(Ok(err)) => assert_eq!(err, RevoraError::PaymentTokenMismatch),
+        Err(Err(host)) => panic!("host failure instead of a contract error: {:?}", host),
+    }
 }

@@ -74,7 +74,7 @@ fn setup_with_offering(
         &payment_token.address(),
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token.address()).decimals());
     client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1);
 
     // Mint to issuer and deposit period 1

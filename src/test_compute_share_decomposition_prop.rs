@@ -63,7 +63,8 @@
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::Env;
+use std::format;
 
 // ── Test client ───────────────────────────────────────────────────────────────
 

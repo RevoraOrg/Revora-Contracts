@@ -60,7 +60,7 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
         &payout,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     (issuer, token, payout)
 }
 
@@ -493,7 +493,7 @@ fn milestone_audit_summary_isolated_per_offering() {
         &payout,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -503,7 +503,7 @@ fn milestone_audit_summary_isolated_per_offering() {
         &payout,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     client.report_revenue(&issuer, &ns, &token_a, &payout, &5_000i128, &1u64, &false);
 

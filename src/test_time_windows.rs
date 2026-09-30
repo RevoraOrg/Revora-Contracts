@@ -131,7 +131,11 @@ fn setup_with_holder(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
@@ -182,7 +186,11 @@ fn report_window_unset_always_open() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Verify no window is stored
@@ -222,7 +230,11 @@ fn report_window_before_start_is_closed() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Window: [1000, 2000]
@@ -254,7 +266,11 @@ fn report_window_at_start_is_open_inclusive() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -284,7 +300,11 @@ fn report_window_inside_is_open() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -314,7 +334,11 @@ fn report_window_at_end_is_open_inclusive() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -344,7 +368,11 @@ fn report_window_after_end_is_closed() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -374,7 +402,11 @@ fn report_window_zero_width_open_at_exact_timestamp() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // start == end: single-second window at T=5000
@@ -405,7 +437,11 @@ fn report_window_zero_width_closed_before() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
@@ -435,7 +471,11 @@ fn report_window_zero_width_closed_after() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
@@ -465,7 +505,11 @@ fn report_window_reconfigured_to_exclude_now_closes_reporting() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Initial window: [1000, 3000]; now = 2000 â†’ open
@@ -499,7 +543,11 @@ fn report_window_reconfigured_to_include_now_opens_reporting() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Initial window: [4000, 5000]; now = 2000 â†’ closed
@@ -714,7 +762,11 @@ fn set_report_window_valid_range_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -744,7 +796,11 @@ fn set_report_window_zero_width_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
@@ -770,7 +826,11 @@ fn set_report_window_inverted_range_rejected() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &2_000, &1_000);
@@ -799,7 +859,11 @@ fn set_claim_window_valid_range_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -829,7 +893,11 @@ fn set_claim_window_zero_width_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
@@ -855,7 +923,11 @@ fn set_claim_window_inverted_range_rejected() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &2_000, &1_000);
@@ -976,7 +1048,11 @@ fn report_window_is_scoped_per_offering() {
         &token_a,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token_a)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     RevoraRevenueShareClient::new(&env, &cid).register_offering(
         &issuer,
@@ -988,7 +1064,11 @@ fn report_window_is_scoped_per_offering() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token_b)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Close offering A's report window; leave B's unset (always open)
@@ -1044,7 +1124,11 @@ fn claim_window_is_scoped_per_offering() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     RevoraRevenueShareClient::new(&env, &cid).register_offering(
         &issuer,
@@ -1056,7 +1140,11 @@ fn claim_window_is_scoped_per_offering() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payment_token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
@@ -1115,7 +1203,11 @@ fn set_report_window_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let before = env.events().all().len();
@@ -1142,7 +1234,11 @@ fn set_claim_window_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let before = env.events().all().len();
@@ -1173,7 +1269,11 @@ fn get_report_window_returns_none_when_unset() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     assert!(client.get_report_window(&issuer, &symbol_short!("ns"), &token).is_none());
@@ -1198,7 +1298,11 @@ fn get_claim_window_returns_none_when_unset() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     assert!(client.get_claim_window(&issuer, &symbol_short!("ns"), &token).is_none());
@@ -1223,7 +1327,11 @@ fn get_report_window_returns_correct_values() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_234, &5_678);
@@ -1251,7 +1359,11 @@ fn get_claim_window_returns_correct_values() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &9_000, &9_999);
@@ -1279,7 +1391,11 @@ fn set_report_window_overwrites_previous() {
         &token,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);

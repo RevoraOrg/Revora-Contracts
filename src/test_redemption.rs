@@ -36,7 +36,7 @@ fn setup_offering(
         &payment_token.address(),
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token.address()).decimals());
     client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
 
     // Mint to issuer, then deposit revenue so contract has a balance
@@ -571,7 +571,7 @@ fn redemption_events_emitted() {
         &payment_token.address(),
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token.address()).decimals());
     client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
     token::StellarAssetClient::new(&env, &payment_token.address()).mint(&issuer, &1_000_000);
     client.deposit_revenue(

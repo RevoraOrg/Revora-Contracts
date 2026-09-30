@@ -43,7 +43,7 @@ fn setup() -> Ctx {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2_500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2_500, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     Ctx { env, client, admin, issuer, ns, token, payout }
 }
 

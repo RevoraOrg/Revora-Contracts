@@ -19,7 +19,7 @@ fn setup_with_offering(env: &Env) -> (RevoraRevenueShareClient, Address, Address
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     (client, admin, token, payout_asset)
 }
 
@@ -157,7 +157,7 @@ fn register_offering_emits_ofr_reg2_v2_event() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let events = env.events().all();
     assert!(events.len() > before, "register_offering must emit at least one event");
@@ -183,7 +183,7 @@ fn register_offering_v2_event_data_starts_with_version_2() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(&admin, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
@@ -454,7 +454,7 @@ fn fixture_fct_mtr1_data_tuple_shape() {
     let token = soroban_sdk::Address::generate(&env);
     let payout = soroban_sdk::Address::generate(&env);
     let ns = symbol_short!("fix");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Set ledger timestamp to a non-zero window (window_id = 1).
     env.ledger().set_timestamp(crate::FAUCET_METRICS_WINDOW_SECS);
@@ -504,7 +504,7 @@ fn fixture_fct_mtr1_window_id_formula() {
     let token = soroban_sdk::Address::generate(&env);
     let payout = soroban_sdk::Address::generate(&env);
     let ns = symbol_short!("fix2");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // ts = 7 * FAUCET_METRICS_WINDOW_SECS + 999  →  window_id = 7
     let ts = crate::FAUCET_METRICS_WINDOW_SECS * 7 + 999;
@@ -568,7 +568,7 @@ fn fixture_tax_lot_v1_data_tuple_shape() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("tx");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
@@ -628,7 +628,7 @@ fn fixture_tax_lot_v1_capital_gains_when_basis_exhausted() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("txcg");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1); // 100%
@@ -684,7 +684,7 @@ fn fixture_tax_lot_v1_zero_payout_emits_no_event() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("tz");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     // No share set → share_bps = 0 → claim returns NoPendingClaims before any payout.
@@ -727,7 +727,7 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
 
     let issuer = admin.clone();
     let ns = symbol_short!("txb");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%

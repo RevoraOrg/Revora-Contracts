@@ -45,7 +45,7 @@ fn prove_distribution_normal_case() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -113,7 +113,7 @@ fn prove_distribution_digest_is_deterministic() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -172,7 +172,7 @@ fn prove_distribution_sorting_makes_order_invariant() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
@@ -229,7 +229,7 @@ fn prove_distribution_identical_bps_tie_break_by_address() {
     let token = Address::generate(&env);
     let payment_token = create_payment_token(&env);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000u32, &payment_token, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000u32, &payment_token, &0i128, &symbol_short!(""), &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Generate addresses until we have two with the same BPS; the tie-break must be
     // by XDR address bytes ascending regardless of generation order.
@@ -353,7 +353,7 @@ fn prove_distribution_unknown_period_id_returns_zero_payouts() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder_a = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1);
@@ -406,7 +406,7 @@ fn prove_distribution_zero_share_bps_yields_zero_payout() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -458,7 +458,7 @@ fn prove_distribution_usdc_6_decimals_normalizes_correctly() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Configure 6-decimal payment token (USDC-style)
     client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6u32);
@@ -516,7 +516,7 @@ fn prove_distribution_respects_round_half_up_mode() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.set_rounding_mode(&issuer, &symbol_short!("def"), &token, &RoundingMode::RoundHalfUp);
 
     let holder = Address::generate(&env);
@@ -562,7 +562,7 @@ fn prove_distribution_caps_at_max_chunk_periods() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.deposit_revenue(
@@ -612,7 +612,7 @@ fn prove_distribution_entry_fields_match() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000u32, &1);
@@ -665,7 +665,7 @@ fn prove_distribution_different_periods_produce_different_digests() {
         &payment_token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payment_token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     let holder = Address::generate(&env);
     client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1);

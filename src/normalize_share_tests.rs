@@ -29,7 +29,7 @@ fn decimals_bounds_and_default() {
         &token,
         &0i128,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &0u32).is_ok());
     assert_eq!(client.get_payment_token_decimals(&issuer, &ns, &token), 0u32);

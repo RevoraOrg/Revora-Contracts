@@ -66,7 +66,11 @@ fn setup_with(ns: Symbol, token: &Address) -> Fixture {
         &payout,
         &0i128,
         &symbol_short!(""),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     (env, client, admin, issuer, ns, token.clone())
 }
@@ -91,9 +95,7 @@ fn add_investors(
     let mut added = Vec::new(env);
     for _ in 0..count {
         let investor = Address::generate(env);
-        client
-            .try_blacklist_add(issuer, issuer, ns, token, &investor)
-            .expect("blacklist_add must succeed inside the size limit");
+        client.blacklist_add(issuer, issuer, ns, token, &investor);
         added.push_back(investor);
     }
     added
@@ -148,14 +150,16 @@ fn namespace_and_token_isolation() {
             &payout,
             &0i128,
             &symbol_short!(""),
-            &0u32,
+            &soroban_sdk::token::Client::new(&env, &payout)
+                .try_decimals()
+                .ok()
+                .and_then(|d| d.ok())
+                .unwrap_or(0),
         );
     }
 
     let victim = Address::generate(&env);
-    client
-        .try_blacklist_add(&issuer, &issuer, &ns_a, &token_a, &victim)
-        .expect("add to offering A must succeed");
+    client.blacklist_add(&issuer, &issuer, &ns_a, &token_a, &victim);
 
     // Offering B (different namespace AND token) must not see the entry.
     let (page_b, next_b) = client.get_blacklist_page(&issuer, &ns_b, &token_b, &0, &10u32);
@@ -316,9 +320,7 @@ fn removal_compacts_order_and_pages_stay_contiguous() {
     let investors = add_investors(&env, &client, &issuer, &ns, &token, 6);
 
     // Remove a middle entry (index 2).
-    client
-        .try_blacklist_remove(&issuer, &issuer, &ns, &token, &investors.get(2).unwrap())
-        .expect("issuer may remove a blacklisted investor");
+    client.blacklist_remove(&issuer, &issuer, &ns, &token, &investors.get(2).unwrap());
 
     // The ordered view now holds 5 entries: 0,1,3,4,5.
     let (page, next) = client.get_blacklist_page(&issuer, &ns, &token, &0, &MAX_PAGE_LIMIT);
@@ -351,12 +353,8 @@ fn readd_goes_to_end_of_order() {
     let (env, client, _admin, issuer, ns, token) = setup();
     let investors = add_investors(&env, &client, &issuer, &ns, &token, 4);
 
-    client
-        .try_blacklist_remove(&issuer, &issuer, &ns, &token, &investors.get(0).unwrap())
-        .expect("remove must succeed");
-    client
-        .try_blacklist_add(&issuer, &issuer, &ns, &token, &investors.get(0).unwrap())
-        .expect("re-add must succeed");
+    client.blacklist_remove(&issuer, &issuer, &ns, &token, &investors.get(0).unwrap());
+    client.blacklist_add(&issuer, &issuer, &ns, &token, &investors.get(0).unwrap());
 
     let (page, next) = client.get_blacklist_page(&issuer, &ns, &token, &0, &MAX_PAGE_LIMIT);
     assert_eq!(page.len(), 4);
@@ -432,10 +430,10 @@ fn admin_caller_add_is_visible_in_page() {
     let (env, client, admin, issuer, ns, token) = setup();
 
     let via_issuer = Address::generate(&env);
-    client.try_blacklist_add(&issuer, &issuer, &ns, &token, &via_issuer).expect("issuer may add");
+    client.blacklist_add(&issuer, &issuer, &ns, &token, &via_issuer);
 
     let via_admin = Address::generate(&env);
-    client.try_blacklist_add(&admin, &issuer, &ns, &token, &via_admin).expect("admin may add");
+    client.blacklist_add(&admin, &issuer, &ns, &token, &via_admin);
 
     let (page, next) = client.get_blacklist_page(&issuer, &ns, &token, &0, &MAX_PAGE_LIMIT);
     assert_eq!(page.len(), 2);
@@ -472,9 +470,7 @@ fn page_stays_consistent_with_size_across_growth() {
 
     for i in 0..21u32 {
         let investor = Address::generate(&env);
-        client
-            .try_blacklist_add(&issuer, &issuer, &ns, &token, &investor)
-            .expect("add must succeed inside the size limit");
+        client.blacklist_add(&issuer, &issuer, &ns, &token, &investor);
 
         let count = i + 1;
         assert_eq!(client.get_blacklist_size(&issuer, &ns, &token), count);

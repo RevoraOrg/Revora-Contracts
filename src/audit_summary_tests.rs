@@ -30,7 +30,7 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0);
+        &soroban_sdk::token::Client::new(&env, &payout_asset).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     (env, contract_id, issuer, token, payout_asset)
 }

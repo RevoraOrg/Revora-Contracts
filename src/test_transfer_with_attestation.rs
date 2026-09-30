@@ -75,7 +75,7 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address)
         &token,
         &1_000,
         &payout,
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     (client, issuer, token)
 }
 
@@ -707,7 +707,7 @@ fn share_total_invariant_after_transfer() {
         &token,
         &1_000,
         &payout,
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client2.set_holder_share(&issuer, &ns, &token, &from, &4_000, &1);
     client2.set_holder_share(&issuer, &ns, &token, &to, &2_000, &1);
 
@@ -1138,7 +1138,7 @@ fn transfer_does_not_affect_other_offerings() {
         &token_a,
         &1_000,
         &payout,
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_a).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
     client.register_offering(&issuer,
         &Vec::new(&env),
         &1u32,
@@ -1148,7 +1148,7 @@ fn transfer_does_not_affect_other_offerings() {
         &token_b,
         &1_000,
         &payout,
-        &0);
+        &soroban_sdk::token::Client::new(&env, &token_b).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0));
 
     // Set shares in both offerings
     client.set_holder_share(&issuer, &ns, &token_a, &from, &4_000, &1);

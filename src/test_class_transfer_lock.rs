@@ -120,7 +120,7 @@ fn setup_with_classes(
         &payout,
         &0i128,
         &symbol_short!("TKN"),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0),
     );
 
     // Configure share classes: Class A (voting) and Class B (non-voting)
@@ -626,7 +626,7 @@ fn no_classes_configured_still_allows_transfers() {
         &payout,
         &0i128,
         &symbol_short!("TKN"),
-        &0u32,
+        &soroban_sdk::token::Client::new(&env, &payout).try_decimals().ok().and_then(|d| d.ok()).unwrap_or(0),
     );
     // No classes configured — backward compat, no class checks
 

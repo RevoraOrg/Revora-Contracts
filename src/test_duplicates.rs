@@ -37,7 +37,11 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     (env, client, issuer, token, payout_asset)
@@ -73,7 +77,11 @@ fn test_register_duplicate_offering_is_idempotent() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 
@@ -91,7 +99,11 @@ fn test_register_duplicate_offering_is_idempotent() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     // Count should still be 1
@@ -122,7 +134,11 @@ fn test_pagination_stability_with_idempotency() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.register_offering(
         &issuer,
@@ -134,7 +150,11 @@ fn test_pagination_stability_with_idempotency() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.register_offering(
         &issuer,
@@ -146,7 +166,11 @@ fn test_pagination_stability_with_idempotency() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let (offerings, _) = client.get_offerings_page(&issuer, &namespace, &0, &10);
@@ -174,7 +198,11 @@ fn test_get_offering_matches_first_registration() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.register_offering(
         &issuer,
@@ -186,7 +214,11 @@ fn test_get_offering_matches_first_registration() {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
 
     let offering = client.get_offering(&issuer, &namespace, &token).unwrap();

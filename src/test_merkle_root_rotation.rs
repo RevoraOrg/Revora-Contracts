@@ -19,7 +19,7 @@ use crate::merkle_helpers::{build_merkle_root, canonical_leaves};
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Events as _, xdr::ToXdr, Address, Bytes,
-    BytesN, Env,
+    BytesN, Env, Vec,
 };
 
 fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
@@ -41,7 +41,11 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &payout_asset,
         &0,
         &symbol_short!(""),
-        &0,
+        &soroban_sdk::token::Client::new(&env, &payout_asset)
+            .try_decimals()
+            .ok()
+            .and_then(|d| d.ok())
+            .unwrap_or(0),
     );
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
     (env, client, issuer, token)
@@ -86,10 +90,9 @@ fn root_and_content_hash_rotate_after_new_snapshot() {
     client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders_a);
     client.finalize_snapshot(&issuer, &ns, &token, &1);
 
-    let h3 = Address::generate(&env);
-    let holders_b = soroban_sdk::vec![&env, (h1.clone(), 1_000u32), (h3.clone(), 9_000u32)];
-    let hash_b = flat_content_hash(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
-    let root_b = merkle_root_for(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
+    let holders_b = soroban_sdk::vec![&env, (h1.clone(), 1_000u32), (h2.clone(), 9_000u32)];
+    let hash_b = flat_content_hash(&env, &[(h1.clone(), 1_000), (h2.clone(), 9_000)]);
+    let root_b = merkle_root_for(&env, &[(h1.clone(), 1_000), (h2.clone(), 9_000)]);
 
     client.commit_snapshot(&issuer, &ns, &token, &2, &hash_b);
     client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b);
