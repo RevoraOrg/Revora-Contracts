@@ -179,6 +179,24 @@ fn unpause_safety_from_soft_restores_not_paused() {
     assert!(!client.is_paused());
 }
 
+/// A contract initialized without a safety role must reject the unpause
+/// operation without changing the pause state.
+#[test]
+fn unpause_safety_without_configured_role_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+
+    let result = client.try_unpause_safety(&caller);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), Err(RevoraError::NotInitialized));
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+}
+
 // ── Section B: SoftPaused — claim allowed, mutations blocked ─────────────────
 
 /// Under SoftPaused, `claim` succeeds and the holder receives their payout.
