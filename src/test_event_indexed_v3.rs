@@ -21,7 +21,10 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+    Vec,
+};
 
 use crate::{
     EventIndexTopicV2, EventIndexTopicV3, RevoraRevenueShare, RevoraRevenueShareClient, VoteChoice,
@@ -40,7 +43,18 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Symbol, Address,
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &2500,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (env, client, issuer, ns, token, payout)
 }
 
@@ -55,7 +69,14 @@ fn commit_snapshot(
     let snapshot_ref: u64 = 1;
     // apply_snapshot_shares writes SnapshotHolderShare entries and commits the ref.
     // We call it with an empty holders vec just to create the commit ref.
-    client.apply_snapshot_shares(issuer, ns, token, &snapshot_ref, &soroban_sdk::vec![&client.env]);
+    client.apply_snapshot_shares(
+        issuer,
+        ns,
+        token,
+        &snapshot_ref,
+        &0u32,
+        &soroban_sdk::vec![&client.env],
+    );
     snapshot_ref
 }
 
@@ -212,7 +233,8 @@ fn vote_v3_carries_correct_weight_from_snapshot() {
         &ns,
         &token,
         &snapshot_ref,
-        &soroban_sdk::vec![&env, voter.clone()],
+        &0u32,
+        &soroban_sdk::vec![&env, (voter.clone(), 3000_u32)],
     );
 
     let proposal_id = client.create_gov_proposal(&issuer, &ns, &token, &symbol_short!("wprop"));
@@ -303,7 +325,18 @@ fn register_offering_emits_v2_and_v3_indexed_events() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
 
     let before = env.events().all().len();
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     let events = env.events().all();
 
     assert!(events.len() > before + 2, "expected at least 3 events (offer_reg, ev_idx2, ev_idx3)");
@@ -329,7 +362,7 @@ fn claim_emits_v2_and_v3_indexed_events() {
     client.deposit_revenue(&issuer, &ns, &token, &payout, &1_000, &1);
 
     let before = env.events().all().len();
-    let _payout = client.claim(&issuer, &ns, &token, &10);
+    let _payout = client.claim(&issuer, &issuer, &ns, &token, &10u32);
     let events = env.events().all();
 
     assert!(events.len() > before + 1, "expected claim events including ev_idx2 and ev_idx3");
@@ -369,9 +402,20 @@ fn v2_and_v3_fixtures_have_parallel_structure() {
 /// V2-only subscribers still receive V2 events after V3 addition.
 #[test]
 fn v2_only_subscribers_still_receive_v2_events() {
-    let (env, client, issuer, token, ns, payout) = setup();
+    let (env, client, issuer, ns, token, payout) = setup();
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     // V2 events are still emitted alongside V3
     let events = env.events().all();
