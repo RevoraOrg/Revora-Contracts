@@ -4,7 +4,9 @@ use std::fs;
 use std::path::Path;
 
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+/// Must stay in sync with `STORAGE_LAYOUT_VERSION` in `src/lib.rs` (asserted by
+/// `tests/storage_layout_json.rs`).
+pub const STORAGE_LAYOUT_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -123,11 +125,11 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::DualSigEnabled(OfferingId)", "bool", "offering"),
     ("DataKey2::AdminRotationLog(u64)", "AdminRotationEntry", "contract"),
     ("DataKey2::AdminRotationCount", "u64", "contract"),
-    ("DataKey2::MultisigOwners", "Vec<Address>", "contract"),
-    ("DataKey2::MultisigThreshold", "u32", "contract"),
-    ("DataKey2::MultisigProposalCount", "u32", "contract"),
-    ("DataKey2::MultisigProposalDuration", "u64", "contract"),
-    ("DataKey2::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
+    ("DataKey3::MultisigOwners", "Vec<Address>", "contract"),
+    ("DataKey3::MultisigThreshold", "u32", "contract"),
+    ("DataKey3::MultisigProposalCount", "u32", "contract"),
+    ("DataKey3::MultisigProposalDuration", "u64", "contract"),
+    ("DataKey3::MultisigProposal(u32)", "GovernanceProposal", "proposal"),
     ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
     ("DataKey2::AccrualIndex(OfferingId)", "u32", "offering"),
     ("DataKey2::OfferingPlatformFee(OfferingId)", "PlatformFeeConfig", "offering"),
@@ -139,7 +141,6 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
     ("DataKey2::EmergencyFreeze(OfferingId, Address)", "bool", "offering+holder"),
     ("DataKey2::HolderFreezeMask(OfferingId, Address)", "u32", "offering+holder"),
-    // ── Dividend accrual ledger (#div-accrual) ──
     ("DataKey2::ReportAccPerShareE18(OfferingId)", "i128", "offering"),
     ("DataKey2::HolderReportLedger(OfferingId, Address)", "HolderReportAccrual", "offering+holder"),
     ("DataKey3::TotalSharesIssued(OfferingId)", "u32", "offering"),
@@ -151,12 +152,12 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::GovernanceProposalCount(OfferingId)", "u32", "offering"),
     ("DataKey2::GovernanceProposal(OfferingId, u32)", "GovernanceProposal", "offering+proposal"),
     ("DataKey2::GovernanceProposalMeta(OfferingId, BytesN<32>)", "bool", "offering+hash"),
-    ("DataKey2::GovProposalCount(OfferingId)", "u32", "offering"),
-    ("DataKey2::GovProposal(OfferingId, u32)", "GovProposal", "offering+proposal"),
-    ("DataKey2::VoteRecord(OfferingId, u32, Address)", "bool", "offering+proposal+voter"),
+    ("DataKey3::GovProposalCount(OfferingId)", "u32", "offering"),
+    ("DataKey3::GovProposal(OfferingId, u32)", "GovProposal", "offering+proposal"),
+    ("DataKey3::VoteRecord(OfferingId, u32, Address)", "bool", "offering+proposal+voter"),
     ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
     ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
-    ("DataKey2::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
+    ("DataKey3::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
     // ── Accrual-checkpoint keys ──
     ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
     ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
@@ -305,6 +306,7 @@ fn collect_source_keys(repo_root: &Path) -> Result<BTreeSet<String>, String> {
         ("src/lib.rs", "MetaDataKey"),
         ("src/lib.rs", "DataKey"),
         ("src/lib.rs", "DataKey2"),
+        ("src/lib.rs", "DataKey3"),
         ("src/lib.rs", "MigrationDataKey"),
         ("src/revenue_deposit_contract.rs", "DataKey"),
         ("src/vesting.rs", "VestingKey"),

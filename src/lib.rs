@@ -405,6 +405,8 @@ mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
+mod test_pending_issuer_transfer;
+#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_testnet_mode;
@@ -446,6 +448,8 @@ mod test_transfer_cooldown;
 #[cfg(test)]
 mod test_utils;
 
+#[cfg(test)]
+mod test_platform_fee_per_asset;
 #[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
 
@@ -16058,6 +16062,5 @@ mod test_storage_layout_version;
 
 #[cfg(test)]
 mod secondary_market_royalty_adversarial_test;
-
 #[cfg(test)]
-mod test_amount_validation_adversarial;
+mod test_offering_count_adversarial;
