@@ -20,11 +20,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{
-    symbol_short,
-    testutils::{Address as _, Ledger as _},
-    Address, BytesN, Env,
-};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger as _}, Address, BytesN, Env};
 
 use crate::{DataKey, OfferingId, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -373,10 +369,7 @@ fn same_contract_different_network_id_changes_digest() {
         &500u32,
     );
 
-    assert_ne!(
-        d_aa, d_bb,
-        "digest must change when the network_id changes (closes #578)"
-    );
+    assert_ne!(d_aa, d_bb, "digest must change when the network_id changes (closes #578)");
 }
 
 // ── Boundary values for `amount_bps` ─────────────────────────────────────────
@@ -497,10 +490,7 @@ fn digest_does_not_mutate_storage() {
 
     let after = storage_snapshot(&env, &contract_id, &issuer, &token);
 
-    assert_eq!(
-        before, after,
-        "compute_attestation_digest must not modify persistent storage"
-    );
+    assert_eq!(before, after, "compute_attestation_digest must not modify persistent storage");
 }
 
 // ── Permissionlessness ────────────────────────────────────────────────────────
@@ -586,10 +576,7 @@ fn digest_is_not_symmetric_in_from_to() {
         &500u32,
     );
 
-    assert_ne!(
-        d_ab, d_ba,
-        "swapping from/to must produce a different digest (direction matters)"
-    );
+    assert_ne!(d_ab, d_ba, "swapping from/to must produce a different digest (direction matters)");
 }
 
 // ── Output format ─────────────────────────────────────────────────────────────
@@ -611,11 +598,7 @@ fn digest_output_is_always_32_bytes() {
             &to,
             &bps,
         );
-        assert_eq!(
-            d.len(),
-            32,
-            "digest for amount_bps={bps} must be exactly 32 bytes"
-        );
+        assert_eq!(d.len(), 32, "digest for amount_bps={bps} must be exactly 32 bytes");
     }
 }
 
