@@ -16059,8 +16059,360 @@ mod test_merkle_proof_depth;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
-
 #[cfg(test)]
 mod secondary_market_royalty_adversarial_test;
 #[cfg(test)]
 mod test_offering_count_adversarial;
+
+// ── Issue #1090: adversarial coverage for get_offerings_page ────────────────
+//
+// get_offerings_page is keyed by (issuer, namespace) and returns a cursor that
+// clients use to walk a tenant. These tests pin the isolation, cursor, clamping,
+// overflow, ordering, and read-only guarantees the pagination contract relies on.
+#[cfg(test)]
+mod issue_1090_get_offerings_page_adversarial_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
+
+    fn client() -> (Env, Address, RevoraRevenueShareClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(&env, &id);
+        (env, id, client)
+    }
+
+    /// Register a single-offering tenant entry through the real 10-parameter entry point.
+    fn reg(
+        env: &Env,
+        client: &RevoraRevenueShareClient<'static>,
+        issuer: &Address,
+        namespace: &Symbol,
+        token: &Address,
+        bps: u32,
+        denomination: &Symbol,
+        display_decimals: u32,
+    ) {
+        client.register_offering(
+            issuer,
+            &Vec::<Address>::new(env),
+            &1_u32,
+            namespace,
+            token,
+            &bps,
+            token,
+            &0_i128,
+            denomination,
+            &display_decimals,
+        );
+    }
+
+    /// Seed `n` offerings for `(issuer, namespace)` and return their tokens in creation order.
+    fn seed(
+        env: &Env,
+        client: &RevoraRevenueShareClient<'static>,
+        issuer: &Address,
+        namespace: &Symbol,
+        n: u32,
+    ) -> Vec<Address> {
+        let denomination = symbol_short!("USDC");
+        let mut tokens = Vec::new(env);
+        for i in 0..n {
+            let token = Address::generate(env);
+            reg(env, client, issuer, namespace, &token, 1_000_u32.saturating_add(i), &denomination, 0);
+            tokens.push_back(token);
+        }
+        tokens
+    }
+
+    /// The page is keyed by `(issuer, namespace)`, so neither dimension may bleed into the other.
+    #[test]
+    fn issue_1090_page_is_scoped_by_issuer_and_namespace() {
+        let (env, _contract_id, client) = client();
+        let issuer_a = Address::generate(&env);
+        let issuer_b = Address::generate(&env);
+        let namespace_a = Symbol::new(&env, "alpha");
+        let namespace_b = Symbol::new(&env, "bravo");
+
+        let a_tokens = seed(&env, &client, &issuer_a, &namespace_a, 3);
+        let b_tokens = seed(&env, &client, &issuer_a, &namespace_b, 5);
+
+        assert_eq!(client.get_offering_count(&issuer_a, &namespace_a), 3);
+        assert_eq!(client.get_offering_count(&issuer_a, &namespace_b), 5);
+
+        let (page_a, cursor_a) = client.get_offerings_page(&issuer_a, &namespace_a, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(page_a.len(), 3);
+        assert_eq!(cursor_a, None);
+        for i in 0..3 {
+            let offering = page_a.get(i).unwrap();
+            assert_eq!(offering.token, a_tokens.get(i).unwrap());
+            assert_eq!(offering.namespace, namespace_a);
+        }
+
+        let (page_b, cursor_b) = client.get_offerings_page(&issuer_a, &namespace_b, &0, &2);
+        assert_eq!(page_b.len(), 2);
+        assert_eq!(cursor_b, Some(2));
+        for i in 0..2 {
+            let offering = page_b.get(i).unwrap();
+            assert_eq!(offering.token, b_tokens.get(i).unwrap());
+            assert_eq!(offering.namespace, namespace_b);
+        }
+
+        // A namespace that was never registered is empty even though the issuer has offerings.
+        let unknown = Symbol::new(&env, "ghost");
+        assert_eq!(client.get_offering_count(&issuer_a, &unknown), 0);
+        let (empty_ns, cursor_ns) =
+            client.get_offerings_page(&issuer_a, &unknown, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(empty_ns.len(), 0);
+        assert_eq!(cursor_ns, None);
+
+        // An issuer with no offerings in a namespace that another issuer does use.
+        let (empty_issuer, cursor_issuer) =
+            client.get_offerings_page(&issuer_b, &namespace_a, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(empty_issuer.len(), 0);
+        assert_eq!(cursor_issuer, None);
+
+        // Interleaved registrations into a shared namespace must not collide.
+        let shared = Symbol::new(&env, "shared");
+        let denomination = symbol_short!("XLM");
+        let mut shared_a = Vec::new(&env);
+        let mut shared_b = Vec::new(&env);
+        for i in 0..4_u32 {
+            let token_a = Address::generate(&env);
+            reg(&env, &client, &issuer_a, &shared, &token_a, 100_u32.saturating_add(i), &denomination, 0);
+            shared_a.push_back(token_a);
+            if i < 2 {
+                let token_b = Address::generate(&env);
+                reg(
+                    &env,
+                    &client,
+                    &issuer_b,
+                    &shared,
+                    &token_b,
+                    900_u32.saturating_add(i),
+                    &denomination,
+                    0,
+                );
+                shared_b.push_back(token_b);
+            }
+        }
+
+        assert_eq!(client.get_offering_count(&issuer_a, &shared), 4);
+        assert_eq!(client.get_offering_count(&issuer_b, &shared), 2);
+
+        let (page_shared_a, cursor_shared_a) =
+            client.get_offerings_page(&issuer_a, &shared, &0, &MAX_PAGE_LIMIT);
+        let (page_shared_b, cursor_shared_b) =
+            client.get_offerings_page(&issuer_b, &shared, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(cursor_shared_a, None);
+        assert_eq!(cursor_shared_b, None);
+        assert_eq!(page_shared_a.len(), 4);
+        assert_eq!(page_shared_b.len(), 2);
+        for i in 0..4 {
+            assert_eq!(page_shared_a.get(i).unwrap().token, shared_a.get(i).unwrap());
+        }
+        for i in 0..2 {
+            assert_eq!(page_shared_b.get(i).unwrap().token, shared_b.get(i).unwrap());
+        }
+    }
+
+    /// `start`, `limit`, and the terminal-cursor decision meet at exact arithmetic edges.
+    #[test]
+    fn issue_1090_cursor_is_terminal_exactly_at_the_count_boundary() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "edge");
+        let tokens = seed(&env, &client, &issuer, &namespace, 5);
+
+        // start == count - 1 with a limit larger than the remainder.
+        let (last, last_cursor) = client.get_offerings_page(&issuer, &namespace, &4, &MAX_PAGE_LIMIT);
+        assert_eq!(last.len(), 1);
+        assert_eq!(last_cursor, None);
+        assert_eq!(last.get(0).unwrap().token, tokens.get(4).unwrap());
+
+        // end == count exactly -> the cursor terminates.
+        let (all, all_cursor) = client.get_offerings_page(&issuer, &namespace, &0, &5);
+        assert_eq!(all.len(), 5);
+        assert_eq!(all_cursor, None);
+
+        // end == count - 1 -> the cursor still points at the remaining item.
+        let (partial, partial_cursor) = client.get_offerings_page(&issuer, &namespace, &0, &4);
+        assert_eq!(partial.len(), 4);
+        assert_eq!(partial_cursor, Some(4));
+
+        // A single-item final page with limit == 1.
+        let (tail, tail_cursor) = client.get_offerings_page(&issuer, &namespace, &4, &1);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail_cursor, None);
+
+        // start == count and every larger start are empty and terminal, including u32::MAX,
+        // which must short-circuit before `start + effective_limit` overflows.
+        for start in [5_u32, 6, 99, u32::MAX.saturating_sub(1), u32::MAX] {
+            let (empty, cursor) =
+                client.get_offerings_page(&issuer, &namespace, &start, &MAX_PAGE_LIMIT);
+            assert_eq!(empty.len(), 0, "start={start}");
+            assert_eq!(cursor, None, "start={start}");
+        }
+    }
+
+    /// An unregistered tenant is not an error, and extreme `start` values stay panic-free.
+    #[test]
+    fn issue_1090_empty_tenant_and_extreme_start_values_do_not_overflow() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "void");
+
+        assert_eq!(client.get_offering_count(&issuer, &namespace), 0);
+        let (empty, cursor) = client.get_offerings_page(&issuer, &namespace, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(empty.len(), 0);
+        assert_eq!(cursor, None);
+
+        // Same guarantees hold once the tenant is full of pages.
+        seed(&env, &client, &issuer, &namespace, 25);
+        for start in [u32::MAX - 1, u32::MAX] {
+            let (empty_full, cursor_full) =
+                client.get_offerings_page(&issuer, &namespace, &start, &MAX_PAGE_LIMIT);
+            assert_eq!(empty_full.len(), 0, "start={start}");
+            assert_eq!(cursor_full, None, "start={start}");
+        }
+    }
+
+    /// `limit == 0` and `limit > MAX_PAGE_LIMIT` clamp; the cap itself is honoured verbatim.
+    #[test]
+    fn issue_1090_limit_zero_and_over_cap_clamp_while_the_cap_is_honoured() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "clamp");
+        seed(&env, &client, &issuer, &namespace, 25);
+
+        for limit in [0_u32, MAX_PAGE_LIMIT.saturating_add(1), u32::MAX] {
+            let (page, cursor) = client.get_offerings_page(&issuer, &namespace, &0, &limit);
+            assert_eq!(page.len(), MAX_PAGE_LIMIT, "limit={limit}");
+            assert_eq!(cursor, Some(MAX_PAGE_LIMIT), "limit={limit}");
+        }
+
+        let (exact, exact_cursor) =
+            client.get_offerings_page(&issuer, &namespace, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(exact.len(), MAX_PAGE_LIMIT);
+        assert_eq!(exact_cursor, Some(MAX_PAGE_LIMIT));
+
+        let under_cap = MAX_PAGE_LIMIT.saturating_sub(1);
+        let (under, under_cursor) = client.get_offerings_page(&issuer, &namespace, &0, &under_cap);
+        assert_eq!(under.len(), under_cap);
+        assert_eq!(under_cursor, Some(under_cap));
+
+        // Clamping also applies to a non-zero start, not just the first page:
+        // 4 + clamped(20) == 24 < 25, so the cursor is still non-terminal.
+        let (mid, mid_cursor) = client.get_offerings_page(&issuer, &namespace, &4, &u32::MAX);
+        assert_eq!(mid.len(), MAX_PAGE_LIMIT);
+        assert_eq!(mid_cursor, Some(24));
+
+        // 5 + clamped(20) lands exactly on the count, so the window still terminates.
+        let (tail, tail_cursor) = client.get_offerings_page(&issuer, &namespace, &5, &u32::MAX);
+        assert_eq!(tail.len(), MAX_PAGE_LIMIT);
+        assert_eq!(tail_cursor, None);
+    }
+
+    /// Pagination must return whole offerings in creation order, and reads must not mutate state.
+    #[test]
+    fn issue_1090_page_walk_covers_every_offering_once_and_reads_are_read_only() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "walk");
+        let denomination = symbol_short!("USDC");
+
+        let total = 6_u32;
+        let mut tokens = Vec::new(&env);
+        let mut payouts = Vec::new(&env);
+        for i in 0..total {
+            let token = Address::generate(&env);
+            let payout = Address::generate(&env);
+            let bps = 1_000_u32.saturating_add(i);
+            client.register_offering(
+                &issuer,
+                &Vec::<Address>::new(&env),
+                &1_u32,
+                &namespace,
+                &token,
+                &bps,
+                &payout,
+                &0_i128,
+                &denomination,
+                &0_u32,
+            );
+            tokens.push_back(token);
+            payouts.push_back(payout);
+        }
+
+        let count_before = client.get_offering_count(&issuer, &namespace);
+        assert_eq!(count_before, total);
+
+        let mut seen = 0_u32;
+        let mut cursor = Some(0_u32);
+        while let Some(start) = cursor {
+            let (page, next) = client.get_offerings_page(&issuer, &namespace, &start, &2);
+            let expected_len = core::cmp::min(2_u32, count_before.saturating_sub(start));
+            assert_eq!(page.len(), expected_len);
+
+            let mut offset = 0_u32;
+            for offering in page.iter() {
+                let index = start.saturating_add(offset);
+                assert_eq!(offering.token, tokens.get(index).unwrap());
+                assert_eq!(offering.payout_asset, payouts.get(index).unwrap());
+                assert_eq!(offering.revenue_share_bps, 1_000_u32.saturating_add(index));
+                assert_eq!(offering.namespace, namespace);
+                assert_eq!(offering.issuers.primary, issuer);
+                assert_eq!(offering.issuers.quorum, 1);
+                assert_eq!(offering.issuers.co.len(), 0);
+                assert_eq!(offering.denomination_symbol, denomination);
+                assert_eq!(offering.display_decimals, 0);
+                offset = offset.saturating_add(1);
+                seen = seen.saturating_add(1);
+            }
+
+            if let Some(next_start) = next {
+                assert!(next_start > start);
+                assert_eq!(next_start, start.saturating_add(page.len()));
+            }
+            cursor = next;
+        }
+        assert_eq!(seen, total);
+
+        // Read-only: the count is untouched and an identical read is byte-for-byte identical.
+        assert_eq!(client.get_offering_count(&issuer, &namespace), count_before);
+        let (first, first_cursor) = client.get_offerings_page(&issuer, &namespace, &0, &2);
+        let (second, second_cursor) = client.get_offerings_page(&issuer, &namespace, &0, &2);
+        assert_eq!(first, second);
+        assert_eq!(first_cursor, second_cursor);
+        assert_eq!(client.get_offering_count(&issuer, &namespace), count_before);
+    }
+
+    /// A full walk in fixed-size windows visits every offering exactly once, in order.
+    #[test]
+    fn issue_1090_windowed_walk_has_no_gaps_or_duplicates() {
+        let (env, _contract_id, client) = client();
+        let issuer = Address::generate(&env);
+        let namespace = Symbol::new(&env, "window");
+        let tokens = seed(&env, &client, &issuer, &namespace, 25);
+
+        let mut collected = Vec::new(&env);
+        let mut pages = 0_u32;
+        let mut cursor = Some(0_u32);
+        while let Some(start) = cursor {
+            let (page, next) = client.get_offerings_page(&issuer, &namespace, &start, &7);
+            assert!(!page.is_empty());
+            assert!(page.len() <= 7);
+            for offering in page.iter() {
+                collected.push_back(offering.token);
+            }
+            pages = pages.saturating_add(1);
+            cursor = next;
+        }
+
+        assert_eq!(pages, 4);
+        assert_eq!(collected.len(), 25);
+        for i in 0..25 {
+            assert_eq!(collected.get(i).unwrap(), tokens.get(i).unwrap());
+        }
+    }
+}
