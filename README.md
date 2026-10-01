@@ -2773,3 +2773,8 @@ See `src/test.rs::regression::regression_template_example` for a complete templa
 - Tests in `src/test.rs` are grouped by area (pagination, blacklist, structured errors, storage stress, gas characterization). Add new tests in the relevant section so parallel PRs touch different regions.
 - Keep the contract interface summary above in sync when adding or changing entrypoints or events.
 - Follow the contract lint/style policy in [`docs/contracts-style.md`](./docs/contracts-style.md).
+
+## Handsoff notes
+
+<!-- handsoff-issue-1128 -->
+- #1128: Add adversarial coverage for get_checkpoint_threshold in lib
