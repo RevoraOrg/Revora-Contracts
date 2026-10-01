@@ -21,7 +21,7 @@ use super::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _, Ledger},
-    Address, Env,
+    Address, Env, TryIntoVal,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -45,7 +45,18 @@ fn register_offering(
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (issuer, ns, token)
 }
 
@@ -64,22 +75,30 @@ fn set_ts(env: &Env, ts: u64) {
     env.ledger().set_timestamp(ts);
 }
 
+/// True when the first topic of an event is the `fct_mtr1` metrics symbol.
+/// `soroban_sdk::Val` has no `PartialEq`, so the topic is decoded to a
+/// `Symbol` before comparing against the event constant.
+fn is_metrics_topic(env: &Env, topics: &soroban_sdk::Vec<soroban_sdk::Val>) -> bool {
+    match topics.get(0) {
+        Some(t0) => {
+            let sym: Result<Symbol, _> = t0.try_into_val(env);
+            sym.map(|s| s == EVENT_FAUCET_METRICS).unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
 /// Find the latest `fct_mtr1` event payload among all contract events.
 /// Returns `(window_id, total_dispensed, unique_addresses, cooldown_rejects,
 ///            window_start, window_end)`.
 fn find_metrics_event(env: &Env) -> Option<(u64, u32, u32, u32, u64, u64)> {
-    let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(env);
     let mut found: Option<(u64, u32, u32, u32, u64, u64)> = None;
     for (_, topics, data) in env.events().all().iter() {
-        if topics.len() >= 2 {
-            if let Some(t0) = topics.get(0) {
-                if t0 == fct_mtr1 {
-                    let window_id: u64 = topics.get(1).unwrap().into_val(env);
-                    let (total, unique, rejects, wstart, wend): (u32, u32, u32, u64, u64) =
-                        data.into_val(env);
-                    found = Some((window_id, total, unique, rejects, wstart, wend));
-                }
-            }
+        if topics.len() >= 2 && is_metrics_topic(env, &topics) {
+            let window_id: u64 = topics.get(1).unwrap().into_val(env);
+            let (total, unique, rejects, wstart, wend): (u32, u32, u32, u64, u64) =
+                data.into_val(env);
+            found = Some((window_id, total, unique, rejects, wstart, wend));
         }
     }
     found
@@ -87,13 +106,10 @@ fn find_metrics_event(env: &Env) -> Option<(u64, u32, u32, u32, u64, u64)> {
 
 /// Count how many `fct_mtr1` events are present in the full event log.
 fn count_metrics_events(env: &Env) -> usize {
-    let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(env);
     env.events()
         .all()
         .iter()
-        .filter(|(_, topics, _)| {
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
-        })
+        .filter(|(_, topics, _)| topics.len() >= 1 && is_metrics_topic(env, topics))
         .count()
 }
 
@@ -187,7 +203,18 @@ fn unique_address_not_double_counted_for_same_requester_in_window() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer2,
+        &Vec::new(&env),
+        &1u32,
+        &ns2,
+        &token2,
+        &5_000,
+        &payout2,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let requester = Address::generate(&env);
     // First call on offering 1
@@ -304,14 +331,11 @@ fn new_window_event_has_fresh_counters() {
     client.faucet_seed_holders(&r2, &issuer, &ns, &token, &7);
 
     // Collect all fct_mtr1 events.
-    let all_events: Vec<_> = env
+    let all_events: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
-        .filter(|(_, topics, _)| {
-            let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(&env);
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
-        })
+        .filter(|(_, topics, _)| topics.len() >= 1 && is_metrics_topic(&env, topics))
         .collect();
 
     assert_eq!(all_events.len(), 2, "must have exactly two fct_mtr1 events");
@@ -415,14 +439,11 @@ fn rejects_are_window_scoped_and_reset_on_rollover() {
     client.faucet_seed_holders(&r2, &issuer, &ns, &token, &1);
 
     // Find the window-2 event
-    let all: Vec<_> = env
+    let all: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
-        .filter(|(_, topics, _)| {
-            let fct_mtr1: soroban_sdk::Val = EVENT_FAUCET_METRICS.into_val(&env);
-            topics.len() >= 1 && topics.get(0).map(|t| t == fct_mtr1).unwrap_or(false)
-        })
+        .filter(|(_, topics, _)| topics.len() >= 1 && is_metrics_topic(&env, topics))
         .collect();
 
     assert!(all.len() >= 2);
