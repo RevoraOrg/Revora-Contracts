@@ -399,21 +399,21 @@ mod test_compute_share_invariants;
 mod test_duplicates;
 #[cfg(test)]
 mod test_epoch_boundary_report;
+#[cfg(test)]
+mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
-mod test_pending_issuer_transfer;
-#[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-#[cfg(test)]
-mod test_estimate_transfer;
 // #[cfg(test)]
 // mod test_claim_transfer_fail;
 #[cfg(test)]
@@ -423,11 +423,11 @@ mod test_accrual_reconciliation_prop;
 #[cfg(test)]
 mod test_close_period;
 #[cfg(test)]
+mod test_compute_attestation_digest;
+#[cfg(test)]
 mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
-#[cfg(test)]
-mod test_get_payment_token;
 #[cfg(test)]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
@@ -435,6 +435,8 @@ mod test_faucet_metrics;
 mod test_faucet_seed;
 #[cfg(test)]
 mod test_freeze_reason_bitmask;
+#[cfg(test)]
+mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -445,13 +447,6 @@ mod test_reg_limit_delta;
 mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
-#[cfg(test)]
-mod test_utils;
-
-#[cfg(test)]
-mod test_platform_fee_per_asset;
-#[cfg(test)]
-mod test_revenue_deposit_with_snapshot;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
