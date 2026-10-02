@@ -446,6 +446,7 @@ mod test_tax_year;
 #[cfg(test)]
 mod test_transfer_cooldown;
 #[cfg(test)]
+mod test_multi_token_independence;
 mod test_utils;
 
 #[cfg(test)]
