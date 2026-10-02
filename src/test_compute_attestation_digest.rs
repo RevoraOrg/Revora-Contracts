@@ -20,7 +20,11 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger as _}, Address, BytesN, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env,
+};
 
 use crate::{DataKey, OfferingId, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -71,9 +75,7 @@ fn storage_snapshot(
         token: token.clone(),
     };
     env.as_contract(contract_id, || {
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&DataKey::HolderShareTotal(oid))
+        env.storage().persistent().get::<DataKey, u32>(&DataKey::HolderShareTotal(oid))
     })
 }
 
