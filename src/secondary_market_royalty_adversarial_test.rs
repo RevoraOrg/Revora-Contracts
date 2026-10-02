@@ -71,12 +71,10 @@ fn default_is_zero_then_valid_writes_round_trip() {
 
     assert_eq!(get(&c.asset), 0, "unset royalty must default to 0");
 
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &1);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &1);
     assert_eq!(get(&c.asset), 1);
 
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &2_500);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &2_500);
     assert_eq!(get(&c.asset), 2_500, "overwrite must replace the stored value");
 }
 
@@ -84,20 +82,15 @@ fn default_is_zero_then_valid_writes_round_trip() {
 #[test]
 fn zero_royalty_is_accepted_at_lower_boundary() {
     let c = setup();
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &0);
-    assert_eq!(
-        c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset),
-        0
-    );
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &0);
+    assert_eq!(c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset), 0);
 }
 
 /// The upper bound is inclusive: `MAX_PLATFORM_FEE_BPS` (5_000) is accepted.
 #[test]
 fn exact_max_royalty_is_accepted() {
     let c = setup();
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &5_000);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &5_000);
     assert_eq!(
         c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset),
         5_000
@@ -109,17 +102,12 @@ fn exact_max_royalty_is_accepted() {
 #[test]
 fn above_max_royalty_is_rejected_and_state_unchanged() {
     let c = setup();
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &100);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &100);
 
     for bad in [5_001u32, 10_000u32, u32::MAX] {
-        let res = c.client.try_set_secondary_market_royalty_bps(
-            &c.issuer,
-            &c.ns,
-            &c.token,
-            &c.asset,
-            &bad,
-        );
+        let res = c
+            .client
+            .try_set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &bad);
         assert_eq!(
             res,
             Err(Ok(RevoraError::InvalidRevenueShareBps)),
@@ -140,18 +128,10 @@ fn non_issuer_caller_is_rejected_and_state_unchanged() {
     let c = setup();
     let stranger = Address::generate(&c.env);
 
-    let res = c.client.try_set_secondary_market_royalty_bps(
-        &stranger,
-        &c.ns,
-        &c.token,
-        &c.asset,
-        &750,
-    );
+    let res =
+        c.client.try_set_secondary_market_royalty_bps(&stranger, &c.ns, &c.token, &c.asset, &750);
     assert_eq!(res, Err(Ok(RevoraError::OfferingNotFound)));
-    assert_eq!(
-        c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset),
-        0
-    );
+    assert_eq!(c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset), 0);
 
     let unknown_ns = symbol_short!("nope");
     let res = c.client.try_set_secondary_market_royalty_bps(
@@ -175,8 +155,7 @@ fn non_issuer_caller_is_rejected_and_state_unchanged() {
 #[test]
 fn foreign_issuer_write_is_rejected_and_state_unchanged() {
     let c = setup();
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &250);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &250);
 
     // Register a second offering, owned by a different issuer.
     let other_issuer = Address::generate(&c.env);
@@ -227,8 +206,7 @@ fn foreign_issuer_write_is_rejected_and_state_unchanged() {
 #[test]
 fn reader_is_unauthenticated() {
     let c = setup();
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &321);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &321);
 
     c.env.set_auths(&[]);
     assert_eq!(
@@ -245,17 +223,11 @@ fn roy_cfg_event_emitted_on_success_only() {
 
     let before = c.env.events().all().len();
     // Rejected (over-cap) write must not emit anything.
-    let _ = c.client.try_set_secondary_market_royalty_bps(
-        &c.issuer,
-        &c.ns,
-        &c.token,
-        &c.asset,
-        &6_000,
-    );
+    let _ =
+        c.client.try_set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &6_000);
     assert_eq!(c.env.events().all().len(), before, "failed write must not emit");
 
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &other_asset, &300);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &other_asset, &300);
 
     let all = c.env.events().all();
     let mut count: u32 = 0;
@@ -279,10 +251,8 @@ fn royalty_is_isolated_per_asset() {
     let c = setup();
     let other_asset = Address::generate(&c.env);
 
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &120);
-    c.client
-        .set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &other_asset, &4_999);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset, &120);
+    c.client.set_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &other_asset, &4_999);
 
     assert_eq!(
         c.client.get_secondary_market_royalty_bps(&c.issuer, &c.ns, &c.token, &c.asset),
