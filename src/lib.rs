@@ -16059,8 +16059,9 @@ mod test_merkle_proof_depth;
 mod test_snapshot_voting_weight;
 #[cfg(test)]
 mod test_storage_layout_version;
-
 #[cfg(test)]
 mod secondary_market_royalty_adversarial_test;
 #[cfg(test)]
 mod test_offering_count_adversarial;
+#[cfg(test)]
+mod test_is_paused_adversarial;
