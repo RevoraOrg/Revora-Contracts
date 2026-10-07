@@ -31,8 +31,8 @@ fn get_balance(env: &Env, token: &Address, account: &Address) -> i128 {
     token::Client::new(env, token).balance(account)
 }
 
-fn setup_offering(
-) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address) {
+fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address)
+{
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -196,14 +196,7 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
     let (other_payment_token, _other_admin) = create_payment_token(&env);
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &100_000,
-            &1,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -226,14 +219,8 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
 fn test_deposit_revenue_zero_amount_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
-    let res = client.try_deposit_revenue(
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &payment_token,
-        &0,
-        &1,
-    );
+    let res =
+        client.try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &0, &1);
     assert_eq!(res, Err(Ok(RevoraError::InvalidAmount)));
 
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 0);
@@ -294,14 +281,7 @@ fn test_deposit_revenue_duplicate_period_id_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &100_000,
-            &1,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -324,14 +304,7 @@ fn test_deposit_revenue_gap_period_id_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &100_000,
-            &1,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -392,36 +365,15 @@ fn test_deposit_revenue_multi_period_sequential_success() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &10_000,
-            &1,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &10_000, &1)
         .unwrap();
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &20_000,
-            &2,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &20_000, &2)
         .unwrap();
 
     client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &30_000,
-            &3,
-        )
+        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &30_000, &3)
         .unwrap();
 
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 3);
