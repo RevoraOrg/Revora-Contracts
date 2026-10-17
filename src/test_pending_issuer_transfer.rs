@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! # Adversarial coverage for `get_pending_issuer_transfer`
 //!
 //! `get_pending_issuer_transfer(env, issuer, namespace, token) -> Option<Address>`
@@ -60,6 +59,8 @@
 //!   the pending value is unchanged afterwards, so a rejected operation can
 //!   never silently mutate observed state.
 
+#![cfg(test)]
+
 use crate::{DataKey2, PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
@@ -108,7 +109,7 @@ fn setup() -> Tenant {
     // Seed the global issuer/namespace registries so `accept_issuer_transfer` /
     // `reject_issuer_transfer` (which scan via `find_pending_transfer_for_new_issuer`)
     // can resolve the pending transfer. `register_offering` on master does not
-    // populate these indices; this mirrors the `issue_370_*` test setup in src/lib.rs.
+    // populate these indices; this mirrors `issue_370_*` test setup in src/lib.rs.
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
         env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer);
@@ -286,6 +287,17 @@ fn pending_reflects_replace_then_none_after_cancel() {
     assert_eq!(pending(&t), Some(second));
 
     t.client.cancel_issuer_transfer(&t.issuer, &NS, &t.token);
+    assert_eq!(pending(&t), None);
+}
+
+#[test]
+fn pending_clears_after_reject() {
+    let t = setup();
+    let new_issuer = Address::generate(&t.env);
+    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    assert_eq!(pending(&t), Some(new_issuer.clone()));
+
+    t.client.reject_issuer_transfer(&new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 }
 
