@@ -1,6 +1,6 @@
-//! # Adversarial coverage for `get_pending_issuer_transfer`
+//! # Adversarial coverage for `get_pending_transfer_details`
 //!
-//! `get_pending_issuer_transfer(env, issuer, namespace, token) -> Option<Address>`
+//! `get_pending_transfer_details(env, issuer, namespace, token) -> Option<PendingTransfer>`
 //! is the public read-only projection of the pending issuer-transfer record keyed
 //! by `OfferingId { issuer, namespace, token }`. It is the oracle every issuer
 //! transfer UI and off-chain indexer relies on, so the wrong value here means a
@@ -24,9 +24,9 @@
 //!   record stays visible until an accept/cancel/reject clears it — the
 //!   deadline is enforced by `accept_issuer_transfer`, not by the reader. This
 //!   is deterministic because Soroban tests control `env.ledger().timestamp()`.
-//! - It must read the same underlying record that
-//!   `get_pending_transfer_details` exposes in full, i.e. the projected
-//!   `new_issuer` always equals `details.unwrap().new_issuer`.
+//! - It must expose the full record (`new_issuer`, `timestamp`, `expiry_secs`)
+//!   consistently with the projected `get_pending_issuer_transfer` reader, i.e.
+//!   `details.unwrap().new_issuer` always equals the projected `new_issuer`.
 //!
 //! ## Coverage matrix
 //!
@@ -34,12 +34,12 @@
 //! |---|----------|----------|
 //! | 1 | Uninitialized contract, arbitrary ids | `None` |
 //! | 2 | Registered offering, no transfer proposed | `None` |
-//! | 3 | After `propose_issuer_transfer` | `Some(new_issuer)` |
+//! | 3 | After `propose_issuer_transfer` | `Some(details)` with `new_issuer` |
 //! | 4 | Idempotent repeats / fresh client handles | stable, state unchanged |
 //! | 5 | Unknown issuer / namespace / token variants | `None`, pending untouched |
 //! | 6 | Two offerings, same namespace, different issuers/tokens | per-tenant isolation |
 //! | 7 | Two namespaces, same issuer+token | per-namespace isolation |
-//! | 8 | After `replace_issuer_transfer` | `Some(new_new_issuer)` |
+//! | 8 | After `replace_issuer_transfer` | `Some(details)` with new `new_issuer` |
 //! | 9 | After `cancel_issuer_transfer` | `None` |
 //! | 10 | After `accept_issuer_transfer` | `None` |
 //! | 11 | After `reject_issuer_transfer` (new-issuer side) | `None` |
@@ -47,7 +47,7 @@
 //! | 13 | Failed proposal (double → IssuerTransferPending) | value unchanged |
 //! | 14 | Failed proposal (unknown offering → OfferingNotFound) | no state |
 //! | 15 | Expired pending (custom 1h + default 7d) | still visible; accept fails |
-//! | 16 | Consistency with `get_pending_transfer_details` | `new_issuer` projection equal |
+//! | 16 | Consistency with `get_pending_issuer_transfer` | `new_issuer` projection equal |
 //!
 //! ## Security / risk notes
 //!
@@ -79,8 +79,8 @@ struct Tenant {
 }
 
 /// Read helper mirroring the function under test.
-fn pending(t: &Tenant) -> Option<Address> {
-    t.client.get_pending_issuer_transfer(&t.issuer, &NS, &t.token)
+fn pending(t: &Tenant) -> Option<PendingTransfer> {
+    t.client.get_pending_transfer_details(&t.issuer, &NS, &t.token)
 }
 
 /// Create client + one registered offering under `NS`.
@@ -131,13 +131,14 @@ fn pending_returns_none_before_any_proposal() {
 }
 
 #[test]
-fn pending_returns_proposed_new_issuer() {
+fn pending_returns_proposed_details() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
 
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
 
-    assert_eq!(pending(&t), Some(new_issuer));
+    let details = pending(&t).unwrap();
+    assert_eq!(details.new_issuer, new_issuer);
 }
 
 #[test]
@@ -147,13 +148,16 @@ fn pending_is_read_only_and_idempotent() {
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
 
     // Repeated reads return the same value...
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // ...including through a freshly constructed client handle over the same
     // contract address, i.e. the read has no hidden per-handle state.
     let client2 = RevoraRevenueShareClient::new(&t.env, &t.client.address);
-    assert_eq!(client2.get_pending_issuer_transfer(&t.issuer, &NS, &t.token), Some(new_issuer));
+    assert_eq!(
+        client2.get_pending_transfer_details(&t.issuer, &NS, &t.token).unwrap().new_issuer,
+        new_issuer
+    );
 }
 
 #[test]
@@ -171,8 +175,11 @@ fn pending_details_projection_matches_pending_issuer() {
     // Default proposal (expiry_secs = 0) means "use the 7-day default".
     assert_eq!(details.expiry_secs, 0);
 
-    // The projection under test is exactly `details.map(|d| d.new_issuer)`.
-    assert_eq!(pending(&t), Some(details.new_issuer));
+    // The projected reader agrees with the full details record.
+    assert_eq!(
+        t.client.get_pending_issuer_transfer(&t.issuer, &NS, &t.token),
+        Some(details.new_issuer)
+    );
 }
 
 // ─── Invalid / boundary identifiers ──────────────────────────────────────────
@@ -185,31 +192,31 @@ fn pending_unknown_ids_return_none_and_leave_state_unchanged() {
 
     // Unknown issuer — read-only miss must not disturb the real record.
     let stranger = Address::generate(&t.env);
-    assert_eq!(t.client.get_pending_issuer_transfer(&stranger, &NS, &t.token), None);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(t.client.get_pending_transfer_details(&stranger, &NS, &t.token), None);
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Unknown namespace.
     assert_eq!(
-        t.client.get_pending_issuer_transfer(&t.issuer, &symbol_short!("nope"), &t.token),
+        t.client.get_pending_transfer_details(&t.issuer, &symbol_short!("nope"), &t.token),
         None
     );
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Unknown token.
     let other_token = Address::generate(&t.env);
-    assert_eq!(t.client.get_pending_issuer_transfer(&t.issuer, &NS, &other_token), None);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(t.client.get_pending_transfer_details(&t.issuer, &NS, &other_token), None);
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Fully fabricated (issuer, namespace, token) triple.
     assert_eq!(
-        t.client.get_pending_issuer_transfer(
+        t.client.get_pending_transfer_details(
             &Address::generate(&t.env),
             &symbol_short!("zz"),
             &Address::generate(&t.env)
         ),
         None
     );
-    assert_eq!(pending(&t), Some(new_issuer));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 }
 
 #[test]
@@ -244,10 +251,13 @@ fn pending_is_isolated_per_offering_identity() {
     client.propose_issuer_transfer(&issuer_a, &NS, &token_a, &new_a);
 
     // Tenant B must not see tenant A's pending transfer.
-    assert_eq!(client.get_pending_issuer_transfer(&issuer_a, &NS, &token_a), Some(new_a.clone()));
-    assert_eq!(client.get_pending_issuer_transfer(&issuer_b, &NS, &token_a), None);
-    assert_eq!(client.get_pending_issuer_transfer(&issuer_a, &NS, &token_b), None);
-    assert_eq!(client.get_pending_issuer_transfer(&issuer_b, &NS, &token_b), None);
+    assert_eq!(
+        client.get_pending_transfer_details(&issuer_a, &NS, &token_a).unwrap().new_issuer,
+        new_a
+    );
+    assert_eq!(client.get_pending_transfer_details(&issuer_b, &NS, &token_a), None);
+    assert_eq!(client.get_pending_transfer_details(&issuer_a, &NS, &token_b), None);
+    assert_eq!(client.get_pending_transfer_details(&issuer_b, &NS, &token_b), None);
 
     // A second, independent namespace for the same issuer+token.
     client.register_offering(
@@ -265,10 +275,16 @@ fn pending_is_isolated_per_offering_identity() {
     let new_alt = Address::generate(&env);
     client.propose_issuer_transfer(&issuer_a, &symbol_short!("alt"), &token_a, &new_alt);
 
-    assert_eq!(client.get_pending_issuer_transfer(&issuer_a, &NS, &token_a), Some(new_a));
     assert_eq!(
-        client.get_pending_issuer_transfer(&issuer_a, &symbol_short!("alt"), &token_a),
-        Some(new_alt)
+        client.get_pending_transfer_details(&issuer_a, &NS, &token_a).unwrap().new_issuer,
+        new_a
+    );
+    assert_eq!(
+        client
+            .get_pending_transfer_details(&issuer_a, &symbol_short!("alt"), &token_a)
+            .unwrap()
+            .new_issuer,
+        new_alt
     );
 }
 
@@ -281,23 +297,12 @@ fn pending_reflects_replace_then_none_after_cancel() {
     let second = Address::generate(&t.env);
 
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &first);
-    assert_eq!(pending(&t), Some(first));
+    assert_eq!(pending(&t).unwrap().new_issuer, first);
 
     t.client.replace_issuer_transfer(&t.issuer, &NS, &t.token, &second);
-    assert_eq!(pending(&t), Some(second));
+    assert_eq!(pending(&t).unwrap().new_issuer, second);
 
     t.client.cancel_issuer_transfer(&t.issuer, &NS, &t.token);
-    assert_eq!(pending(&t), None);
-}
-
-#[test]
-fn pending_clears_after_reject() {
-    let t = setup();
-    let new_issuer = Address::generate(&t.env);
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
-
-    t.client.reject_issuer_transfer(&new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 }
 
@@ -306,7 +311,7 @@ fn pending_clears_after_accept() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     t.client.accept_issuer_transfer(&new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
@@ -320,7 +325,7 @@ fn pending_clears_after_reject() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     t.client.reject_issuer_transfer(&new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
@@ -363,15 +368,13 @@ fn failed_double_proposal_keeps_original_value() {
     let second = Address::generate(&t.env);
 
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &first);
-    assert_eq!(pending(&t), Some(first.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, first);
 
     let err = t.client.try_propose_issuer_transfer(&t.issuer, &NS, &t.token, &second).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferPending));
 
     // The rejected second proposal must not overwrite the observed value.
-    assert_eq!(pending(&t), Some(first.clone()));
-    let details: PendingTransfer =
-        t.client.get_pending_transfer_details(&t.issuer, &NS, &t.token).unwrap();
+    let details = pending(&t).unwrap();
     assert_eq!(details.new_issuer, first);
 }
 
@@ -388,7 +391,7 @@ fn failed_proposal_for_unknown_offering_leaves_no_state() {
         .try_propose_issuer_transfer(&stranger, &NS, &other_token, &Address::generate(&t.env))
         .unwrap_err();
     assert_eq!(err, Ok(RevoraError::OfferingNotFound));
-    assert_eq!(t.client.get_pending_issuer_transfer(&stranger, &NS, &other_token), None);
+    assert_eq!(t.client.get_pending_transfer_details(&stranger, &NS, &other_token), None);
     assert_eq!(pending(&t), None);
 }
 
@@ -406,19 +409,19 @@ fn expired_pending_stays_readable_until_cleared() {
     let details: PendingTransfer =
         t.client.get_pending_transfer_details(&t.issuer, &NS, &t.token).unwrap();
     assert_eq!(details.expiry_secs, 3_600);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Advance past the effective deadline — the reader is time-transparent
     // and keeps returning the record (expiry is enforced by accept, not read).
     t.env.ledger().with_mut(|l| l.timestamp = t0 + 3_601);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Accept is what enforces the deadline.
     let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
 
     // The failed accept must not have cleared the pending record.
-    assert_eq!(pending(&t), Some(new_issuer));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     // Cancel (issuer-side) clears it deterministically.
     t.client.cancel_issuer_transfer(&t.issuer, &NS, &t.token);
@@ -435,9 +438,9 @@ fn expired_default_window_read_stable_and_accept_rejected() {
 
     // Jump well past the 7-day default window.
     t.env.ledger().with_mut(|l| l.timestamp = t0 + 8 * 24 * 60 * 60);
-    assert_eq!(pending(&t), Some(new_issuer.clone()));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 
     let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
-    assert_eq!(pending(&t), Some(new_issuer));
+    assert_eq!(pending(&t).unwrap().new_issuer, new_issuer);
 }
