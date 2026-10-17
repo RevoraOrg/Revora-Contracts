@@ -108,7 +108,7 @@ fn setup() -> Tenant {
     // Seed the global issuer/namespace registries so `accept_issuer_transfer` /
     // `reject_issuer_transfer` (which scan via `find_pending_transfer_for_new_issuer`)
     // can resolve the pending transfer. `register_offering` on master does not
-    // populate these indices; this mirrors `issue_370_*` test setup in src/lib.rs.
+    // populate these indices; this mirrors the `issue_370_*` test setup in src/lib.rs.
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
         env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer);
