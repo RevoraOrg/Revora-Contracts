@@ -69,7 +69,18 @@ fn register_offering(
     let token = Address::generate(env);
     let payout = Address::generate(env);
     let ns = symbol_short!("ns");
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     (issuer, ns, token)
 }
 
@@ -238,7 +249,18 @@ fn faucet_seeds_differ_between_distinct_offerings() {
     let token2 = Address::generate(&env);
     let payout2 = Address::generate(&env);
     let ns2 = symbol_short!("ns2");
-    client.register_offering(&issuer2, &Vec::new(&env), &1u32, &ns2, &token2, &5_000, &payout2, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer2,
+        &Vec::new(&env),
+        &1u32,
+        &ns2,
+        &token2,
+        &5_000,
+        &payout2,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let requester = Address::generate(&env);
     let seeds1 = client.faucet_seed_holders(&requester, &issuer1, &ns1, &token1, &3);
@@ -261,7 +283,7 @@ fn faucet_emits_one_event_per_slot() {
     let before = env.events().all().len();
     client.faucet_seed_holders(&requester, &issuer, &ns, &token, &count);
     let delta = env.events().all().len() - before;
-    assert!(delta >= count as usize, "expected ≥{count} new events, got {delta}");
+    assert!(delta >= count, "expected ≥{count} new events, got {delta}");
 }
 
 // ── Seed byte-length invariant ────────────────────────────────────────────────
@@ -336,7 +358,7 @@ fn make_seed(env: &Env) -> soroban_sdk::BytesN<32> {
     b.set(1, 0xad);
     b.set(2, 0xbe);
     b.set(3, 0xef);
-    env.crypto().sha256(&b)
+    env.crypto().sha256(&b).to_bytes()
 }
 
 // ── faucet_reset error-path tests ─────────────────────────────────────────────
@@ -435,10 +457,10 @@ fn faucet_reset_emits_fct_rst_event() {
     // Verify the last event has the fct_rst topic.
     let last = events.last().expect("at least one event");
     // The first topic element is the event symbol.
-    let (topics, _data) = last;
-    let first_topic: soroban_sdk::Symbol = topics.get(0).expect("topic[0]");
+    let (_contract_id, topics, _data) = last;
+    let topic0: Symbol = topics.get(0).expect("topic[0]").into_val(&env);
     assert_eq!(
-        first_topic,
+        topic0,
         symbol_short!("fct_rst"),
         "faucet_reset must emit an event with symbol 'fct_rst'"
     );
@@ -518,7 +540,18 @@ fn faucet_reset_does_not_affect_other_offerings() {
     let token_b = Address::generate(&env);
     let payout_b = Address::generate(&env);
     let ns_b = symbol_short!("ns2");
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &ns_b, &token_b, &5_000, &payout_b, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer_b,
+        &Vec::new(&env),
+        &1u32,
+        &ns_b,
+        &token_b,
+        &5_000,
+        &payout_b,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let requester = Address::generate(&env);
 
@@ -575,8 +608,12 @@ fn faucet_reset_seed_param_is_echoed_in_event() {
 
     // Walk events emitted during this call; find the fct_rst event.
     let new_events = events.slice(before_len as u32..events.len() as u32);
-    let found = new_events.iter().any(|(topics, _data)| {
-        topics.get::<soroban_sdk::Symbol>(0).map(|s| s == symbol_short!("fct_rst")).unwrap_or(false)
+    let found = new_events.iter().any(|(_contract_id, topics, _data)| {
+        let s: Symbol = match topics.get(0) {
+            Some(v) => v.into_val(&env),
+            None => return false,
+        };
+        s == symbol_short!("fct_rst")
     });
     assert!(found, "fct_rst event must be emitted by faucet_reset");
 }
