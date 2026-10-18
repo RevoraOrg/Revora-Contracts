@@ -4,7 +4,7 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,7 +34,18 @@ fn setup_env(ts: u64) -> (Env, RevoraRevenueShareClient<'static>, Address, Addre
     let payout_asset = crate::test_utils::create_token(&env, &payout_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &10_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &10_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }

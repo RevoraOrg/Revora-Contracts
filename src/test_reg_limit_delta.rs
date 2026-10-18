@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use crate::{RevoraRevenueShareClient, EVENT_REG_LIMIT_DELTA};
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol,
+    Vec,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -14,7 +17,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
     let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     soroban_sdk::token::StellarAssetClient::new(env, &payout).mint(&admin, &1_000_000);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&admin,
+    client.register_offering(
+        &admin,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("def"),
@@ -23,7 +27,8 @@ fn setup_offering(env: &Env) -> (RevoraRevenueShareClient<'static>, Address, Add
         &payout,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     (client, admin, token, payout)
 }
 
@@ -240,8 +245,11 @@ fn test_reg_limit_delta_multiple_holders_multiple_jurisdictions() {
         .sum();
     assert_eq!(us_sum, 5_000, "total US jurisdiction shares should be 5000 bps");
 
-    let sg_sum: i128 =
-        events.iter().filter(|(_, j, _, _)| *j == symbol_short!("sg")).map(|(_, _, d, _)| *d).sum();
+    let sg_sum: i128 = events
+        .into_iter()
+        .filter(|(_, j, _, _)| *j == symbol_short!("sg"))
+        .map(|(_, _, d, _)| d)
+        .sum();
     assert_eq!(sg_sum, 5_000, "total SG jurisdiction shares should be 5000 bps");
 }
 
