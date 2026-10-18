@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::{
-    DataKey2, JurisdictionMigrationState, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
+    DataKey2, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
 };
 use soroban_sdk::{
     symbol_short,
@@ -1012,5 +1012,87 @@ fn jurisdiction_allowlist_reject_emits_audit_event() {
 
     // Audit event should be emitted on jurisdiction rejection
     assert!(env.events().all().len() > events_before);
+}
+
+// ── get_jurisdiction_grace_period adversarial coverage ──
+
+#[test]
+fn get_jurisdiction_grace_period_returns_default_when_unset() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    let grace = client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(grace, 7 * 24 * 60 * 60);
+}
+
+#[test]
+fn get_jurisdiction_grace_period_returns_configured_value() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token, &3600u64);
+    assert_eq!(
+        client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token),
+        3600
+    );
+}
+
+#[test]
+fn get_jurisdiction_grace_period_returns_zero_when_configured_zero() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token, &0u64);
+    assert_eq!(
+        client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token),
+        0
+    );
+}
+
+#[test]
+fn get_jurisdiction_grace_period_returns_max_when_configured_max() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+
+    client.set_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token, &u64::MAX);
+    assert_eq!(
+        client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token),
+        u64::MAX
+    );
+}
+
+#[test]
+fn get_jurisdiction_grace_period_is_scoped_per_offering() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+    let other_token = Address::generate(&env);
+
+    client.set_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token, &1234u64);
+
+    // A different token under the same issuer/namespace must not observe the setting.
+    assert_eq!(
+        client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &other_token),
+        7 * 24 * 60 * 60
+    );
+    assert_eq!(
+        client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token),
+        1234
+    );
+}
+
+#[test]
+fn get_jurisdiction_grace_period_unchanged_after_rejected_set() {
+    let (env, client, issuer, token, _payout_asset) = setup_offering();
+    let non_issuer = Address::generate(&env);
+
+    client.set_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token, &7200u64);
+    let before = client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token);
+
+    let result = client.try_set_jurisdiction_grace_period(
+        &non_issuer,
+        &symbol_short!("def"),
+        &token,
+        &1u64,
+    );
+    assert!(result.is_err());
+
+    let after = client.get_jurisdiction_grace_period(&issuer, &symbol_short!("def"), &token);
+    assert_eq!(before, after);
+    assert_eq!(after, 7200);
 }
 
