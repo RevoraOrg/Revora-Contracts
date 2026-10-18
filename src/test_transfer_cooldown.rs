@@ -6,6 +6,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     Address, BytesN, Env, Symbol, Vec,
 };
+use std::format;
 
 /// Advance the test ledger by `secs` seconds.
 fn advance_ledger(env: &Env, secs: u64) {
@@ -26,7 +27,18 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     let payout_asset = crate::test_utils::create_token(&env, &payout_asset_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }
@@ -99,7 +111,18 @@ fn test_transfer_blocked_by_cooldown() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -142,7 +165,18 @@ fn test_transfer_allowed_after_cooldown_elapsed() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -181,7 +215,18 @@ fn test_cooldown_exactly_at_boundary_rejects() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -230,7 +275,18 @@ fn test_cooldown_zero_means_disabled() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -266,7 +322,18 @@ fn test_different_jurisdictions_have_independent_cooldowns() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder_us = Address::generate(&env);
@@ -339,7 +406,18 @@ fn test_cooldown_not_applied_when_jurisdiction_not_set() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -381,7 +459,18 @@ fn test_estimate_transfer_cooldown_consistency() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);
@@ -447,7 +536,18 @@ fn test_cooldown_state_not_recorded_when_no_cooldown_configured() {
     let ns = symbol_short!("ns");
     let category = Symbol::new(&env, "General");
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000, &payout_asset, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
     env.ledger().set_network_id([0x01u8; 32]);
 
     let holder1 = Address::generate(&env);

@@ -74,7 +74,9 @@
 //! 3. Treat any non-`Ok` / non-`RevoraError` response as a host auth failure.
 
 #![cfg(test)]
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, String as SdkString, Vec};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, Address, Env, String as SdkString, Symbol, Vec,
+};
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
@@ -102,6 +104,119 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     client.set_admin(&issuer);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
     (issuer, token)
+}
+
+fn setup_whitelist_offering(
+) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let namespace = symbol_short!("def");
+    let token = Address::generate(&env);
+    let payout_asset = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &namespace,
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    (env, client, admin, issuer, namespace, token)
+}
+
+#[test]
+fn whitelist_add_accepts_issuer_and_admin_for_registered_offering() {
+    let (env, client, admin, issuer, namespace, token) = setup_whitelist_offering();
+    let issuer_investor = Address::generate(&env);
+    let admin_investor = Address::generate(&env);
+
+    client.whitelist_add(&issuer, &issuer, &namespace, &token, &issuer_investor);
+    client.whitelist_add(&admin, &issuer, &namespace, &token, &admin_investor);
+
+    assert!(client.is_whitelisted(&issuer, &namespace, &token, &issuer_investor));
+    assert!(client.is_whitelisted(&issuer, &namespace, &token, &admin_investor));
+    assert_eq!(client.get_whitelist(&issuer, &namespace, &token).len(), 2);
+}
+
+#[test]
+fn whitelist_add_rejects_unknown_offering_dimensions_without_state_change() {
+    let (env, client, _admin, issuer, namespace, token) = setup_whitelist_offering();
+    let existing_investor = Address::generate(&env);
+    let rejected_investor = Address::generate(&env);
+    let unknown_issuer = Address::generate(&env);
+    let unknown_token = Address::generate(&env);
+    let unknown_namespace = Symbol::new(&env, "missing");
+
+    client.whitelist_add(&issuer, &issuer, &namespace, &token, &existing_investor);
+
+    assert_eq!(
+        client.try_whitelist_add(
+            &issuer,
+            &unknown_issuer,
+            &namespace,
+            &token,
+            &rejected_investor,
+        ),
+        Err(Ok(RevoraError::OfferingNotFound))
+    );
+    assert_eq!(
+        client.try_whitelist_add(
+            &issuer,
+            &issuer,
+            &unknown_namespace,
+            &token,
+            &rejected_investor,
+        ),
+        Err(Ok(RevoraError::OfferingNotFound))
+    );
+    assert_eq!(
+        client.try_whitelist_add(
+            &issuer,
+            &issuer,
+            &namespace,
+            &unknown_token,
+            &rejected_investor,
+        ),
+        Err(Ok(RevoraError::OfferingNotFound))
+    );
+
+    assert!(client.is_whitelisted(&issuer, &namespace, &token, &existing_investor));
+    assert!(!client.is_whitelisted(&issuer, &namespace, &token, &rejected_investor));
+    assert_eq!(client.get_whitelist(&issuer, &namespace, &token).len(), 1);
+}
+
+#[test]
+fn whitelist_add_rejects_authenticated_nonissuer_without_state_change() {
+    let (env, client, _admin, issuer, namespace, token) = setup_whitelist_offering();
+    let existing_investor = Address::generate(&env);
+    let rejected_investor = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.whitelist_add(&issuer, &issuer, &namespace, &token, &existing_investor);
+
+    assert_eq!(
+        client.try_whitelist_add(
+            &attacker,
+            &issuer,
+            &namespace,
+            &token,
+            &rejected_investor,
+        ),
+        Err(Ok(RevoraError::NotAuthorized))
+    );
+    assert!(client.is_whitelisted(&issuer, &namespace, &token, &existing_investor));
+    assert!(!client.is_whitelisted(&issuer, &namespace, &token, &rejected_investor));
+    assert_eq!(client.get_whitelist(&issuer, &namespace, &token).len(), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

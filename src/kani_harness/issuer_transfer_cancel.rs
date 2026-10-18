@@ -425,6 +425,7 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn base_storage(issuer: AddrId) -> StorageModel {
         StorageModel {
@@ -648,5 +649,264 @@ mod tests {
 
         let pt = model_cancel(&mut storage, issuer).unwrap();
         assert_eq!(pt.new_issuer, expected_new_issuer);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
+
+        #[test]
+        fn prop_model_cancel_adversarial(
+            offering_issuer in any::<AddrId>(),
+            lookup_issuer in any::<AddrId>(),
+            caller in any::<AddrId>(),
+            has_pending in any::<bool>(),
+            pending_new_issuer in any::<AddrId>(),
+            pending_timestamp in any::<u64>(),
+            pending_expiry in any::<u64>(),
+        ) {
+            let pending = if has_pending {
+                Some(PendingTransfer {
+                    new_issuer: pending_new_issuer,
+                    timestamp: pending_timestamp,
+                    expiry_secs: pending_expiry,
+                })
+            } else {
+                None
+            };
+            
+            let mut storage = StorageModel {
+                pending,
+                offering: OfferingState { issuer: offering_issuer },
+                offering_issuer_lookup: lookup_issuer,
+            };
+            
+            let baseline = storage.clone();
+            let result = model_cancel(&mut storage, caller);
+            
+            if offering_issuer == 0 {
+                assert_eq!(result, Err(TransferError::OfferingNotFound));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else if caller != offering_issuer {
+                assert_eq!(result, Err(TransferError::NotAuthorized));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else if !has_pending {
+                assert_eq!(result, Err(TransferError::NoTransferPending));
+                assert_eq!(storage, baseline, "state must be unchanged after rejected operation");
+            } else {
+                // Happy path
+                assert!(result.is_ok());
+                let returned = result.unwrap();
+                assert_eq!(returned, baseline.pending.unwrap());
+                assert!(storage.pending.is_none());
+                assert_eq!(storage.offering, baseline.offering);
+                assert_eq!(storage.offering_issuer_lookup, baseline.offering_issuer_lookup);
+            }
+        }
+
+        #[test]
+        fn prop_assert_issuer_lookup_consistent_adversarial(
+            offering_issuer in any::<AddrId>(),
+            lookup_issuer in any::<AddrId>(),
+        ) {
+            let storage = StorageModel {
+                pending: None,
+                offering: OfferingState { issuer: offering_issuer },
+                offering_issuer_lookup: lookup_issuer,
+            };
+            
+            if offering_issuer == lookup_issuer {
+                assert_issuer_lookup_consistent(&storage);
+            } else {
+                let result = std::panic::catch_unwind(|| {
+                    assert_issuer_lookup_consistent(&storage);
+                });
+                assert!(result.is_err(), "inconsistent lookup should panic");
+            }
+        }
+    }
+}
+
+// ── Adversarial coverage for the `assert_no_orphan_pending` guard (Issue #1023) ─
+//
+// `assert_no_orphan_pending` is the harness's single check that a cancel really
+// removed the `PendingIssuerTransfer` key. It is an `assert!`-based invariant, not
+// a `Result`, so its contract has two halves that both need pinning down:
+//
+// * it passes **only** while the pending slot is empty, for every offering shape, and
+// * it trips for **every** non-empty pending slot, whatever the payload looks like —
+//   including payloads that are logically dead (already expired, zero timestamp, or
+//   the zero address) but physically still stored, which is exactly the leak the
+//   guard exists to catch.
+//
+// The tests below use `catch_unwind` to observe the panic directly, so the failure
+// path is asserted rather than assumed. Panic output stays captured by the test
+// harness and is only surfaced when an assertion here actually fails.
+#[cfg(test)]
+mod orphan_pending_guard_tests {
+    use super::*;
+    use std::panic::catch_unwind;
+
+    /// Guard message asserted by the negative cases.
+    const GUARD_MESSAGE: &str = "PendingIssuerTransfer key must be absent after cancel";
+
+    fn model(pending: Option<PendingTransfer>, issuer: AddrId) -> StorageModel {
+        StorageModel { pending, offering: OfferingState { issuer }, offering_issuer_lookup: issuer }
+    }
+
+    fn pending(new_issuer: AddrId, timestamp: u64, expiry_secs: u64) -> PendingTransfer {
+        PendingTransfer { new_issuer, timestamp, expiry_secs }
+    }
+
+    /// Render a panic payload as text so the exact guard message can be asserted.
+    fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            String::from("<panic payload was not a string>")
+        }
+    }
+
+    /// `None` when the guard accepts the model, otherwise the panic message.
+    fn guard_outcome(model: StorageModel) -> Option<String> {
+        catch_unwind(move || assert_no_orphan_pending(&model)).err().map(panic_text)
+    }
+
+    // ── The guard accepts a clean model ──────────────────────────────────────
+
+    #[test]
+    fn guard_accepts_an_empty_pending_slot() {
+        assert_eq!(guard_outcome(model(None, 1)), None);
+    }
+
+    #[test]
+    fn guard_accepts_every_possible_issuer_id() {
+        // AddrId is a full u8: 0 is the "no offering" sentinel and 1..=255 are real
+        // addresses. The guard inspects `pending` only, so the whole domain must pass.
+        for issuer in u8::MIN..=u8::MAX {
+            assert_eq!(
+                guard_outcome(model(None, issuer)),
+                None,
+                "clean model rejected for issuer {issuer}"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_ignores_the_offering_and_lookup_fields() {
+        // A stale reverse-lookup is a *different* invariant (`assert_issuer_lookup_consistent`)
+        // and must not make the orphan-key guard misfire.
+        let stale = StorageModel {
+            pending: None,
+            offering: OfferingState { issuer: 5 },
+            offering_issuer_lookup: 9,
+        };
+
+        assert_eq!(guard_outcome(stale), None);
+    }
+
+    #[test]
+    fn guard_does_not_mutate_the_model_it_inspects() {
+        let before = model(None, 7);
+        let outcome = guard_outcome(before);
+
+        assert_eq!(outcome, None);
+        // `assert_no_orphan_pending` takes `&StorageModel`, so a passing call can never
+        // be the reason a later assertion sees different data.
+        assert_eq!(before, model(None, 7));
+    }
+
+    // ── The guard trips on any surviving key ─────────────────────────────────
+
+    #[test]
+    fn guard_trips_when_a_pending_key_survives_a_cancel() {
+        let outcome = guard_outcome(model(Some(pending(2, 1_000, 0)), 1));
+
+        assert_eq!(outcome.as_deref(), Some(GUARD_MESSAGE));
+    }
+
+    #[test]
+    fn guard_trips_for_an_expired_but_still_stored_transfer() {
+        // Expiry is enforced at propose/report time; a cancelled proposal must be
+        // *removed*, not merely aged out. A payload that can never execute is still
+        // an orphan key and must fail the guard.
+        let expired = pending(3, 0, MIN_EXPIRY_SECS);
+
+        assert_eq!(guard_outcome(model(Some(expired), 1)).as_deref(), Some(GUARD_MESSAGE));
+    }
+
+    #[test]
+    fn guard_trips_for_every_pending_payload_shape() {
+        // Exhaustive over the payload dimensions the state model can hold: destination
+        // address (including the null sentinel and the max id) x timestamp bounds x the
+        // three legal expiry encodings. Presence alone must decide the outcome.
+        let issuers: [AddrId; 3] = [0, 1, 255];
+        let timestamps: [u64; 3] = [0, 1, u64::MAX];
+        let expiries: [u64; 3] = [0, MIN_EXPIRY_SECS, MAX_EXPIRY_SECS];
+
+        for issuer in issuers {
+            for new_issuer in issuers {
+                for timestamp in timestamps {
+                    for expiry_secs in expiries {
+                        let outcome = guard_outcome(model(
+                            Some(pending(new_issuer, timestamp, expiry_secs)),
+                            issuer,
+                        ));
+                        assert_eq!(
+                            outcome.as_deref(),
+                            Some(GUARD_MESSAGE),
+                            "orphan key survived for issuer={issuer} new_issuer={new_issuer} \
+                             timestamp={timestamp} expiry={expiry_secs}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── The guard reflects reality across the transfer lifecycle ─────────────
+
+    #[test]
+    fn guard_trips_after_a_rejected_cancel_but_passes_after_a_successful_one() {
+        let mut storage = model(None, 1);
+
+        // Unauthorised cancel: the proposal must survive, so the orphan guard must
+        // still trip afterwards — the guard cannot be satisfied by a no-op cancel.
+        model_propose(&mut storage, 1, 2, 500, 0).unwrap();
+        assert_eq!(model_cancel(&mut storage, 4), Err(TransferError::NotAuthorized));
+        assert_eq!(
+            guard_outcome(storage).as_deref(),
+            Some(GUARD_MESSAGE),
+            "a rejected cancel must leave the key in place"
+        );
+
+        // Authorised cancel: the key is gone and the guard accepts the model.
+        assert!(model_cancel(&mut storage, 1).is_ok());
+        assert_eq!(guard_outcome(storage), None);
+    }
+
+    #[test]
+    fn guard_detects_a_cancel_that_overwrites_instead_of_removing_the_key() {
+        // Regression model for the bug the guard exists to catch: an implementation
+        // that "cancels" by zeroing the pending payload while leaving the key stored.
+        // Nothing about the payload is suspicious — only presence matters.
+        let mut storage = model(None, 1);
+        model_propose(&mut storage, 1, 2, 500, MAX_EXPIRY_SECS).unwrap();
+
+        storage.pending = Some(pending(0, 0, 0)); // "cleared" but still present
+
+        assert_eq!(guard_outcome(storage).as_deref(), Some(GUARD_MESSAGE));
+    }
+
+    #[test]
+    fn guard_passes_once_the_key_is_actually_taken() {
+        let mut storage = model(None, 1);
+        model_propose(&mut storage, 1, 2, 500, 0).unwrap();
+        let taken = model_cancel(&mut storage, 1);
+
+        assert!(taken.is_ok());
+        assert_eq!(storage.pending, None);
+        assert_eq!(guard_outcome(storage), None);
     }
 }
