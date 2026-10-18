@@ -140,7 +140,8 @@ fn setup_with_holder(
         &offering_token,
         &holder,
         &10_000,
-    &1);
+        &1,
+    );
 
     (env, client, issuer, offering_token, payment_token, holder)
 }
@@ -171,7 +172,8 @@ fn report_window_unset_always_open() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -180,7 +182,8 @@ fn report_window_unset_always_open() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // Verify no window is stored
     assert!(client.get_report_window(&issuer, &symbol_short!("ns"), &token).is_none());
@@ -209,7 +212,8 @@ fn report_window_before_start_is_closed() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -218,7 +222,8 @@ fn report_window_before_start_is_closed() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // Window: [1000, 2000]
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -239,7 +244,8 @@ fn report_window_at_start_is_open_inclusive() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -248,7 +254,8 @@ fn report_window_at_start_is_open_inclusive() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
 
@@ -267,7 +274,8 @@ fn report_window_inside_is_open() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -276,7 +284,8 @@ fn report_window_inside_is_open() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
 
@@ -295,7 +304,8 @@ fn report_window_at_end_is_open_inclusive() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -304,7 +314,8 @@ fn report_window_at_end_is_open_inclusive() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
 
@@ -323,7 +334,8 @@ fn report_window_after_end_is_closed() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -332,7 +344,8 @@ fn report_window_after_end_is_closed() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
 
@@ -351,7 +364,8 @@ fn report_window_zero_width_open_at_exact_timestamp() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -360,7 +374,8 @@ fn report_window_zero_width_open_at_exact_timestamp() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // start == end: single-second window at T=5000
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
@@ -380,7 +395,8 @@ fn report_window_zero_width_closed_before() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -389,7 +405,8 @@ fn report_window_zero_width_closed_before() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
 
@@ -408,7 +425,8 @@ fn report_window_zero_width_closed_after() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -417,7 +435,8 @@ fn report_window_zero_width_closed_after() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
 
@@ -436,7 +455,8 @@ fn report_window_reconfigured_to_exclude_now_closes_reporting() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -445,7 +465,8 @@ fn report_window_reconfigured_to_exclude_now_closes_reporting() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // Initial window: [1000, 3000]; now = 2000 â†’ open
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &3_000);
@@ -468,7 +489,8 @@ fn report_window_reconfigured_to_include_now_opens_reporting() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -477,7 +499,8 @@ fn report_window_reconfigured_to_include_now_opens_reporting() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // Initial window: [4000, 5000]; now = 2000 â†’ closed
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &4_000, &5_000);
@@ -681,7 +704,8 @@ fn set_report_window_valid_range_accepted() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -690,7 +714,8 @@ fn set_report_window_valid_range_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
     assert!(r.is_ok());
@@ -709,7 +734,8 @@ fn set_report_window_zero_width_accepted() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -718,7 +744,8 @@ fn set_report_window_zero_width_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
     assert!(r.is_ok(), "zero-width window must be accepted, got {r:?}");
@@ -733,7 +760,8 @@ fn set_report_window_inverted_range_rejected() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -742,7 +770,8 @@ fn set_report_window_inverted_range_rejected() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_report_window(&issuer, &symbol_short!("ns"), &token, &2_000, &1_000);
     assert_eq!(r, Err(Ok(RevoraError::LimitReached)));
@@ -760,7 +789,8 @@ fn set_claim_window_valid_range_accepted() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -769,7 +799,8 @@ fn set_claim_window_valid_range_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
     assert!(r.is_ok());
@@ -788,7 +819,8 @@ fn set_claim_window_zero_width_accepted() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -797,7 +829,8 @@ fn set_claim_window_zero_width_accepted() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &5_000, &5_000);
     assert!(r.is_ok(), "zero-width window must be accepted, got {r:?}");
@@ -812,7 +845,8 @@ fn set_claim_window_inverted_range_rejected() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -821,7 +855,8 @@ fn set_claim_window_inverted_range_rejected() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &2_000, &1_000);
     assert_eq!(r, Err(Ok(RevoraError::LimitReached)));
@@ -931,7 +966,8 @@ fn report_window_is_scoped_per_offering() {
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -940,8 +976,10 @@ fn report_window_is_scoped_per_offering() {
         &token_a,
         &0,
         &symbol_short!(""),
-        &0);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+        &0,
+    );
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -950,7 +988,8 @@ fn report_window_is_scoped_per_offering() {
         &token_b,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     // Close offering A's report window; leave B's unset (always open)
     client.set_report_window(&issuer, &symbol_short!("ns"), &token_a, &5_000, &6_000);
@@ -995,7 +1034,8 @@ fn claim_window_is_scoped_per_offering() {
     let (payment_token, _) = create_payment_token(&env);
     let holder = Address::generate(&env);
 
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1004,8 +1044,10 @@ fn claim_window_is_scoped_per_offering() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+        &0,
+    );
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1014,7 +1056,8 @@ fn claim_window_is_scoped_per_offering() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
         &issuer,
@@ -1022,14 +1065,16 @@ fn claim_window_is_scoped_per_offering() {
         &token_a,
         &holder,
         &10_000,
-    &1);
+        &1,
+    );
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
         &issuer,
         &symbol_short!("ns"),
         &token_b,
         &holder,
         &10_000,
-    &1);
+        &1,
+    );
 
     set_time(&env, 500);
     client.deposit_revenue(&issuer, &symbol_short!("ns"), &token_a, &payment_token, &100_000, &1);
@@ -1060,7 +1105,8 @@ fn set_report_window_emits_event() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1069,7 +1115,8 @@ fn set_report_window_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let before = env.events().all().len();
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -1085,7 +1132,8 @@ fn set_claim_window_emits_event() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1094,7 +1142,8 @@ fn set_claim_window_emits_event() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     let before = env.events().all().len();
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
@@ -1114,7 +1163,8 @@ fn get_report_window_returns_none_when_unset() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1123,7 +1173,8 @@ fn get_report_window_returns_none_when_unset() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     assert!(client.get_report_window(&issuer, &symbol_short!("ns"), &token).is_none());
 }
@@ -1137,7 +1188,8 @@ fn get_claim_window_returns_none_when_unset() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1146,7 +1198,8 @@ fn get_claim_window_returns_none_when_unset() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     assert!(client.get_claim_window(&issuer, &symbol_short!("ns"), &token).is_none());
 }
@@ -1160,7 +1213,8 @@ fn get_report_window_returns_correct_values() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1169,7 +1223,8 @@ fn get_report_window_returns_correct_values() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_234, &5_678);
     let w = client.get_report_window(&issuer, &symbol_short!("ns"), &token).unwrap();
@@ -1186,7 +1241,8 @@ fn get_claim_window_returns_correct_values() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1195,7 +1251,8 @@ fn get_claim_window_returns_correct_values() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &9_000, &9_999);
     let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
@@ -1212,7 +1269,8 @@ fn set_report_window_overwrites_previous() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer,
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
@@ -1221,7 +1279,8 @@ fn set_report_window_overwrites_previous() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
     client.set_report_window(&issuer, &symbol_short!("ns"), &token, &3_000, &4_000);
@@ -1336,5 +1395,245 @@ fn report_revenue_epoch_boundary_ordering_invariant() {
         r_skip2,
         Err(Ok(RevoraError::InvalidPeriodId)),
         "Skipped period_id must be rejected after multiple window reconfigurations"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 10 — set_claim_window adversarial coverage
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// set_claim_window requires issuer authorization; unauthorized callers are rejected
+/// and no window is stored.
+#[test]
+fn set_claim_window_requires_issuer_auth() {
+    let env = Env::default();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Register offering with mocked auths, then drop auth mocking.
+    env.mock_all_auths();
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    env.set_auths(&[]);
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
+    assert!(r.is_err(), "unauthorized set_claim_window must fail, got {r:?}");
+    assert!(
+        client.get_claim_window(&issuer, &symbol_short!("ns"), &token).is_none(),
+        "rejected set_claim_window must not persist state"
+    );
+}
+
+/// set_claim_window for an unregistered offering is rejected and stores nothing.
+#[test]
+fn set_claim_window_unknown_offering_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
+    assert!(r.is_err(), "set_claim_window on unknown offering must fail, got {r:?}");
+    assert!(client.get_claim_window(&issuer, &symbol_short!("ns"), &token).is_none());
+}
+
+/// Inverted range (start > end) is rejected and any previously stored window is
+/// preserved unchanged.
+#[test]
+fn set_claim_window_inverted_range_preserves_previous_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_000, &2_000);
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &3_000, &2_999);
+    assert_eq!(r, Err(Ok(RevoraError::LimitReached)));
+
+    let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
+    assert_eq!(w.start_timestamp, 1_000);
+    assert_eq!(w.end_timestamp, 2_000);
+}
+
+/// Boundary: start = end = 0 (zero-width at epoch) is accepted and stored.
+#[test]
+fn set_claim_window_zero_at_epoch_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &0, &0);
+    assert!(r.is_ok(), "zero-width window at epoch must be accepted, got {r:?}");
+    let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
+    assert_eq!(w.start_timestamp, 0);
+    assert_eq!(w.end_timestamp, 0);
+}
+
+/// Boundary: end = u64::MAX is accepted and stored verbatim.
+#[test]
+fn set_claim_window_max_end_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &1, &u64::MAX);
+    assert!(r.is_ok(), "end = u64::MAX must be accepted, got {r:?}");
+    let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
+    assert_eq!(w.start_timestamp, 1);
+    assert_eq!(w.end_timestamp, u64::MAX);
+}
+
+/// Boundary: start = u64::MAX, end = u64::MAX is accepted (zero-width at max).
+#[test]
+fn set_claim_window_zero_width_at_max_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    let r = client.try_set_claim_window(
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &u64::MAX,
+        &u64::MAX,
+    );
+    assert!(r.is_ok(), "zero-width at u64::MAX must be accepted, got {r:?}");
+    let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
+    assert_eq!(w.start_timestamp, u64::MAX);
+    assert_eq!(w.end_timestamp, u64::MAX);
+}
+
+/// Boundary: start = 0, end = u64::MAX is accepted (maximal window).
+#[test]
+fn set_claim_window_full_range_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &0, &u64::MAX);
+    assert!(r.is_ok(), "full-range window must be accepted, got {r:?}");
+    let w = client.get_claim_window(&issuer, &symbol_short!("ns"), &token).unwrap();
+    assert_eq!(w.start_timestamp, 0);
+    assert_eq!(w.end_timestamp, u64::MAX);
+}
+
+/// Rejected inverted range must not emit a window-set event (no partial side effects).
+#[test]
+fn set_claim_window_inverted_range_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let cid = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &cid);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
+    let before = env.events().all().len();
+    let r = client.try_set_claim_window(&issuer, &symbol_short!("ns"), &token, &2_000, &1_000);
+    assert_eq!(r, Err(Ok(RevoraError::LimitReached)));
+    assert_eq!(
+        env.events().all().len(),
+        before,
+        "rejected set_claim_window must not emit events"
     );
 }
