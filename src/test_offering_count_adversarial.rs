@@ -1,12 +1,12 @@
-//! Adversarial and boundary test coverage for `list_offerings` in `lib.rs` (#1089).
+//! Adversarial and boundary test coverage for `list_offerings` in `lib.rs`.
 //!
 //! # Coverage Matrix
 //!
 //! | Scenario / Property                                          | Assertions / Expected Behavior |
 //! |--------------------------------------------------------------|--------------------------------|
-//! | Uninitialized / Non-existent tenant                          | Returns empty `Vec`            |
+//! | Uninitialized / Non-existent tenant                          | Returns empty list             |
 //! | Isolation across distinct issuers (same namespace)           | Lists strictly isolate         |
-//! | Isolation across distinct namespaces (same issuer)           | Lists strictly isolate         |
+//! | Isolation across distinct namespaces (same issuer)          | Lists strictly isolate         |
 //! | Registration with boundary / diverse namespace symbols       | Exact list tracking            |
 //! | State monotonicity on successful registrations               | `[] -> [a] -> [a,b] -> ...`    |
 //! | No auth required / callable by arbitrary unprivileged env    | Public view access preserved   |
@@ -59,30 +59,30 @@ fn register_single_offering(
 // ── Tests: Baseline and Querying Non-existent Tenants ────────────────────────
 
 #[test]
-fn list_offerings_returns_empty_for_uninitialized_tenant() {
+fn get_offering_count_returns_zero_for_uninitialized_tenant() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let namespace = symbol_short!("default");
 
-    let offerings = client.list_offerings(&issuer, &namespace);
-    assert_eq!(offerings.len(), 0, "Unregistered tenant must return empty offerings");
+    let count = client.get_offering_count(&issuer, &namespace);
+    assert_eq!(count, 0, "Unregistered tenant must return 0 offerings");
 }
 
 #[test]
-fn list_offerings_returns_empty_for_random_issuers_and_namespaces() {
+fn get_offering_count_returns_zero_for_random_issuers_and_namespaces() {
     let (env, _contract_id, client) = setup_env();
 
     for _ in 0..5 {
         let issuer = Address::generate(&env);
         let namespace = Symbol::new(&env, "random_ns");
-        assert_eq!(client.list_offerings(&issuer, &namespace).len(), 0);
+        assert_eq!(client.get_offering_count(&issuer, &namespace), 0);
     }
 }
 
 // ── Tests: Tenant Isolation (Issuer and Namespace Sandboxing) ────────────────
 
 #[test]
-fn list_offerings_isolates_between_different_issuers_same_namespace() {
+fn get_offering_count_isolates_between_different_issuers_same_namespace() {
     let (env, _contract_id, client) = setup_env();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -93,27 +93,27 @@ fn list_offerings_isolates_between_different_issuers_same_namespace() {
     let token_b1 = Address::generate(&env);
 
     // Initial state: both zero
-    assert_eq!(client.list_offerings(&issuer_a, &namespace).len(), 0);
-    assert_eq!(client.list_offerings(&issuer_b, &namespace).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer_a, &namespace), 0);
+    assert_eq!(client.get_offering_count(&issuer_b, &namespace), 0);
 
     // Register 1 for issuer_a
     register_single_offering(&env, &client, &issuer_a, &namespace, &token_a1);
-    assert_eq!(client.list_offerings(&issuer_a, &namespace).len(), 1);
-    assert_eq!(client.list_offerings(&issuer_b, &namespace).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer_a, &namespace), 1);
+    assert_eq!(client.get_offering_count(&issuer_b, &namespace), 0);
 
     // Register 1 for issuer_b
     register_single_offering(&env, &client, &issuer_b, &namespace, &token_b1);
-    assert_eq!(client.list_offerings(&issuer_a, &namespace).len(), 1);
-    assert_eq!(client.list_offerings(&issuer_b, &namespace).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer_a, &namespace), 1);
+    assert_eq!(client.get_offering_count(&issuer_b, &namespace), 1);
 
     // Register another for issuer_a
     register_single_offering(&env, &client, &issuer_a, &namespace, &token_a2);
-    assert_eq!(client.list_offerings(&issuer_a, &namespace).len(), 2);
-    assert_eq!(client.list_offerings(&issuer_b, &namespace).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer_a, &namespace), 2);
+    assert_eq!(client.get_offering_count(&issuer_b, &namespace), 1);
 }
 
 #[test]
-fn list_offerings_isolates_between_different_namespaces_same_issuer() {
+fn get_offering_count_isolates_between_different_namespaces_same_issuer() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let ns_prod = symbol_short!("prod");
@@ -125,21 +125,21 @@ fn list_offerings_isolates_between_different_namespaces_same_issuer() {
 
     // Register in prod
     register_single_offering(&env, &client, &issuer, &ns_prod, &token_prod);
-    assert_eq!(client.list_offerings(&issuer, &ns_prod).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_staging).len(), 0);
-    assert_eq!(client.list_offerings(&issuer, &ns_dev).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer, &ns_prod), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_staging), 0);
+    assert_eq!(client.get_offering_count(&issuer, &ns_dev), 0);
 
     // Register in staging
     register_single_offering(&env, &client, &issuer, &ns_staging, &token_staging);
-    assert_eq!(client.list_offerings(&issuer, &ns_prod).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_staging).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_dev).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer, &ns_prod), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_staging), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_dev), 0);
 }
 
 // ── Tests: Namespace Boundary Values ──────────────────────────────────────────
 
 #[test]
-fn list_offerings_handles_various_namespace_symbols() {
+fn get_offering_count_handles_various_namespace_symbols() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
 
@@ -159,23 +159,23 @@ fn list_offerings_handles_various_namespace_symbols() {
     register_single_offering(&env, &client, &issuer, &ns_max_short, &token_3);
     register_single_offering(&env, &client, &issuer, &ns_long, &token_4);
 
-    assert_eq!(client.list_offerings(&issuer, &ns_empty).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_single).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_max_short).len(), 1);
-    assert_eq!(client.list_offerings(&issuer, &ns_long).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_empty), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_single), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_max_short), 1);
+    assert_eq!(client.get_offering_count(&issuer, &ns_long), 1);
 }
 
 // ── Tests: State Invariance on Failed Registrations ───────────────────────────
 
 #[test]
-fn list_offerings_unchanged_on_rejected_invalid_bps() {
+fn get_offering_count_unchanged_on_rejected_invalid_bps() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let namespace = symbol_short!("ns");
     let token = Address::generate(&env);
 
     // Verify initial count is 0
-    assert_eq!(client.list_offerings(&issuer, &namespace).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer, &namespace), 0);
 
     // Attempt registration with invalid BPS (> 10_000)
     let res = client.try_register_offering(
@@ -193,11 +193,11 @@ fn list_offerings_unchanged_on_rejected_invalid_bps() {
     assert_eq!(res, Err(Ok(RevoraError::InvalidRevenueShareBps)));
 
     // Ensure offering count did not increment and remains 0
-    assert_eq!(client.list_offerings(&issuer, &namespace).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer, &namespace), 0);
 }
 
 #[test]
-fn list_offerings_unchanged_on_rejected_negative_cap() {
+fn get_offering_count_unchanged_on_rejected_negative_cap() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let namespace = symbol_short!("ns");
@@ -218,12 +218,12 @@ fn list_offerings_unchanged_on_rejected_negative_cap() {
             &0,
         );
         assert_eq!(res, Err(Ok(RevoraError::InvalidAmount)));
-        assert_eq!(client.list_offerings(&issuer, &namespace).len(), 0);
+        assert_eq!(client.get_offering_count(&issuer, &namespace), 0);
     }
 }
 
 #[test]
-fn list_offerings_unchanged_on_duplicate_token_registration() {
+fn get_offering_count_unchanged_on_duplicate_token_registration() {
     let (env, _contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let namespace = symbol_short!("ns");
@@ -231,7 +231,7 @@ fn list_offerings_unchanged_on_duplicate_token_registration() {
 
     // First registration succeeds -> count becomes 1
     register_single_offering(&env, &client, &issuer, &namespace, &token);
-    assert_eq!(client.list_offerings(&issuer, &namespace).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 
     // Second registration with the exact same token must fail
     let duplicate_res = client.try_register_offering(
@@ -249,13 +249,13 @@ fn list_offerings_unchanged_on_duplicate_token_registration() {
     assert_eq!(duplicate_res, Err(Ok(RevoraError::OfferingAlreadyExists)));
 
     // Offering count must remain 1
-    assert_eq!(client.list_offerings(&issuer, &namespace).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 }
 
 // ── Tests: Direct Static Invocation & Storage Integrity ──────────────────────
 
 #[test]
-fn direct_static_list_offerings_matches_client_interface() {
+fn direct_static_get_offering_count_matches_client_interface() {
     let (env, contract_id, client) = setup_env();
     let issuer = Address::generate(&env);
     let namespace = symbol_short!("static");
@@ -265,17 +265,17 @@ fn direct_static_list_offerings_matches_client_interface() {
         register_single_offering(&env, &client, &issuer, &namespace, &token);
 
         // Verify count through client
-        let client_list = client.list_offerings(&issuer, &namespace);
-        assert_eq!(client_list.len(), i + 1);
+        let client_count = client.get_offering_count(&issuer, &namespace);
+        assert_eq!(client_count, i + 1);
 
         // Verify count directly via contract invocation inside contract env context
         env.as_contract(&contract_id, || {
-            let static_list = RevoraRevenueShare::list_offerings(
+            let static_count = RevoraRevenueShare::get_offering_count(
                 env.clone(),
                 issuer.clone(),
                 namespace.clone(),
             );
-            assert_eq!(static_list.len(), i + 1);
+            assert_eq!(static_count, i + 1);
 
             // Directly inspect low-level DataKey::OfferCount persistent storage
             let key = DataKey::OfferCount(TenantId {
@@ -291,7 +291,7 @@ fn direct_static_list_offerings_matches_client_interface() {
 // ── Tests: Transfer Issuer Stability ──────────────────────────────────────────
 
 #[test]
-fn list_offerings_updates_appropriately_on_accepted_issuer_transfer() {
+fn get_offering_count_updates_appropriately_on_accepted_issuer_transfer() {
     let (env, _contract_id, client) = setup_env();
     let issuer_old = Address::generate(&env);
     let issuer_new = Address::generate(&env);
@@ -303,15 +303,15 @@ fn list_offerings_updates_appropriately_on_accepted_issuer_transfer() {
     register_single_offering(&env, &client, &issuer_old, &namespace, &token1);
     register_single_offering(&env, &client, &issuer_old, &namespace, &token2);
 
-    assert_eq!(client.list_offerings(&issuer_old, &namespace).len(), 2);
-    assert_eq!(client.list_offerings(&issuer_new, &namespace).len(), 0);
+    assert_eq!(client.get_offering_count(&issuer_old, &namespace), 2);
+    assert_eq!(client.get_offering_count(&issuer_new, &namespace), 0);
 
     // Propose and accept transfer of token1 to issuer_new
     client.propose_issuer_transfer(&issuer_old, &namespace, &token1, &issuer_new);
     client.accept_issuer_transfer(&issuer_new, &namespace, &token1);
 
     // In Revora's design, accepting an issuer transfer appends to the new issuer's offering index
-    assert_eq!(client.list_offerings(&issuer_new, &namespace).len(), 1);
+    assert_eq!(client.get_offering_count(&issuer_new, &namespace), 1);
     // Old issuer retains original indexed count for backward compatibility / historic slot stability
-    assert_eq!(client.list_offerings(&issuer_old, &namespace).len(), 2);
+    assert_eq!(client.get_offering_count(&issuer_old, &namespace), 2);
 }
