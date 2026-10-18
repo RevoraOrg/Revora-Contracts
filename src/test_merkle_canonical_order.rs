@@ -35,7 +35,8 @@ fn expected_leaf_hash(env: &Env, holder: &Address, share_bps: u32) -> BytesN<32>
     input.push_back(0x00u8);
     input.append(&holder.to_xdr(env));
     input.append(&share_bps.to_xdr(env));
-    env.crypto().sha256(&input)
+    // `sha256` returns a `crypto::Hash<32>`; tests speak `BytesN<32>` end to end.
+    env.crypto().sha256(&input).to_bytes()
 }
 
 /// Compute the expected internal-node hash independently:
@@ -56,7 +57,7 @@ fn expected_node_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> Bytes
     input.push_back(0x01u8);
     input.append(&lo);
     input.append(&hi);
-    env.crypto().sha256(&input)
+    env.crypto().sha256(&input).to_bytes()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -83,8 +84,9 @@ fn canonical_leaves_two_entries_sorted_ascending() {
     let a = Address::generate(&env);
     let b = Address::generate(&env);
 
-    let a_xdr = a.to_xdr(&env);
-    let b_xdr = b.to_xdr(&env);
+    // `ToXdr::to_xdr` consumes `self`, so clone to keep the addresses usable.
+    let a_xdr = a.clone().to_xdr(&env);
+    let b_xdr = b.clone().to_xdr(&env);
 
     // Determine expected order by comparing XDR bytes.
     let (expected_first, expected_second) = {
@@ -172,7 +174,7 @@ fn canonical_leaves_rejects_share_bps_over_ten_thousand() {
     let holder = Address::generate(&env);
     let entries = [(holder.clone(), 10_001u32)];
     let result = canonical_leaves(&env, &entries);
-    assert_eq!(result, Err(MerkleError::InvalidShareBps));
+    assert_eq!(result.err(), Some(MerkleError::InvalidShareBps));
 }
 
 /// canonical_leaves allows share_bps == 10_000 (exactly 100 %).
@@ -192,7 +194,7 @@ fn canonical_leaves_rejects_duplicate_address() {
     // Same holder appears twice with different share_bps.
     let entries = [(holder.clone(), 5_000u32), (holder.clone(), 3_000u32)];
     let result = canonical_leaves(&env, &entries);
-    assert_eq!(result, Err(MerkleError::DuplicateAddress));
+    assert_eq!(result.err(), Some(MerkleError::DuplicateAddress));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -228,7 +230,7 @@ fn build_merkle_root_empty_returns_sha256_of_empty() {
     let env = make_env();
     let leaves = soroban_sdk::Vec::new(&env);
     let root = build_merkle_root(&env, &leaves);
-    let expected = env.crypto().sha256(&Bytes::new(&env));
+    let expected = env.crypto().sha256(&Bytes::new(&env)).to_bytes();
     assert_eq!(root, expected);
 }
 
@@ -270,7 +272,7 @@ fn build_merkle_root_two_leaves_is_node_of_two_leaf_hashes() {
     node_input.push_back(0x01u8);
     node_input.append(&lo);
     node_input.append(&hi);
-    let expected_root = env.crypto().sha256(&node_input);
+    let expected_root = env.crypto().sha256(&node_input).to_bytes();
 
     assert_eq!(root, expected_root);
 }
@@ -392,7 +394,7 @@ fn leaf_hash_differs_from_node_hash_of_same_inputs() {
     node_input.push_back(0x01u8);
     node_input.append(&lb);
     node_input.append(&lb);
-    let node_hash = env.crypto().sha256(&node_input);
+    let node_hash = env.crypto().sha256(&node_input).to_bytes();
 
     // They must be different — domain prefixes ensure this.
     assert_ne!(leaf_hash, node_hash, "leaf and node hashes must be domain-separated");
@@ -408,8 +410,8 @@ fn canonical_leaves_no_double_counting() {
     // Attempt to add the same holder with two different allocations.
     let result = canonical_leaves(&env, &[(holder.clone(), 3_000u32), (holder.clone(), 7_000u32)]);
     assert_eq!(
-        result,
-        Err(MerkleError::DuplicateAddress),
+        result.err(),
+        Some(MerkleError::DuplicateAddress),
         "duplicate holder must be rejected to prevent double-counting"
     );
 }
@@ -453,8 +455,9 @@ fn canonical_leaves_ordering_consistent_with_prove_distribution_tie_break() {
     // Generate two holders and determine which has the smaller XDR encoding.
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    let a_xdr = a.to_xdr(&env);
-    let b_xdr = b.to_xdr(&env);
+    // `ToXdr::to_xdr` consumes `self`, so clone to keep the addresses usable.
+    let a_xdr = a.clone().to_xdr(&env);
+    let b_xdr = b.clone().to_xdr(&env);
 
     // Same share_bps for both — pure tie-break scenario.
     let entries = [(a.clone(), 5_000u32), (b.clone(), 5_000u32)];
