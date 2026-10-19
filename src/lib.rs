@@ -438,6 +438,8 @@ mod test_get_payment_token;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
+mod test_multisig_regression;
+#[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
@@ -13459,6 +13461,9 @@ impl RevoraRevenueShare {
     /// - `owners` must not be empty and must contain â‰¤ 20 unique addresses
     /// - `threshold` must be in range [1, owners.len()]
     /// - `proposal_duration` must be in range [1, 31,536,000] seconds (365 days)
+    /// - `quorum_bps` must be in range [1, 10,000]; owner weights are initialized
+    ///   as an equal 10,000-bps split with any division remainder assigned to the
+    ///   last owner.
     ///
     /// # Errors
     /// - `NotAuthorized`: Caller is not the admin
@@ -13523,6 +13528,8 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey3::MultisigOwners, &owners.clone());
         env.storage().persistent().set(&DataKey3::MultisigProposalCount, &0_u32);
         env.storage().persistent().set(&DataKey3::MultisigProposalDuration, &proposal_duration);
+        env.storage().persistent().set(&DataKey3::MultisigQuorumBps, &quorum_bps);
+        Self::rebalance_multisig_voter_weights(&env, &owners);
         env.events().publish((EVENT_MULTISIG_INIT, caller.clone()), (owners.len(), threshold));
         Ok(())
     }
@@ -13637,6 +13644,8 @@ impl RevoraRevenueShare {
         let mut initial_approvals = Vec::new(&env);
         initial_approvals.push_back(proposer.clone());
 
+        // Keep the legacy default for multisig state created before quorum_bps
+        // was persisted; newly initialized multisigs always store their value.
         let quorum_bps: u32 =
             env.storage().persistent().get(&DataKey3::MultisigQuorumBps).unwrap_or(5100);
 
@@ -13751,6 +13760,7 @@ impl RevoraRevenueShare {
         match proposal.action.clone() {
             ProposalAction::SetAdmin(new_admin) => {
                 env.storage().persistent().set(&DataKey::Admin, &new_admin);
+                Self::emit_v2_event(&env, (EVENT_ADMIN_SET,), new_admin);
             }
             ProposalAction::Freeze => {
                 env.storage().persistent().set(&DataKey::Frozen, &true);
@@ -13777,6 +13787,7 @@ impl RevoraRevenueShare {
                 }
                 owners.push_back(new_owner);
                 env.storage().persistent().set(&DataKey3::MultisigOwners, &owners);
+                Self::rebalance_multisig_voter_weights(&env, &owners);
                 let next_epoch = current_epoch + 1;
                 env.storage().persistent().set(&DataKey3::MultisigEpoch, &next_epoch);
             }
@@ -13799,6 +13810,8 @@ impl RevoraRevenueShare {
                     }
                 }
                 env.storage().persistent().set(&DataKey3::MultisigOwners, &new_owners);
+                env.storage().persistent().remove(&DataKey3::VoterWeight(old_owner));
+                Self::rebalance_multisig_voter_weights(&env, &new_owners);
                 let next_epoch = current_epoch + 1;
                 env.storage().persistent().set(&DataKey3::MultisigEpoch, &next_epoch);
             }
@@ -13832,6 +13845,20 @@ impl RevoraRevenueShare {
             total_voted_bps = total_voted_bps.saturating_add(weight);
         }
         total_voted_bps >= proposal.quorum_bps
+    }
+
+    /// Assign equal voting weight across the current owners.
+    ///
+    /// Weights are expressed in basis points and always sum to 10,000. Any
+    /// remainder from integer division is assigned to the last owner, making
+    /// the result deterministic while keeping the full quorum domain usable.
+    fn rebalance_multisig_voter_weights(env: &Env, owners: &Vec<Address>) {
+        let base_weight = 10_000_u32 / owners.len();
+        let remainder = 10_000_u32 % owners.len();
+        for i in 0..owners.len() {
+            let weight = if i + 1 == owners.len() { base_weight + remainder } else { base_weight };
+            env.storage().persistent().set(&DataKey3::VoterWeight(owners.get(i).unwrap()), &weight);
+        }
     }
 
     /// Read a proposal by id (internal helper).
