@@ -371,6 +371,8 @@ pub enum RevoraError {
     OracleQuoteStale = 91,
     /// A redemption request overlaps an existing pending redemption window.
     RedemptionWindowOverlap = 92,
+    /// Payment-token precision cannot change after an offering is funded.
+    DecimalsLocked = 93,
 }
 
 pub mod tax_bucket;
@@ -3623,6 +3625,20 @@ impl RevoraRevenueShare {
         env.storage().persistent().get::<DataKey, Address>(&pt_key)
     }
 
+    /// Validate precision when the token exposes readable decimals metadata.
+    fn validate_payment_token_decimals(
+        env: &Env,
+        payment_token: &Address,
+        decimals: u32,
+    ) -> Result<(), RevoraError> {
+        if let Ok(on_chain_decimals) = token::Client::new(env, payment_token).try_decimals() {
+            if on_chain_decimals != Ok(decimals) {
+                return Err(RevoraError::DecimalsMismatch);
+            }
+        }
+        Ok(())
+    }
+
     /// Internal helper for revenue deposits.
     /// Validates amount using the Negative Amount Validation Matrix (#163).
     fn do_deposit_revenue(
@@ -3696,6 +3712,14 @@ impl RevoraRevenueShare {
                 return Err(RevoraError::PaymentTokenMismatch);
             }
         }
+
+        let decimals = Self::get_payment_token_decimals(
+            env.clone(),
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+        );
+        Self::validate_payment_token_decimals(env, &payment_token, decimals)?;
 
         // Transfer tokens from issuer to contract
         let contract_addr = env.current_contract_address();
@@ -8629,12 +8653,14 @@ impl RevoraRevenueShare {
     ///
     /// ### Security
     /// - Only the offering issuer may configure decimals.
-    /// - Misconfigured decimals directly affect payout arithmetic; issuers must supply
-    ///   the on-chain token's actual decimal value.
+    /// - Precision is immutable after funding so historical payouts cannot be rescaled.
+    /// - Readable payout token metadata must match the configured precision.
     ///
     /// ### Errors
     /// - `RevoraError::NotAuthorized` if caller is not the issuer.
     /// - `RevoraError::LimitReached` if `decimals > 18`.
+    /// - `RevoraError::DecimalsLocked` once a payment token is locked or a period exists.
+    /// - `RevoraError::DecimalsMismatch` if readable token metadata differs.
     pub fn set_payment_token_decimals(
         env: Env,
         issuer: Address,
@@ -8658,8 +8684,19 @@ impl RevoraRevenueShare {
             namespace: namespace.clone(),
             token: token.clone(),
         };
-        env.storage().persistent().set(&DataKey2::PaymentTokenDecimals(offering_id), &decimals);
-        env.events().publish((EVENT_DECIMAL_SET, issuer, namespace, token), decimals);
+        let period_count = Self::get_period_count_internal(&env, &offering_id);
+        if env.storage().persistent().has(&DataKey::PaymentToken(offering_id.clone()))
+            || period_count > 0
+        {
+            return Err(RevoraError::DecimalsLocked);
+        }
+        Self::validate_payment_token_decimals(&env, &offering.payout_asset, decimals)?;
+        let decimals_key = DataKey2::PaymentTokenDecimals(offering_id);
+        let old_decimals: u32 =
+            env.storage().persistent().get(&decimals_key).unwrap_or(STELLAR_CANONICAL_DECIMALS);
+        env.storage().persistent().set(&decimals_key, &decimals);
+        env.events()
+            .publish((EVENT_DECIMAL_SET, issuer, namespace, token), (old_decimals, decimals));
         Ok(())
     }
 

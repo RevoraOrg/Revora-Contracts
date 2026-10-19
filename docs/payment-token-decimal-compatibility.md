@@ -41,7 +41,15 @@ Sets the decimal precision of the payout asset for an offering. Requires issuer 
 
 - **Range**: `0..=18`. Values outside this range return `RevoraError::LimitReached`.
 - **Default**: If not set, `7` (canonical Stellar stroops) is assumed.
-- **Event**: Emits `dec_set` event with the configured value.
+- **Lock**: Once a payment token is locked or `PeriodCount > 0`, authorized setter calls within the valid range
+  return `RevoraError::DecimalsLocked` (93), including attempts to set the same value.
+- **Validation**: Before funding, a readable `payout_asset.decimals()` must match the
+  requested value (`DecimalsMismatch` otherwise). Deposits also validate the configured
+  precision against the actual payment token before transferring or recording revenue.
+  Missing/reverting metadata remains supported, as in offering registration.
+- **Event**: `pt_dec` retains topics `(pt_dec, issuer, namespace, token)` and now emits
+  data `(old_decimals, new_decimals)` instead of a single integer. The old value is 7
+  when no override existed. Indexers consuming this event must decode the new tuple.
 
 ### `get_payment_token_decimals(issuer, namespace, token) -> u32`
 
@@ -49,10 +57,13 @@ Returns the configured decimal precision, or `7` if not set.
 
 ## Security Assumptions
 
-1. **Issuer responsibility**: The `issuer` is trusted to supply the correct on-chain token decimal value. An incorrect value directly affects all future claim payouts. Issuers should verify the decimal on-chain before calling this function.
-2. **Immutable after set**: There is no restriction on updating decimals after the fact, but changing decimals mid-offering will affect future claims inconsistently with past revenue reports. Issuers should set decimals before the first revenue report.
+1. **Token metadata**: A reported on-chain precision must match configuration. When
+   metadata is unavailable, the issuer remains responsible for choosing the correct value.
+2. **Immutable after funding**: Set decimals before the first successful deposit.
+   Neither issuer authorization nor an equal-value write bypasses the funding lock.
+   This keeps the precision used for historical deposits and later claims consistent.
 3. **Overflow is safe**: All multiplications are guarded with `checked_mul`. Overflow returns `0`, preventing fund inflation but potentially causing zero payouts for extremely large amounts with low-decimal tokens.
-4. **Scope**: Decimals are per-offering, not per-asset globally. Two offerings with the same payout asset may have different decimal configurations.
+4. **Scope**: Decimals are per-offering, not per-asset globally. Each offering must match the token metadata when it is available.
 5. **Read-Side Pagination**: When computing holder shares iteratively off-chain, be aware that paginated endpoints (e.g., `get_offerings_page`, `get_blacklist_page`) are capped at a `MAX_PAGE_LIMIT` of 20 to prevent unbounded execution. Indexers fetching multiple properties must handle this cursor-based traversal safely.
 
 ## Example
@@ -86,3 +97,10 @@ client.deposit_revenue(&issuer, &ns, &token, &usdc_address, &1_000_000, &1);
 | `claim_normalizes_8_decimal_token_revenue` | 8-dec revenue scaled down in claim |
 | `claim_with_7_decimal_token_is_unchanged` | 7-dec revenue unchanged (no-op) |
 | `get_claimable_normalizes_6_decimal_token` | Preview reflects normalization |
+
+## Funding-lock regressions
+
+`tests/payment_token_decimals.rs` covers post-deposit rejection, metadata mismatch,
+independent payment-token/period locks, unchanged state on failure, default and boundary
+values, issuer authorization, and the old/new event payload. The payout normalization
+and native-token transfer arithmetic are unchanged by this fix.
