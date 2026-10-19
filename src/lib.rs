@@ -5184,7 +5184,21 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    // â”€â”€ Offering management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    /// Helper: block only when the contract is HardPaused. Claim and other
+    /// holder outflows remain allowed under SoftPaused per the pause tier docs.
+    fn require_not_hard_paused(env: &Env) -> Result<(), RevoraError> {
+        let state = env
+            .storage()
+            .persistent()
+            .get::<DataKey, PauseState>(&DataKey::Paused)
+            .unwrap_or(PauseState::NotPaused);
+        if state == PauseState::HardPaused {
+            return Err(RevoraError::ContractPaused);
+        }
+        Ok(())
+    }
+
+    // â”€â”€ Offering management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Register a new revenue-share offering.
     ///
@@ -10136,6 +10150,11 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NoPendingClaims);
         }
 
+        // #1313: HardPaused blocks every state-mutating outflow including claim;
+        // SoftPaused still permits claims. Global freeze blocks all outflows.
+        Self::require_not_hard_paused(&env)?;
+        Self::require_not_frozen(&env)?;
+
         Self::require_claim_window_open(&env, &offering_id)?;
 
         let count_key = DataKey::PeriodCount(offering_id.clone());
@@ -11816,7 +11835,7 @@ impl RevoraRevenueShare {
         amount: i128,
     ) -> Result<i128, RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env)?;
+        Self::require_not_hard_paused(&env)?;
         issuer.require_auth();
 
         let offering_id = OfferingId {
@@ -16048,6 +16067,9 @@ impl RevoraRevenueShare {
         (v2_fixtures, v3_fixtures)
     }
 }
+
+#[cfg(test)]
+mod test_issue_1313;
 
 #[cfg(test)]
 mod test_deferred_priority;
