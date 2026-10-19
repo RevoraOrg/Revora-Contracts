@@ -29,6 +29,9 @@ it walks the following chain and returns at the first match (**O(1)** per level)
 | 2        | `PlatformFeePerAsset(asset)`           | Platform-wide per-asset fee               |
 | 3 (lowest) | `PlatformFeeBps`                     | Global platform fee (default 0)           |
 
+The effective fee is applied at revenue deposit time (see *Platform Fee
+Collection* below); `get_offering_platform_fee` returns the resolved BPS.
+
 ---
 
 ## Public API — `RevoraRevenueShare`
@@ -50,6 +53,9 @@ global platform fee BPS.
 |---|---|---|---|
 | `set_offering_fee_bps(issuer, namespace, token, asset, fee_bps: u32)` | Issuer | O(1) | `EVENT_FEE_CONFIG` |
 | `get_offering_fee_bps(issuer, namespace, token, asset) -> u32` | None | O(1) | — |
+
+`get_offering_platform_fee(issuer, namespace, token, asset)` resolves the
+effective fee using the hierarchy above (offering override > asset > global).
 
 The issuer must be the current owner of the offering.  The call returns
 `OfferingNotFound` for unregistered offerings.
@@ -77,6 +83,8 @@ Emitted by `set_platform_fee`.
 | topic[0] | `Symbol` | `"fee_set"` |
 | data | `u32` | new `fee_bps` |
 
+This event records configuration only; it does not indicate a fee was paid.
+
 ### `EVENT_FEE_CONFIG` (`"fee_cfg"`)
 
 Emitted by `set_offering_fee_bps` and `set_platform_fee_per_asset`.
@@ -99,6 +107,41 @@ Emitted by `set_offering_fee_bps` and `set_platform_fee_per_asset`.
 | topic[0] | `Symbol` | `"fee_cfg"` |
 | topic[1] | `Address` | asset |
 | data | `u32` | new `fee_bps` |
+
+### `EVENT_PLAT_FEE` (`"plat_fee"`)
+
+Emitted by `do_deposit_revenue` when a non-zero platform fee is actually
+collected.  The event is emitted only from the path that moves tokens, so its
+`amount` always equals the treasury balance delta for that deposit.
+
+| Field | Type | Value |
+|-------|------|-------|
+| topic[0] | `Symbol` | `"plat_fee"` |
+| topic[1] | `Address` | treasury |
+| data | `i128` | fee amount transferred |
+
+When the effective fee is 0, no transfer occurs and no `plat_fee` event is
+emitted.
+
+---
+
+## Platform Fee Collection
+
+Platform fees are collected in `do_deposit_revenue`:
+
+1. Resolve the effective BPS via `get_offering_platform_fee`
+   (offering override > per-asset > global).
+2. Compute `fee = amount × fee_bps / 10 000` (integer division, truncating).
+3. Transfer `fee` from the issuer to the configured `treasury`.
+4. Store `net = amount - fee` in `PeriodRevenue` and update the accrual index
+   with `net`, so holder claims total `net`.
+5. Emit `EVENT_PLAT_FEE` with the transferred amount.
+
+**Rounding:** integer division truncates, so any fractional remainder is
+retained by holders (i.e. rounding favours holders, never the treasury).
+
+`report_revenue_internal` does **not** emit `EVENT_PLAT_FEE`; it only reports
+revenue and must not be used for treasury accounting.
 
 ---
 
@@ -151,6 +194,14 @@ Tests live in `src/test.rs` inside `mod regression`.
 | `set_platform_fee_per_asset_zero_and_max_boundary` | 5 000 then 0 both accepted |
 | `per_asset_fees_are_independent_across_different_assets` | Asset A fee ≠ Asset B fee |
 
+### Platform Fee Collection (Issue #269)
+
+| Test | Description |
+|---|---|
+| `platform_fee_collected_on_deposit` | 2 % fee, deposit 10 000 → treasury +200, holders 9 800 |
+| `platform_fee_zero_no_transfer_no_event` | Fee 0 → no transfer, no `plat_fee` event |
+| `platform_fee_event_matches_treasury_delta` | `plat_fee` amount equals treasury balance delta |
+
 ---
 
 ## Security Assumptions
@@ -162,6 +213,9 @@ Tests live in `src/test.rs` inside `mod regression`.
 - All setters validate `fee_bps ≤ MAX_PLATFORM_FEE_BPS` before writing to
   storage, preventing fees that exceed the protocol maximum.
 - Fee reads are non-authorised and O(1); they cannot mutate state.
+- Platform fee transfers occur only in `do_deposit_revenue`; the emitted
+  `plat_fee` amount is derived from the same value that is transferred, so
+  events cannot diverge from actual token movement.
 
 ---
 
