@@ -371,6 +371,10 @@ pub enum RevoraError {
     OracleQuoteStale = 91,
     /// A redemption request overlaps an existing pending redemption window.
     RedemptionWindowOverlap = 92,
+    /// A signed FX quote is bound to a different contract/currency pair/offering.
+    OracleQuoteMismatch = 93,
+    /// A signed FX quote carries a future quoted_at timestamp.
+    OracleQuoteFuture = 94,
 }
 
 pub mod tax_bucket;
@@ -1323,6 +1327,20 @@ pub struct FxOracleConfig {
     pub revenue_symbol: Symbol,
     pub payout_symbol: Symbol,
     pub max_oracle_age_secs: u64,
+}
+
+/// Off-chain signed FX quote payload. The signature is verified over the XDR
+/// encoding of this structure, binding the quote to a specific contract,
+/// network (via the contract address), offering, and currency pair so it cannot
+/// be replayed across offerings or pairs.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignedFxQuote {
+    pub contract: Address,
+    pub revenue_symbol: Symbol,
+    pub payout_symbol: Symbol,
+    pub rate: i128,
+    pub quoted_at: u64,
 }
 
 /// Per-offering concentration guardrail config (#26).
@@ -5697,9 +5715,30 @@ impl RevoraRevenueShare {
                 &sig,
                 &config.oracle,
             )?;
-            let decoded: (i128, u64) =
-                <(i128, u64)>::from_xdr(env, &q).map_err(|_| RevoraError::MetadataInvalidFormat)?;
-            decoded
+            // #1316: the signed payload is a SignedFxQuote, verified over its XDR.
+            let decoded: SignedFxQuote =
+                SignedFxQuote::from_xdr(env, &q).map_err(|_| RevoraError::MetadataInvalidFormat)?;
+            // Bind the quote to the contract (network), offering and currency pair.
+            if decoded.contract != env.current_contract_address()
+                || decoded.revenue_symbol != config.revenue_symbol
+                || decoded.payout_symbol != config.payout_symbol
+            {
+                return Err(RevoraError::OracleQuoteMismatch);
+            }
+            // Reject zero/negative rates.
+            if decoded.rate <= 0 {
+                return Err(RevoraError::InvalidAmount);
+            }
+            // Reject future timestamps.
+            if decoded.quoted_at > now {
+                return Err(RevoraError::OracleQuoteFuture);
+            }
+            // #1316: the signed path requires a non-zero max age so quotes cannot
+            // be replayed forever when max_oracle_age_secs == 0.
+            if config.max_oracle_age_secs == 0 {
+                return Err(RevoraError::OracleQuoteStale);
+            }
+            (decoded.rate, decoded.quoted_at)
         } else {
             FxOracleClient::new(env, &config.oracle)
                 .quote(&config.revenue_symbol, &config.payout_symbol)
@@ -5709,7 +5748,11 @@ impl RevoraRevenueShare {
         {
             return Err(RevoraError::OracleQuoteStale);
         }
-        let converted_amount = amount.saturating_mul(rate).saturating_div(BPS_DENOMINATOR);
+        // #1316: checked math instead of saturating clamp (no silent overflow).
+        let converted_amount = amount
+            .checked_mul(rate)
+            .and_then(|v| v.checked_div(BPS_DENOMINATOR))
+            .ok_or(RevoraError::InvalidAmount)?;
         Ok((converted_amount, offering.payout_asset.clone()))
     }
 
@@ -16048,6 +16091,9 @@ impl RevoraRevenueShare {
         (v2_fixtures, v3_fixtures)
     }
 }
+
+#[cfg(test)]
+mod test_issue_1316;
 
 #[cfg(test)]
 mod test_deferred_priority;
