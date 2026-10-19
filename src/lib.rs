@@ -857,9 +857,9 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// A `migrate_storage` call must pass a version strictly greater than the
 /// currently deployed version. Downgrades and no-op migrations are rejected.
 /// Bumped when storage or semantics change; used for migration and compatibility.
-pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
+pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 24);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -929,6 +929,26 @@ pub enum FreezeReason {
     CourtOrder = 5,
     IssuerDispute = 6,
     Manual = 7,
+}
+
+/// Role that imposed an offering or holder-reason freeze.
+/// Admin authority takes precedence and can only be cleared by the current admin.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreezeAuthority {
+    Admin,
+    Issuer,
+}
+
+/// Additive authority metadata; legacy flags/masks keep their existing encoding.
+/// A live freeze without metadata is treated as admin-imposed (fail closed).
+#[contracttype]
+#[derive(Clone)]
+pub enum FreezeDataKey {
+    /// Authority for an offering's `DataKey2::FrozenOffering` flag.
+    OfferingAuthority(OfferingId),
+    /// Authority for one active bit in `DataKey2::HolderFreezeMask`.
+    HolderAuthority(OfferingId, Address, FreezeReason),
 }
 
 impl FreezeReason {
@@ -12967,15 +12987,27 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::FrozenOffering(offering_id);
+        let key = DataKey2::FrozenOffering(offering_id.clone());
+        let authority_key = FreezeDataKey::OfferingAuthority(offering_id);
+        let was_frozen = env.storage().persistent().get::<_, bool>(&key).unwrap_or(false);
+        let previous = env.storage().persistent().get::<_, FreezeAuthority>(&authority_key);
+        // Missing metadata on an active legacy freeze must never grant issuer access.
+        let authority = if is_admin || (was_frozen && previous != Some(FreezeAuthority::Issuer)) {
+            FreezeAuthority::Admin
+        } else {
+            FreezeAuthority::Issuer
+        };
+        env.storage().persistent().set(&authority_key, &authority);
         env.storage().persistent().set(&key, &true);
-        env.events().publish((EVENT_FREEZE_OFFERING, issuer, namespace, token), (caller, true));
+        env.events()
+            .publish((EVENT_FREEZE_OFFERING, issuer, namespace, token), (caller, true, authority));
         Ok(())
     }
 
     /// Unfreeze a single offering.
     ///
-    /// Authorization mirrors `freeze_offering`: issuer or admin.
+    /// Issuers may clear issuer-imposed freezes; only the admin may clear admin
+    /// or legacy freezes. Unfreezing an already-unfrozen offering remains a no-op.
     pub fn unfreeze_offering(
         env: Env,
         caller: Address,
@@ -13001,9 +13033,28 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::FrozenOffering(offering_id);
+        let key = DataKey2::FrozenOffering(offering_id.clone());
+        let authority_key = FreezeDataKey::OfferingAuthority(offering_id);
+        let was_frozen = env.storage().persistent().get::<_, bool>(&key).unwrap_or(false);
+        let authority = if was_frozen {
+            env.storage()
+                .persistent()
+                .get::<_, FreezeAuthority>(&authority_key)
+                .unwrap_or(FreezeAuthority::Admin)
+        } else if is_admin {
+            FreezeAuthority::Admin
+        } else {
+            FreezeAuthority::Issuer
+        };
+        if was_frozen && authority == FreezeAuthority::Admin && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
         env.storage().persistent().set(&key, &false);
-        env.events().publish((EVENT_UNFREEZE_OFFERING, issuer, namespace, token), (caller, false));
+        env.storage().persistent().remove(&authority_key);
+        env.events().publish(
+            (EVENT_UNFREEZE_OFFERING, issuer, namespace, token),
+            (caller, false, authority),
+        );
         Ok(())
     }
 
@@ -13074,10 +13125,20 @@ impl RevoraRevenueShare {
         });
 
         let reason_bit = reason.to_bitmask();
-        if current_mask & reason_bit != 0 {
-            // Reason already active — idempotent no-op (do not emit duplicate event).
+        let authority_key = FreezeDataKey::HolderAuthority(offering_id, holder.clone(), reason);
+        let previous = env
+            .storage()
+            .persistent()
+            .get::<_, FreezeAuthority>(&authority_key)
+            .unwrap_or(FreezeAuthority::Admin);
+        let already_frozen = current_mask & reason_bit != 0;
+        if already_frozen && (!is_admin || previous == FreezeAuthority::Admin) {
+            // Preserve idempotency and never downgrade an existing admin/legacy reason.
             return Ok(());
         }
+        let authority = if is_admin { FreezeAuthority::Admin } else { FreezeAuthority::Issuer };
+        // An admin re-freeze upgrades an issuer-owned reason and emits the new authority.
+        env.storage().persistent().set(&authority_key, &authority);
 
         current_mask |= reason_bit;
 
@@ -13087,7 +13148,10 @@ impl RevoraRevenueShare {
         }
 
         env.storage().persistent().set(&key, &current_mask);
-        env.events().publish((EVENT_FRZ_SET, issuer, namespace, token), (caller, holder, reason));
+        env.events().publish(
+            (EVENT_FRZ_SET, issuer, namespace, token),
+            (caller, holder, reason, authority),
+        );
         Ok(())
     }
 
@@ -13206,7 +13270,8 @@ impl RevoraRevenueShare {
     ///
     /// # Authorization
     /// Same as [`emergency_freeze_holder`]: caller must be the offering's current
-    /// issuer or the contract admin.
+    /// issuer or the contract admin. Admin-imposed and legacy reasons may only
+    /// be cleared by the admin; issuer-imposed reasons may be cleared by either.
     ///
     /// # Errors
     /// | Error | Condition |
@@ -13264,7 +13329,18 @@ impl RevoraRevenueShare {
             return Err(RevoraError::FreezeReasonMismatch);
         }
 
+        let authority_key = FreezeDataKey::HolderAuthority(offering_id, holder.clone(), reason);
+        let authority = env
+            .storage()
+            .persistent()
+            .get::<_, FreezeAuthority>(&authority_key)
+            .unwrap_or(FreezeAuthority::Admin);
+        if authority == FreezeAuthority::Admin && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
         let new_mask = current_mask & !reason_bit;
+        env.storage().persistent().remove(&authority_key);
 
         // Clean up legacy key if present.
         if env.storage().persistent().has(&legacy_key) {
@@ -13274,14 +13350,16 @@ impl RevoraRevenueShare {
         if new_mask == 0 {
             // All reasons cleared — full unfreeze.
             env.storage().persistent().remove(&key);
-            env.events()
-                .publish((EVENT_FRZ_CLR, issuer, namespace, token), (caller, holder, reason));
+            env.events().publish(
+                (EVENT_FRZ_CLR, issuer, namespace, token),
+                (caller, holder, reason, authority),
+            );
         } else {
             // Partial unfreeze — update mask and emit scoped event.
             env.storage().persistent().set(&key, &new_mask);
             env.events().publish(
                 (EVENT_FREEZE_REASON_CLEARED, issuer, namespace, token),
-                (caller, holder, reason, new_mask),
+                (caller, holder, reason, new_mask, authority),
             );
         }
 
@@ -13383,7 +13461,8 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::ContractFrozen)` if the contract is globally frozen.
     ///
     /// ### Events
-    /// - Emits `auto_frz` with `(issuer, namespace, token)` topics and `(holder, attestation_hash)` data.
+    /// - Emits `auto_frz` with `(issuer, namespace, token)` topics and
+    ///   `(holder, attestation_hash, FreezeAuthority::Admin)` data.
     #[allow(clippy::too_many_arguments)]
     pub fn process_ofac_attestation(
         env: Env,
@@ -13434,11 +13513,23 @@ impl RevoraRevenueShare {
             env.storage()
                 .persistent()
                 .set(&fk, &(current_mask | FreezeReason::SanctionsMatch.to_bitmask()));
+            // Automatic sanctions holds are admin-owned, including when this bit
+            // was previously imposed by the issuer.
+            env.storage().persistent().set(
+                &FreezeDataKey::HolderAuthority(
+                    offering_id,
+                    holder.clone(),
+                    FreezeReason::SanctionsMatch,
+                ),
+                &FreezeAuthority::Admin,
+            );
         }
 
         // Emit structured event for audit trail
-        env.events()
-            .publish((EVENT_AUTO_FRZ, issuer, namespace, token), (holder, attestation_hash));
+        env.events().publish(
+            (EVENT_AUTO_FRZ, issuer, namespace, token),
+            (holder, attestation_hash, FreezeAuthority::Admin),
+        );
 
         Ok(())
     }

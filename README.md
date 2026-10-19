@@ -31,7 +31,7 @@ The contract has an admin-toggled testnet mode (`set_testnet_mode`, `is_testnet_
 
 | Path | Contents |
 | --- | --- |
-| `src/lib.rs` | The `RevoraRevenueShare` contract (types, `RevoraError`, ~230 public entrypoints, `CONTRACT_VERSION` currently `(1, 0, 23)`) |
+| `src/lib.rs` | The `RevoraRevenueShare` contract (types, `RevoraError`, ~230 public entrypoints, `CONTRACT_VERSION` currently `(1, 0, 24)`) |
 | `src/vesting.rs` | Separate `VestingContract` (schedules, curves, claims) |
 | `src/security_assertions.rs`, `safe_math.rs`, `merkle_helpers.rs`, `tax_bucket.rs`, `milestone_signals.rs`, `revenue_deposit_contract.rs` | Supporting modules |
 | `src/test_*.rs`, `src/*_tests.rs`, `tests/` | Unit, property (proptest) and JSON/layout tests; `test_snapshots/` holds Soroban snapshots |

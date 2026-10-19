@@ -6,7 +6,7 @@ use std::path::Path;
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// Must stay in sync with `STORAGE_LAYOUT_VERSION` in `src/lib.rs` (asserted by
 /// `tests/storage_layout_json.rs`).
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -100,6 +100,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::LastDepositedPeriodId(OfferingId)", "u64", "offering"),
     ("DataKey2::PaymentTokenDecimals(OfferingId)", "u32", "offering"),
     ("DataKey2::FrozenOffering(OfferingId)", "bool", "offering"),
+    ("FreezeDataKey::OfferingAuthority(OfferingId)", "FreezeAuthority", "offering"),
+    ("FreezeDataKey::HolderAuthority(OfferingId, Address, FreezeReason)", "FreezeAuthority", "offering+holder+reason"),
     ("DataKey2::IssuerCount", "u32", "contract"),
     ("DataKey2::IssuerItem(u32)", "Address", "issuer+index"),
     ("DataKey2::IssuerRegistered(Address)", "bool", "issuer"),
@@ -307,6 +309,7 @@ fn collect_source_keys(repo_root: &Path) -> Result<BTreeSet<String>, String> {
         ("src/lib.rs", "DataKey"),
         ("src/lib.rs", "DataKey2"),
         ("src/lib.rs", "DataKey3"),
+        ("src/lib.rs", "FreezeDataKey"),
         ("src/lib.rs", "MigrationDataKey"),
         ("src/revenue_deposit_contract.rs", "DataKey"),
         ("src/vesting.rs", "VestingKey"),
