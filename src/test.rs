@@ -18,6 +18,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
+use proptest::prelude::*;
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
 
@@ -106,6 +107,90 @@ fn test_deposit_accepts_authorized_offering() {
     let period = client.get_period(&period_id);
     assert_eq!(period.revenue_amount, 15_000);
     assert_eq!(crate::test_utils::get_balance(&env, &token_id, &contract_id), 15_000);
+}
+
+#[test]
+fn test_period_rejects_changes_and_deposits_after_end() {
+    let (env, contract_id, token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let beneficiary = Address::generate(&env);
+    let offering = Address::generate(&env);
+    let period_id = client.create_period(&100u32, &200u32, &10_000i128);
+    client.add_beneficiary(&period_id, &beneficiary);
+    client.add_authorized_offering(&offering);
+    crate::test_utils::mint_tokens(&env, &token_id, &offering, 1_000_000);
+    env.ledger().set_sequence_number(201);
+
+    assert_eq!(
+        client.try_add_beneficiary(&period_id, &Address::generate(&env)),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(
+        client.try_remove_beneficiary(&period_id, &beneficiary),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(
+        client.try_deposit(&offering, &period_id, &1_000),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(client.get_period(&period_id).revenue_amount, 10_000);
+}
+
+#[test]
+fn claims_distribute_the_full_revenue_including_remainder() {
+    let (env, contract_id, _token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let period_id = client.create_period(&100u32, &200u32, &301i128);
+    let beneficiaries = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    for beneficiary in &beneficiaries {
+        client.add_beneficiary(&period_id, beneficiary);
+    }
+    env.ledger().set_sequence_number(201);
+
+    let payouts: std::vec::Vec<i128> = beneficiaries
+        .iter()
+        .map(|beneficiary| client.claim(&period_id, beneficiary))
+        .collect();
+
+    assert_eq!(payouts.iter().sum::<i128>(), 301);
+    assert_eq!(payouts.iter().filter(|payout| **payout == 100).count(), 2);
+    assert_eq!(payouts.iter().filter(|payout| **payout == 101).count(), 1);
+    assert_eq!(client.get_period(&period_id).claimed_amount, 301);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn claims_conserve_revenue_for_random_order(revenue in 1i128..10_000, order in any::<[u8; 3]>()) {
+        let (env, contract_id, _token_id, _admin) = setup();
+        let client = RevenueDepositContractClient::new(&env, &contract_id);
+        let period_id = client.create_period(&100u32, &200u32, &revenue);
+        let beneficiaries = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+        for beneficiary in &beneficiaries {
+            client.add_beneficiary(&period_id, beneficiary);
+        }
+        env.ledger().set_sequence_number(201);
+
+        let mut claim_order = [(order[0], 0usize), (order[1], 1), (order[2], 2)];
+        claim_order.sort_by_key(|(rank, index)| (*rank, *index));
+        let mut total = 0i128;
+        for (_, index) in claim_order {
+            total += client.claim(&period_id, &beneficiaries[index]);
+            prop_assert!(total <= revenue);
+        }
+
+        prop_assert_eq!(total, revenue);
+        prop_assert_eq!(client.get_period(&period_id).claimed_amount, revenue);
+    }
 }
 
 #[test]
