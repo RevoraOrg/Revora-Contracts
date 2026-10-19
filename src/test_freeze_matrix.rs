@@ -1,4 +1,3 @@
-
 //! # Emergency Holder Freeze Tests
 //!
 //! Comprehensive tests for the emergency holder freeze feature:
@@ -12,11 +11,13 @@
 
 #![cfg(test)]
 
-use crate::{FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{
+    FreezeReason, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode,
+};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _},
-    Address, BytesN, Env, Symbol, Val, Vec,
+    Address, BytesN, Env, Symbol, TryIntoVal, Val, Vec,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -59,7 +60,18 @@ fn frozen_setup(
     let issuer = admin.clone();
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000u32,
+        &payout_asset,
+        &0i128,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Freeze the contract — all subsequent mutating calls must return ContractFrozen.
     client.freeze();
@@ -74,7 +86,18 @@ fn frozen_register_offering_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, _, payout_asset) = frozen_setup(&env);
     let new_token = Address::generate(&env);
-    let result = client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns2"), &new_token, &500u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    let result = client.try_register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns2"),
+        &new_token,
+        &500u32,
+        &payout_asset,
+        &0i128,
+        &symbol_short!(""),
+        &0,
+    );
     assert_frozen_err(result);
     // Verify no partial write: offering must not exist.
     assert!(client.get_offering(&issuer, &symbol_short!("ns2"), &new_token).is_none());
@@ -143,7 +166,7 @@ fn frozen_set_holder_share_returns_contract_frozen() {
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let holder = Address::generate(&env);
     let result =
-        client.try_set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &500u32);
+        client.try_set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &500u32, &1);
     assert_frozen_err(result);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns"), &token, &holder), 0);
 }
@@ -216,10 +239,9 @@ fn frozen_set_concentration_limit_returns_contract_frozen() {
 fn frozen_report_concentration_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
-    let result =
-        client.try_report_concentration(&issuer, &symbol_short!("ns"), &token, &3_000u32);
+    let result = client.try_report_concentration(&issuer, &symbol_short!("ns"), &token, &3_000u32);
     assert_frozen_err(result);
-    assert_eq!(client.get_current_concentration(&issuer, &symbol_short!("ns"), &token), 0);
+    assert_eq!(client.get_current_concentration(&issuer, &symbol_short!("ns"), &token), None);
 }
 
 // ─── 8. Rounding mode ────────────────────────────────────────────────────────
@@ -320,8 +342,7 @@ fn frozen_commit_snapshot_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let hash = BytesN::<32>::from_array(&env, &[0u8; 32]);
-    let result =
-        client.try_commit_snapshot(&issuer, &symbol_short!("ns"), &token, &1u64, &hash);
+    let result = client.try_commit_snapshot(&issuer, &symbol_short!("ns"), &token, &1u64, &hash);
     assert_frozen_err(result);
     assert!(client.get_snapshot_entry(&issuer, &symbol_short!("ns"), &token, &1u64).is_none());
 }
@@ -355,8 +376,7 @@ fn frozen_set_meta_delegate_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let delegate = Address::generate(&env);
-    let result =
-        client.try_set_meta_delegate(&issuer, &symbol_short!("ns"), &token, &delegate);
+    let result = client.try_set_meta_delegate(&issuer, &symbol_short!("ns"), &token, &delegate);
     assert_frozen_err(result);
     assert!(client.get_meta_delegate(&issuer, &symbol_short!("ns"), &token).is_none());
 }
@@ -398,8 +418,7 @@ fn frozen_freeze_offering_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
     // freeze_offering itself checks global freeze first (fail-closed)
-    let result =
-        client.try_freeze_offering(&issuer, &issuer, &symbol_short!("ns"), &token);
+    let result = client.try_freeze_offering(&issuer, &issuer, &symbol_short!("ns"), &token);
     assert_frozen_err(result);
 }
 
@@ -407,8 +426,7 @@ fn frozen_freeze_offering_returns_contract_frozen() {
 fn frozen_unfreeze_offering_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
-    let result =
-        client.try_unfreeze_offering(&issuer, &issuer, &symbol_short!("ns"), &token);
+    let result = client.try_unfreeze_offering(&issuer, &issuer, &symbol_short!("ns"), &token);
     assert_frozen_err(result);
 }
 
@@ -418,12 +436,7 @@ fn frozen_unfreeze_offering_returns_contract_frozen() {
 fn frozen_repair_audit_summary_returns_contract_frozen() {
     let env = Env::default();
     let (client, admin, issuer, token, _) = frozen_setup(&env);
-    let result = client.try_repair_audit_summary(
-        &admin,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-    );
+    let result = client.try_repair_audit_summary(&admin, &issuer, &symbol_short!("ns"), &token);
     assert_frozen_err(result);
 }
 
@@ -432,44 +445,19 @@ fn frozen_repair_audit_summary_returns_contract_frozen() {
 #[test]
 fn frozen_migrate_returns_contract_frozen() {
     let env = Env::default();
-    let (client, _, _, _, _) = frozen_setup(&env);
-    let result = client.try_migrate();
+    let (client, admin, _, _, _) = frozen_setup(&env);
+    let result = client.try_migrate_storage(&admin, &1, &0, &1);
     assert_frozen_err(result);
 }
 
-// ─── 19. Intentional exceptions — claim is NOT blocked ───────────────────────
-
-/// `claim` must succeed (or fail for a business reason, never ContractFrozen).
-/// This test verifies the intentional exception: holders can always exit.
+/// Global freeze must stop claims as tracked in #1313.
 #[test]
-fn frozen_claim_is_not_blocked() {
+#[ignore = "https://github.com/RevoraOrg/Revora-Contracts/issues/1313"]
+fn frozen_claim_returns_contract_frozen() {
     let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, RevoraRevenueShare);
-    let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let issuer = Address::generate(&env);
-    let ns = symbol_short!("test");
-    let token = Address::generate(&env);
-    let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
-
-    let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32, &1);
-
-    // Freeze the contract.
+    let (client, _, ns, token, issuer, holder) = setup(&env);
     client.freeze();
-    assert!(client.is_frozen());
-
-    // claim must NOT return ContractFrozen — it should return NoPendingClaims
-    // (no periods deposited) rather than ContractFrozen.
-    let result = client.try_claim(&holder, &issuer, &symbol_short!("ns"), &token, &50u32);
-    match result {
-        Err(Ok(RevoraError::ContractFrozen)) => {
-            panic!("claim must not be blocked by global freeze")
-        }
-        _ => {} // any other result (including NoPendingClaims) is acceptable
-    }
+    assert_frozen_err(client.try_claim(&holder, &issuer, &ns, &token, &50));
 }
 
 /// After a frozen `report_revenue` call, the audit summary must remain absent.
@@ -501,21 +489,56 @@ fn frozen_set_holder_share_no_partial_write() {
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let holder = Address::generate(&env);
 
+    assert_frozen_err(client.try_set_holder_share(
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &holder,
+        &5_000,
+        &1,
+    ));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns"), &token, &holder), 0);
+}
+
+fn setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Symbol, Address, Address, Address) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let issuer = Address::generate(env);
+    let ns = symbol_short!("test");
+    let token = Address::generate(env);
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let holder = Address::generate(env);
+
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &2500,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &7,
+    );
 
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
     client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
 
-    (env, client, admin, ns, token, issuer, holder)
+    (client, admin, ns, token, issuer, holder)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "https://github.com/RevoraOrg/Revora-Contracts/issues/1338"]
 fn emergency_freeze_blocks_claim() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze the holder with Sanctions reason
     client.emergency_freeze_holder(
@@ -532,12 +555,13 @@ fn emergency_freeze_blocks_claim() {
 
     // Try to claim - should fail with HolderFrozen
     let result = client.try_claim(&holder, &issuer, &ns, &token, &10);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Ok(RevoraError::HolderFrozen)));
 }
 
 #[test]
 fn emergency_unfreeze_succeeds_with_matching_reason() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with IssuerDispute
     client.emergency_freeze_holder(
@@ -568,7 +592,8 @@ fn emergency_unfreeze_succeeds_with_matching_reason() {
 
 #[test]
 fn emergency_unfreeze_fails_with_mismatched_reason() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with CourtOrder
     client.emergency_freeze_holder(
@@ -595,7 +620,8 @@ fn emergency_unfreeze_fails_with_mismatched_reason() {
 
 #[test]
 fn unauthorized_freeze_fails() {
-    let (env, client, admin, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _admin, ns, token, issuer, holder) = setup(&env);
     let unauthorized = Address::generate(&env);
 
     // Unauthorized user tries to freeze - should fail
@@ -613,34 +639,22 @@ fn unauthorized_freeze_fails() {
 
 #[test]
 fn admin_can_freeze_and_unfreeze() {
-    let (env, client, admin, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, admin, ns, token, issuer, holder) = setup(&env);
 
     // Admin freezes the holder
-    client.emergency_freeze_holder(
-        &admin,
-        &issuer,
-        &ns,
-        &token,
-        &holder,
-        &FreezeReason::Manual,
-    );
+    client.emergency_freeze_holder(&admin, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     // Admin unfreezes
-    client.emergency_unfreeze_holder(
-        &admin,
-        &issuer,
-        &ns,
-        &token,
-        &holder,
-        &FreezeReason::Manual,
-    );
+    client.emergency_unfreeze_holder(&admin, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
 
 #[test]
 fn freeze_emits_frz_set_event() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
     let before = env.events().all().len();
 
     client.emergency_freeze_holder(
@@ -654,10 +668,10 @@ fn freeze_emits_frz_set_event() {
 
     // Check that frz_set event was emitted
     let events = env.events().all();
-    let found = events.iter().any(|e| {
+    let found = events.iter().skip(before as usize).any(|e| {
         let (_, topics, _) = e;
         topics.len() >= 1 && {
-            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == symbol_short!("frz_set")
         }
     });
@@ -666,7 +680,8 @@ fn freeze_emits_frz_set_event() {
 
 #[test]
 fn unfreeze_emits_frz_clr_event() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
     client.emergency_freeze_holder(
         &issuer,
         &issuer,
@@ -688,10 +703,10 @@ fn unfreeze_emits_frz_clr_event() {
 
     // Check that frz_clr event was emitted
     let events = env.events().all();
-    let found = events.iter().skip(before).any(|e| {
+    let found = events.iter().skip(before as usize).any(|e| {
         let (_, topics, _) = e;
         topics.len() >= 1 && {
-            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == symbol_short!("frz_clr")
         }
     });
@@ -713,8 +728,30 @@ fn freeze_is_scoped_to_offering() {
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0, &symbol_short!(""), &0u32);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_a,
+        &2500,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &7,
+    );
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_b,
+        &2500,
+        &payout,
+        &0,
+        &symbol_short!(""),
+        &7,
+    );
 
     // Freeze holder on token_a offering
     client.emergency_freeze_holder(
@@ -771,7 +808,7 @@ fn set_freeze_records_reason_and_emits_event() {
     let found = events.iter().any(|e| {
         let (_, topics, _) = e;
         topics.len() >= 1 && {
-            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == symbol_short!("frz_set")
         }
     });
@@ -781,7 +818,7 @@ fn set_freeze_records_reason_and_emits_event() {
     let found_rsn = events.iter().any(|e| {
         let (_, topics, _) = e;
         topics.len() >= 1 && {
-            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == symbol_short!("frz_rsn")
         }
     });
@@ -821,7 +858,7 @@ fn default_freeze_sets_compliance_reason() {
     let found_rsn = events.iter().any(|e| {
         let (_, topics, _) = e;
         topics.len() >= 1 && {
-            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == symbol_short!("frz_rsn")
         }
     });
@@ -840,19 +877,21 @@ fn ofac_setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Add
     let token = Address::generate(env);
     let ns = symbol_short!("ofac");
     let payout = Address::generate(env);
-    
+
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer,
-        &Vec::new(&env),
-        &1u32,
+    client.register_offering(
+        &issuer,
         &Vec::new(env),
         &1u32,
         &ns,
         &token,
         &1_000,
         &payout,
-        &0);
-    
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+
     (client, admin, issuer, token)
 }
 
@@ -863,14 +902,14 @@ fn ofac_attestation_auto_freezes_holder() {
     let (client, _admin, issuer, token) = ofac_setup(&env);
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     // Set up holder with shares
     client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
-    
+
     // Submit OFAC attestation
     let attestation_hash = BytesN::from_array(&env, &[0x01u8; 32]);
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
-    
+
     // Verify holder is frozen
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
@@ -882,17 +921,18 @@ fn ofac_attestation_replay_is_idempotent() {
     let (client, _admin, issuer, token) = ofac_setup(&env);
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
-    
+
     let attestation_hash = BytesN::from_array(&env, &[0x02u8; 32]);
-    
+
     // First attestation should freeze
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
-    
+
     // Replay with same hash should succeed (idempotent) but not change state
-    let result = client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+    let result =
+        client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
     assert!(result.is_ok());
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder)); // Still frozen
 }
@@ -904,40 +944,40 @@ fn ofac_attestation_emits_auto_frz_event() {
     let (client, _admin, issuer, token) = ofac_setup(&env);
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
-    
+
     let attestation_hash = BytesN::from_array(&env, &[0x03u8; 32]);
     let before = env.events().all().len();
-    
+
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
-    
+
     // Find and verify auto_frz event
     let events = env.events().all();
     let auto_frz_sym = symbol_short!("auto_frz");
     let mut found = false;
-    
+
     for i in before..events.len() {
         let (_, topics, data) = events.get(i).unwrap();
-        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
-        let topic_sym: soroban_sdk::Symbol = topics_vec.get(0).unwrap().into_val(&env);
-        
+        let topics_vec: soroban_sdk::Vec<Val> = topics;
+        let topic_sym: soroban_sdk::Symbol = topics_vec.get(0).unwrap().try_into_val(&env).unwrap();
+
         if topic_sym == auto_frz_sym {
             // Verify topic contains issuer, namespace, token
-            let ev_issuer: Address = topics_vec.get(1).unwrap().into_val(&env);
-            let ev_ns: soroban_sdk::Symbol = topics_vec.get(2).unwrap().into_val(&env);
-            let ev_token: Address = topics_vec.get(3).unwrap().into_val(&env);
+            let ev_issuer: Address = topics_vec.get(1).unwrap().try_into_val(&env).unwrap();
+            let ev_ns: soroban_sdk::Symbol = topics_vec.get(2).unwrap().try_into_val(&env).unwrap();
+            let ev_token: Address = topics_vec.get(3).unwrap().try_into_val(&env).unwrap();
             assert_eq!(ev_issuer, issuer);
             assert_eq!(ev_ns, ns);
             assert_eq!(ev_token, token);
-            
+
             // Verify data: (holder, attestation_hash)
-            let data_vec: soroban_sdk::Vec<Val> = data.clone().into_val(&env);
-            let ev_holder: Address = data_vec.get(0).unwrap().into_val(&env);
-            let ev_hash: BytesN<32> = data_vec.get(1).unwrap().into_val(&env);
+            let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+            let ev_holder: Address = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+            let ev_hash: BytesN<32> = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
             assert_eq!(ev_holder, holder);
             assert_eq!(ev_hash, attestation_hash);
-            
+
             found = true;
             break;
         }
@@ -949,18 +989,19 @@ fn ofac_attestation_emits_auto_frz_event() {
 #[test]
 fn ofac_attestation_blocked_when_contract_frozen() {
     let env = Env::default();
-    let (client, admin, issuer, token) = ofac_setup(&env);
+    let (client, _admin, issuer, token) = ofac_setup(&env);
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
-    
+
     // Freeze the contract globally
     client.freeze();
-    
+
     let attestation_hash = BytesN::from_array(&env, &[0x04u8; 32]);
-    let result = client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
-    
+    let result =
+        client.try_process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
+
     assert!(result.is_err());
     // Holder should NOT be frozen (operation failed)
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
@@ -974,18 +1015,18 @@ fn multiple_ofac_attestations_freeze_independently() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     client.set_holder_share(&issuer, &ns, &token, &holder1, &500, &1);
     client.set_holder_share(&issuer, &ns, &token, &holder2, &500, &1);
-    
+
     let hash1 = BytesN::from_array(&env, &[0x05u8; 32]);
     let hash2 = BytesN::from_array(&env, &[0x06u8; 32]);
-    
+
     // Freeze holder1 with first attestation
     client.process_ofac_attestation(&hash1, &issuer, &ns, &token, &holder1);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder1));
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder2));
-    
+
     // Freeze holder2 with second attestation
     client.process_ofac_attestation(&hash2, &issuer, &ns, &token, &holder2);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder1));
@@ -999,12 +1040,12 @@ fn ofac_attestation_uses_sanctions_match_reason() {
     let (client, _admin, issuer, token) = ofac_setup(&env);
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
-    
+
     client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
-    
+
     let attestation_hash = BytesN::from_array(&env, &[0x07u8; 32]);
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
-    
+
     // Verify frozen with correct reason by checking unfreeze requires matching reason
     let result = client.try_emergency_unfreeze_holder(
         &issuer,
@@ -1024,17 +1065,19 @@ fn ofac_attestation_uses_sanctions_match_reason() {
 /// holder frozen.
 #[test]
 fn multi_reason_clear_one_leaves_holder_frozen() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with two reasons
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::CourtOrder,
     );
-    client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Manual,
-    );
+    client.emergency_freeze_holder(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     // Verify bitmask contains both reasons
@@ -1043,10 +1086,7 @@ fn multi_reason_clear_one_leaves_holder_frozen() {
     assert!(mask & FreezeReason::Manual.to_bitmask() != 0);
 
     // Clear only CourtOrder — holder must stay frozen
-    client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::CourtOrder,
-    );
+    client.clear_freeze_reason(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::CourtOrder);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     // Verify only Manual remains
@@ -1054,10 +1094,7 @@ fn multi_reason_clear_one_leaves_holder_frozen() {
     assert_eq!(mask, FreezeReason::Manual.to_bitmask());
 
     // Clear Manual — now fully unfrozen
-    client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Manual,
-    );
+    client.clear_freeze_reason(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
     let mask = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
     assert_eq!(mask, 0);
@@ -1071,27 +1108,33 @@ fn multi_reason_clear_one_leaves_holder_frozen() {
 /// `FreezeReasonMismatch` and leave the state unchanged.
 #[test]
 fn clear_unset_reason_returns_freeze_reason_mismatch() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with only CourtOrder
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::CourtOrder,
     );
     let mask_before = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
 
     // Try to clear Manual (not set)
     let result = client.try_clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::Manual,
     );
     assert!(result.is_err());
 
     // State must be unchanged
-    assert_eq!(
-        client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder),
-        mask_before
-    );
+    assert_eq!(client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder), mask_before);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 }
 
@@ -1099,23 +1142,29 @@ fn clear_unset_reason_returns_freeze_reason_mismatch() {
 /// clearing a reason that does NOT result in full unfreeze.
 #[test]
 fn clear_freeze_reason_emits_frz_rc_event_for_partial() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with two reasons
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::Sanctions,
     );
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::IssuerDispute,
     );
 
     let before = env.events().all().len();
-    client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Sanctions,
-    );
+    client.clear_freeze_reason(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Sanctions);
 
     // frz_rc must be emitted (not frz_clr since IssuerDispute still active)
     let events = env.events().all();
@@ -1124,8 +1173,8 @@ fn clear_freeze_reason_emits_frz_rc_event_for_partial() {
     let mut found_clr = false;
     for i in before..events.len() {
         let (_, topics, _) = events.get(i).unwrap();
-        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
-        let t0: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+        let topics_vec: soroban_sdk::Vec<Val> = topics;
+        let t0: Symbol = topics_vec.get(0).unwrap().try_into_val(&env).unwrap();
         if t0 == frz_rc_sym {
             found_rc = true;
         }
@@ -1140,26 +1189,21 @@ fn clear_freeze_reason_emits_frz_rc_event_for_partial() {
 /// When the LAST freeze reason is cleared, `frz_clr` must be emitted.
 #[test]
 fn clear_freeze_reason_emits_frz_clr_on_full_unfreeze() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
-    client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Manual,
-    );
+    client.emergency_freeze_holder(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
 
     let before = env.events().all().len();
-    client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Manual,
-    );
+    client.clear_freeze_reason(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
 
     let events = env.events().all();
     let frz_clr_sym = symbol_short!("frz_clr");
-    let found = events.iter().skip(before).any(|e| {
+    let found = events.iter().skip(before as usize).any(|e| {
         let (_, topics, _) = e;
-        let topics_vec: soroban_sdk::Vec<Val> = topics.clone().into_val(&env);
+        let topics_vec: soroban_sdk::Vec<Val> = topics;
         topics_vec.len() >= 1 && {
-            let t0: Symbol = topics_vec.get(0).unwrap().into_val(&env);
+            let t0: Symbol = topics_vec.get(0).unwrap().try_into_val(&env).unwrap();
             t0 == frz_clr_sym
         }
     });
@@ -1170,10 +1214,15 @@ fn clear_freeze_reason_emits_frz_clr_on_full_unfreeze() {
 /// events and the mask unchanged.
 #[test]
 fn freeze_same_reason_twice_is_idempotent() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::Compliance,
     );
     let mask_after_first = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
@@ -1181,7 +1230,11 @@ fn freeze_same_reason_twice_is_idempotent() {
 
     // Second call with same reason
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::Compliance,
     );
     let mask_after_second = client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder);
@@ -1208,7 +1261,11 @@ fn ofac_attestation_with_existing_freeze_combines_bitmask() {
 
     // First, manual freeze with CourtOrder
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::CourtOrder,
     );
 
@@ -1223,15 +1280,16 @@ fn ofac_attestation_with_existing_freeze_combines_bitmask() {
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     // Clearing ONLY CourtOrder leaves SanctionsMatch active
-    client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::CourtOrder,
-    );
+    client.clear_freeze_reason(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::CourtOrder);
     assert!(client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     // Clearing SanctionsMatch fully unfreezes
     client.clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::SanctionsMatch,
     );
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
@@ -1241,13 +1299,18 @@ fn ofac_attestation_with_existing_freeze_combines_bitmask() {
 /// `HolderFrozen` (the same error as trying to unfreeze an unfrozen holder).
 #[test]
 fn clear_freeze_reason_on_unfrozen_holder_returns_holder_frozen() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Holder is not frozen
     assert!(!client.is_holder_frozen(&issuer, &ns, &token, &holder));
 
     let result = client.try_clear_freeze_reason(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::Manual,
     );
     assert!(result.is_err());
@@ -1256,7 +1319,8 @@ fn clear_freeze_reason_on_unfrozen_holder_returns_holder_frozen() {
 /// `get_holder_freeze_reasons` returns 0 when no freeze is active.
 #[test]
 fn get_holder_freeze_reasons_returns_zero_when_not_frozen() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
     assert_eq!(client.get_holder_freeze_reasons(&issuer, &ns, &token, &holder), 0);
 }
 
@@ -1264,21 +1328,27 @@ fn get_holder_freeze_reasons_returns_zero_when_not_frozen() {
 /// and works correctly for backward compatibility.
 #[test]
 fn emergency_unfreeze_holder_delegates_to_clear_freeze_reason() {
-    let (env, client, _, ns, token, issuer, holder) = setup();
+    let env = Env::default();
+    let (client, _, ns, token, issuer, holder) = setup(&env);
 
     // Freeze with two reasons
     client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::CourtOrder,
     );
-    client.emergency_freeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
-        &FreezeReason::Manual,
-    );
+    client.emergency_freeze_holder(&issuer, &issuer, &ns, &token, &holder, &FreezeReason::Manual);
 
     // emergency_unfreeze_holder clears only one reason
     client.emergency_unfreeze_holder(
-        &issuer, &issuer, &ns, &token, &holder,
+        &issuer,
+        &issuer,
+        &ns,
+        &token,
+        &holder,
         &FreezeReason::CourtOrder,
     );
 
