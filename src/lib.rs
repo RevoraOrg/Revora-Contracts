@@ -436,6 +436,8 @@ mod test_freeze_reason_bitmask;
 #[cfg(test)]
 mod test_get_payment_token;
 #[cfg(test)]
+mod test_holder_share_class;
+#[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
 mod test_quorum_check;
@@ -2920,6 +2922,23 @@ impl RevoraRevenueShare {
             token: token.clone(),
         };
 
+        let classes_key = DataKey3::OfferingClasses(offering_id.clone());
+        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
+            env.storage().persistent().get(&classes_key);
+        match share_class.as_ref() {
+            Some(sc) => {
+                let registered = classes
+                    .as_ref()
+                    .map(|cls_vec| cls_vec.iter().any(|(class_name, _)| class_name == sc))
+                    .unwrap_or(false);
+                if !registered {
+                    return Err(RevoraError::InvalidShareClass);
+                }
+            }
+            None if classes.is_some() => return Err(RevoraError::InvalidShareClass),
+            None => {}
+        }
+
         // ── Nonce monotonicity guard ──────────────────────────────────────────
         // When a nonce is supplied the caller guarantees this update is strictly
         // newer than any previously accepted one.  Reject equal or smaller values
@@ -2963,24 +2982,6 @@ impl RevoraRevenueShare {
         // Maintain a running total of persisted holder shares for this offering.
         let total_key = DataKey::HolderShareTotal(offering_id.clone());
         let mut current_total: u32 = env.storage().persistent().get(&total_key).unwrap_or(0);
-
-        let classes_key = DataKey3::OfferingClasses(offering_id.clone());
-        let classes: Option<Vec<(ShareClass, ClassConfig)>> =
-            env.storage().persistent().get(&classes_key);
-
-        if let Some(cls_vec) = classes {
-            let sc = match share_class {
-                Some(ref sc) => sc.clone(),
-                None => return Err(RevoraError::InvalidShareClass),
-            };
-            let mut found = false;
-            for (class_name, _) in cls_vec.iter() {
-                if class_name == sc {
-                    found = true;
-                    break;
-                }
-            }
-        }
 
         let new_total =
             current_total.s_sub(old_share).unwrap_or(0).s_add(share_bps).unwrap_or(u32::MAX);
@@ -9348,6 +9349,10 @@ impl RevoraRevenueShare {
     }
 
     /// Set a holder's revenue share in basis points for a specific class of an offering.
+    ///
+    /// The class must be configured for the offering. This call returns
+    /// [`RevoraError::InvalidShareClass`] if the class is unregistered or the
+    /// offering has no configured classes.
     pub fn set_holder_share_class(
         env: Env,
         issuer: Address,
