@@ -8,7 +8,9 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol, Vec,
+};
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -96,6 +98,8 @@ pub enum VestingError {
     InvalidCurveParameters = 109,
     /// Vesting cliff period has not been reached yet.
     VestingCliffNotReached = 110,
+    /// A token transfer for escrow or a claim failed.
+    TokenTransferFailed = 111,
 }
 
 /// Shared schema version for vesting events.
@@ -161,6 +165,14 @@ impl VestingContract {
         let key = VestingKey::Schedule(beneficiary.clone());
         if env.storage().persistent().has(&key) {
             return Err(VestingError::ScheduleAlreadyExists);
+        }
+
+        let contract_address = env.current_contract_address();
+        if token::Client::new(&env, &token)
+            .try_transfer(&issuer, &contract_address, &total_amount)
+            .is_err()
+        {
+            return Err(VestingError::TokenTransferFailed);
         }
 
         let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
@@ -258,6 +270,14 @@ impl VestingContract {
         }
 
         let new_claimed = already_claimed.saturating_add(claimable);
+        let contract_address = env.current_contract_address();
+        if token::Client::new(&env, &schedule.token)
+            .try_transfer(&contract_address, &beneficiary, &claimable)
+            .is_err()
+        {
+            return Err(VestingError::TokenTransferFailed);
+        }
+
         env.storage().persistent().set(&claimed_key, &new_claimed);
 
         env.events().publish((EVENT_VESTING_CLAIMED, beneficiary), claimable);

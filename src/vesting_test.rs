@@ -23,6 +23,12 @@ fn balance(env: &Env, payment_token: &Address, who: &Address) -> i128 {
     soroban_sdk::token::Client::new(env, payment_token).balance(who)
 }
 
+fn create_funded_vesting_token(env: &Env, issuer: &Address) -> Address {
+    let token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(env, &token).mint(issuer, &100_000);
+    token
+}
+
 fn has_event_symbol(env: &Env, symbol: soroban_sdk::Symbol) -> bool {
     let symbol_val = symbol.into_val(env);
     env.events().all().iter().any(|event| event.1.contains(symbol_val))
@@ -403,6 +409,74 @@ fn vesting_event_schema_version_is_stable_and_partial_claim_emits_v1_events() {
 use crate::vesting::{VestingContract, VestingContractClient, VestingError, VestingCurve, VestingOfferingId};
 
 #[test]
+fn vesting_register_escrows_and_claims_transfer_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
+
+    client.vesting_register(
+        &issuer,
+        &beneficiary,
+        &token,
+        &1000,
+        &0,
+        &100,
+        &1100,
+        &VestingCurve::Linear,
+        &0,
+    );
+
+    assert_eq!(balance(&env, &token, &issuer), 99_000);
+    assert_eq!(balance(&env, &token, &contract_id), 1000);
+
+    env.ledger().with_mut(|ledger| ledger.timestamp = 600);
+    assert_eq!(client.vesting_claim(&beneficiary), 500);
+    assert_eq!(balance(&env, &token, &beneficiary), 500);
+    assert_eq!(balance(&env, &token, &contract_id), 500);
+    assert_eq!(client.get_claimed_amount(&beneficiary), 500);
+
+    env.ledger().with_mut(|ledger| ledger.timestamp = 1100);
+    assert_eq!(client.vesting_claim(&beneficiary), 500);
+    assert_eq!(balance(&env, &token, &beneficiary), 1000);
+    assert_eq!(balance(&env, &token, &contract_id), 0);
+    assert_eq!(client.get_claimed_amount(&beneficiary), 1000);
+}
+
+#[test]
+fn vesting_register_insufficient_balance_does_not_store_schedule() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(issuer.clone()).address();
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&issuer, &999);
+
+    let result = client.try_vesting_register(
+        &issuer,
+        &beneficiary,
+        &token,
+        &1000,
+        &0,
+        &100,
+        &1100,
+        &VestingCurve::Linear,
+        &0,
+    );
+
+    let error = result.unwrap_err();
+    assert_eq!(error.unwrap().unwrap(), VestingError::TokenTransferFailed as u32);
+    assert_eq!(balance(&env, &token, &issuer), 999);
+    assert_eq!(balance(&env, &token, &contract_id), 0);
+    assert_eq!(client.get_vested_amount(&beneficiary), None);
+}
+
+#[test]
 fn test_accelerate_vesting_success() {
     let env = Env::default();
     env.mock_all_auths();
@@ -411,7 +485,7 @@ fn test_accelerate_vesting_success() {
     
     let issuer = Address::generate(&env);
     let beneficiary = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
     
     let total_amount = 1000;
     let cliff_ts = 100;
@@ -427,6 +501,7 @@ fn test_accelerate_vesting_success() {
         &start_ts,
         &end_ts,
         &VestingCurve::Linear,
+        &0,
     );
     
     let trigger_id = symbol_short!("ipo");
@@ -449,7 +524,7 @@ fn test_accelerate_vesting_idempotent() {
     
     let issuer = Address::generate(&env);
     let beneficiary = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
     
     client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear, &0);
     
@@ -470,7 +545,7 @@ fn test_accelerate_vesting_invalid_bps() {
     
     let issuer = Address::generate(&env);
     let beneficiary = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
     
     client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear, &0);
     
@@ -490,7 +565,7 @@ fn test_vested_progress_at() {
     
     let issuer = Address::generate(&env);
     let beneficiary = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
     let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
 
     // Register 1000 tokens, cliff at 100, start at 100, end at 1100
@@ -523,7 +598,7 @@ fn test_cliff_secs_gate() {
     
     let issuer = Address::generate(&env);
     let beneficiary = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_funded_vesting_token(&env, &issuer);
     
     // Total 1000, start 100, end 1100. Cliff secs = 50.
     client.vesting_register(
