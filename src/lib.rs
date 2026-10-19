@@ -12476,6 +12476,14 @@ impl RevoraRevenueShare {
 }
 
 // â”€â”€ Test-only helpers + ABI (contractimpl) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// These helpers mutate accounting-critical state (period revenue and a
+// holder's claim cursor) with no authorization and no token transfer, so they
+// must never be reachable from the deployed contract. Gating the whole
+// `#[contractimpl]` block on `cfg(any(test, feature = "testutils"))` keeps them
+// available to the in-crate tests (and to integration tests that opt into
+// `--features testutils`) while the default release wasm build — and therefore
+// its exported spec — contains neither function. See issue #1308.
+#[cfg(any(test, feature = "testutils"))]
 #[contractimpl]
 impl RevoraRevenueShare {
     /// Test helper: insert a period entry and revenue without transferring tokens.
@@ -12537,6 +12545,13 @@ impl RevoraRevenueShare {
         let idx_key = DataKey::LastClaimedIdx(offering_id, holder);
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
     }
+}
+
+// Production ABI resumes here, in its own `#[contractimpl]` block so the
+// `cfg(any(test, feature = "testutils"))` above removes the test helpers
+// cleanly without disturbing the exported spec (issue #1308).
+#[contractimpl]
+impl RevoraRevenueShare {
     // â”€â”€ On-chain distribution simulation (#29) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Read-only: simulate distribution for sample inputs without mutating state.

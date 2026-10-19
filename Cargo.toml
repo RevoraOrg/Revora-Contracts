@@ -7,6 +7,14 @@ edition = "2021"
 # Issue #465: Kani bounded verification harness (not enabled in default CI).
 kani = []
 
+# Issue #1308: exposes the test-only state-mutation helpers
+# (`test_insert_period`, `test_set_last_claimed_idx`) so a non-`cfg(test)` build
+# (e.g. an integration test) can seed accounting state. These helpers mutate a
+# holder's claim cursor and period revenue without authorization or token
+# transfer, so this feature must never be enabled for a deployed build — the
+# release wasm export check (`scripts/check_wasm_exports.sh`) enforces that.
+testutils = []
+
 # `kani` is a cfg set by the Kani verifier (not a Cargo feature), so declare it as a
 # known cfg to keep `unexpected_cfgs` quiet under `clippy --all-features -D warnings`.
 [package.metadata.kani]

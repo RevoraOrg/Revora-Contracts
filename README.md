@@ -74,13 +74,18 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test -- --test-threads=1
 cargo build --release --target wasm32-unknown-unknown   # contract WASM
+./scripts/check_wasm_exports.sh                         # release WASM exports no test_* helper
 ```
 
 The `npm` scripts in `package.json` are thin wrappers around `cargo build/test`. The workspace includes `indexer/`; use `-p revora-contracts` to restrict commands to the contract. Style and lint policy: [docs/contracts-style.md](docs/contracts-style.md), [docs/clippy-format-gate-hardening.md](docs/clippy-format-gate-hardening.md).
 
 ## CI
 
-`.github/workflows/ci.yml` (push/PR to `master`) runs `cargo fmt --all -- --check` and `cargo check --lib` on stable Rust. Clippy and the test suite are not part of the current workflow.
+`.github/workflows/ci.yml` (push/PR to `master`) runs `cargo fmt --all -- --check`, `cargo check --lib`, and `cargo check --lib --features testutils` in the `check` job, plus a `wasm-exports` job that builds the release WASM and fails if any `test_*` function is exported. Clippy and the test suite are not part of the current workflow.
+
+## Test-only entrypoints
+
+`test_insert_period` and `test_set_last_claimed_idx` were historically exported entrypoints that could rewrite period revenue and a holder's claim cursor with no authorization and no token transfer. They are now compiled only under `#[cfg(any(test, feature = "testutils"))]`, so the default (and deployed) build does not export them. Never enable the `testutils` feature in a production build; `scripts/check_wasm_exports.sh` guards this in CI.
 
 ## Deployment notes
 
