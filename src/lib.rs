@@ -10125,17 +10125,8 @@ impl RevoraRevenueShare {
             symbol_short!("claim"),
         )?;
 
-        let share_bps = Self::get_holder_share(
-            env.clone(),
-            offering_id.issuer.clone(),
-            offering_id.namespace.clone(),
-            offering_id.token.clone(),
-            holder.clone(),
-        );
-        if share_bps == 0 {
-            return Err(RevoraError::NoPendingClaims);
-        }
-
+        // #1312: pay each period at the share held during that period, walking the
+        // per-holder HolderShareSchedule (the same helper used by get_claimable).
         Self::require_claim_window_open(&env, &offering_id)?;
 
         let count_key = DataKey::PeriodCount(offering_id.clone());
@@ -10145,6 +10136,13 @@ impl RevoraRevenueShare {
         let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
 
         if start_idx >= period_count {
+            return Err(RevoraError::NoPendingClaims);
+        }
+
+        // #1312: a holder with no share schedule has nothing claimable.
+        let holder_schedule =
+            Self::get_holder_share_schedule(&env, &offering_id, &holder);
+        if holder_schedule.is_empty() {
             return Err(RevoraError::NoPendingClaims);
         }
 
@@ -10197,17 +10195,16 @@ impl RevoraRevenueShare {
             if delay_secs > 0 && now < deposit_time.saturating_add(delay_secs) {
                 break;
             }
-            let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
-            let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
-            let decimals = Self::get_payment_token_decimals(
-                env.clone(),
-                offering_id.issuer.clone(),
-                offering_id.namespace.clone(),
-                offering_id.token.clone(),
+            // #1312: pay each period at the share in effect during that period
+            // (walking the HolderShareSchedule), matching get_claimable's preview.
+            let payout = Self::compute_holder_payout_for_range(
+                &env,
+                &offering_id,
+                &holder,
+                i,
+                i.saturating_add(1),
             );
-            let normalized = Self::normalize_amount(revenue, decimals);
-            let payout = normalized * (share_bps as i128) / 10_000;
-            total_payout += payout;
+            total_payout = total_payout.saturating_add(payout);
             claimed_periods.push_back(period_id);
             last_claimed_idx = i + 1;
         }
@@ -10244,7 +10241,16 @@ impl RevoraRevenueShare {
             );
         }
 
-        // Transfer only if there is a positive payout
+        // #1312: include anchor/settled amounts so transfer == returned == event amount.
+        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        if let Some(a) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key) {
+            if start_idx <= a.end_idx && a.end_idx < last_claimed_idx {
+                total_payout = total_payout.saturating_add(a.claimable_sum);
+                env.storage().persistent().remove(&anchor_key);
+            }
+        }
+
+        // Transfer only if there is a positive payout (transfer == returned == event).
         if total_payout > 0 {
             let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
                 .ok_or(RevoraError::PaymentTokenMismatch)?;
@@ -10258,14 +10264,6 @@ impl RevoraRevenueShare {
         }
         // Advance claim index only for periods actually claimed (respecting delay)
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
-
-        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
-        if let Some(a) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key) {
-            if start_idx <= a.end_idx && a.end_idx < last_claimed_idx {
-                total_payout = total_payout.saturating_add(a.claimable_sum);
-                env.storage().persistent().remove(&anchor_key);
-            }
-        }
 
         // Versioned v2 event: [2, holder, total_payout, periods] ΓÇö always emitted (#RC26Q2-C31)
         Self::emit_v2_event(
@@ -16048,6 +16046,9 @@ impl RevoraRevenueShare {
         (v2_fixtures, v3_fixtures)
     }
 }
+
+#[cfg(test)]
+mod test_issue_1312;
 
 #[cfg(test)]
 mod test_deferred_priority;
