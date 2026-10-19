@@ -772,7 +772,7 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// Bumped when storage or semantics change; used for migration and compatibility.
 pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -1410,7 +1410,14 @@ pub(crate) enum DataKey {
     /// Per-offering: rounding mode for share math.
     RoundingMode(OfferingId),
     /// Per-offering: revenue reports map (period_id -> (amount, timestamp)).
+    /// DEPRECATED: Use RevenueReport + ReportPeriodEntry/ReportPeriodCount instead.
     RevenueReports(OfferingId),
+    /// Per-offering per period: individual revenue report (amount, timestamp).
+    RevenueReport(OfferingId, u64),
+    /// Per-offering: count of reported periods for enumeration.
+    ReportPeriodCount(OfferingId),
+    /// Per-offering per index: period_id for reported period enumeration.
+    ReportPeriodEntry(OfferingId, u32),
     /// Per-offering per period: cumulative reported revenue amount.
     RevenueIndex(OfferingId, u64),
     /// Revenue amount deposited for (offering_id, period_id).
@@ -3813,26 +3820,53 @@ impl RevoraRevenueShare {
         env: &Env,
         offering_id: &OfferingId,
     ) -> (AuditSummary, bool) {
-        let reports_key = DataKey::RevenueReports(offering_id.clone());
-        let reports: Map<u64, (i128, u64)> =
-            env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(env));
+        // Try new storage layout first
+        let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
         let mut total_revenue: i128 = 0;
         let mut is_saturated = false;
-        let keys = reports.keys();
-        for i in 0..keys.len() {
-            let period_id = keys.get(i).unwrap();
-            if let Some((amount, _)) = reports.get(period_id) {
-                if let Ok(next) = total_revenue.s_add(amount) {
-                    total_revenue = next;
-                } else {
-                    is_saturated = true;
-                    total_revenue = i128::MAX;
+        let mut report_count: u64 = 0;
+
+        if count > 0 {
+            // New layout: iterate over ReportPeriodEntry
+            for i in 0..count {
+                let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), i);
+                if let Some(period_id) = env.storage().persistent().get::<DataKey, u64>(&entry_key) {
+                    let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
+                    if let Some((amount, _)) = env.storage().persistent().get::<DataKey, (i128, u64)>(&report_key) {
+                        if let Ok(next) = total_revenue.s_add(amount) {
+                            total_revenue = next;
+                        } else {
+                            is_saturated = true;
+                            total_revenue = i128::MAX;
+                        }
+                        report_count = report_count.s_add(1).unwrap_or(u64::MAX);
+                    }
                 }
             }
+        } else {
+            // Legacy fallback: use RevenueReports map
+            let reports_key = DataKey::RevenueReports(offering_id.clone());
+            let reports: Map<u64, (i128, u64)> =
+                env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(env));
+
+            let keys = reports.keys();
+            for i in 0..keys.len() {
+                let period_id = keys.get(i).unwrap();
+                if let Some((amount, _)) = reports.get(period_id) {
+                    if let Ok(next) = total_revenue.s_add(amount) {
+                        total_revenue = next;
+                    } else {
+                        is_saturated = true;
+                        total_revenue = i128::MAX;
+                    }
+                }
+            }
+            report_count = reports.len() as u64;
         }
 
-        (AuditSummary { total_revenue, report_count: reports.len() as u64 }, is_saturated)
+        (AuditSummary { total_revenue, report_count }, is_saturated)
     }
 
     /// Initialize the contract with an admin and an optional safety role.
@@ -5412,12 +5446,22 @@ impl RevoraRevenueShare {
                 (amount, payout_asset.clone()),
             );
         } else {
-            let reports_key = DataKey::RevenueReports(offering_id.clone());
-            let mut reports: Map<u64, (i128, u64)> =
-                env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+            let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
             let idx_key = DataKey::RevenueIndex(offering_id.clone(), period_id);
 
-            match reports.get(period_id) {
+            // Try to get existing report from new storage first, then fall back to legacy map
+            let existing_report: Option<(i128, u64)> = env.storage().persistent().get(&report_key);
+            let existing_report = if existing_report.is_none() {
+                // Legacy fallback: check the old RevenueReports map
+                let reports_key = DataKey::RevenueReports(offering_id.clone());
+                let reports: Map<u64, (i128, u64)> =
+                    env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+                reports.get(period_id)
+            } else {
+                existing_report
+            };
+
+            match existing_report {
                 Some((existing_amount, _)) => {
                     if !override_existing {
                         env.events().publish(
@@ -5464,8 +5508,8 @@ impl RevoraRevenueShare {
                     }
 
                     actual_override = true;
-                    reports.set(period_id, (amount, current_timestamp));
-                    env.storage().persistent().set(&reports_key, &reports);
+                    // Write to new per-period key
+                    env.storage().persistent().set(&report_key, &(amount, current_timestamp));
                     env.storage().persistent().set(&idx_key, &amount);
 
                     let summary_key = DataKey::AuditSummary(offering_id.clone());
@@ -5574,10 +5618,17 @@ impl RevoraRevenueShare {
                     }
 
                     actual_initial = true;
-                    reports.set(period_id, (amount, current_timestamp));
-                    env.storage().persistent().set(&reports_key, &reports);
+                    // Write to new per-period key
+                    env.storage().persistent().set(&report_key, &(amount, current_timestamp));
                     env.storage().persistent().set(&idx_key, &amount);
                     Self::commit_period_id(&env, last_report_period_key.clone(), period_id);
+
+                    // Append to reported period index for enumeration
+                    let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+                    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+                    let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), count);
+                    env.storage().persistent().set(&entry_key, &period_id);
+                    env.storage().persistent().set(&count_key, &(count + 1));
 
                     let summary_key = DataKey::AuditSummary(offering_id.clone());
                     let mut summary: AuditSummary = env
@@ -5780,6 +5831,86 @@ impl RevoraRevenueShare {
         );
 
         Ok(corrected)
+    }
+
+    /// Migrate legacy `RevenueReports` map to the new per-period storage layout.
+    ///
+    /// This function reads all entries from the legacy `RevenueReports` map and writes
+    /// them to the new `RevenueReport` keys and `ReportPeriodEntry`/`ReportPeriodCount` index.
+    /// It is idempotent: calling it multiple times will not duplicate data.
+    ///
+    /// ### Auth
+    /// Only the current issuer or the contract admin may call this.
+    ///
+    /// ### Returns
+    /// The number of reports migrated.
+    pub fn migrate_revenue_reports(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Result<u32, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        // Auth: caller must be current issuer or admin.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Check if migration already done (ReportPeriodCount exists and > 0)
+        let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+        let existing_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if existing_count > 0 {
+            return Ok(0); // Already migrated
+        }
+
+        // Read legacy RevenueReports map
+        let reports_key = DataKey::RevenueReports(offering_id.clone());
+        let reports: Map<u64, (i128, u64)> =
+            env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+
+        let keys = reports.keys();
+        let mut migrated: u32 = 0;
+
+        for i in 0..keys.len() {
+            let period_id = keys.get(i).unwrap();
+            if let Some((amount, timestamp)) = reports.get(period_id) {
+                // Write to new per-period key
+                let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
+                env.storage().persistent().set(&report_key, &(amount, timestamp));
+
+                // Append to reported period index
+                let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), migrated);
+                env.storage().persistent().set(&entry_key, &period_id);
+                migrated = migrated.s_add(1).unwrap_or(u32::MAX);
+            }
+        }
+
+        // Write the count
+        if migrated > 0 {
+            env.storage().persistent().set(&count_key, &migrated);
+        }
+
+        // Emit migration event
+        Self::emit_v2_event(
+            &env,
+            (symbol_short!("rev_mig"), issuer, namespace, token),
+            (migrated,),
+        );
+
+        Ok(migrated)
     }
 
     /// Read-only comparison between the stored `AuditSummary` cache and the

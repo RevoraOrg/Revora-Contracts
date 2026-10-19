@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
-pub const STORAGE_LAYOUT_VERSION: u32 = 2;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -53,6 +53,9 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::AuditSummary(OfferingId)", "AuditSummary", "offering"),
     ("DataKey::RoundingMode(OfferingId)", "RoundingMode", "offering"),
     ("DataKey::RevenueReports(OfferingId)", "Map<u64, RevenueReport>", "offering"),
+    ("DataKey::RevenueReport(OfferingId, u64)", "(i128, u64)", "offering+period"),
+    ("DataKey::ReportPeriodCount(OfferingId)", "u32", "offering"),
+    ("DataKey::ReportPeriodEntry(OfferingId, u32)", "u64", "offering+index"),
     ("DataKey::RevenueIndex(OfferingId, u64)", "i128", "offering+period"),
     ("DataKey::PeriodRevenue(OfferingId, u64)", "i128", "offering+period"),
     ("DataKey::PeriodEntry(OfferingId, u32)", "u64", "offering+index"),
