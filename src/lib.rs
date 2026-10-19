@@ -55,7 +55,7 @@ use crate::safe_math::SafeMath;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
     xdr::{FromXdr, ToXdr},
-    Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, Vec,
+    Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
 };
 
 /// Cross-contract client trait for FX oracle integrations.
@@ -437,6 +437,8 @@ mod test_freeze_reason_bitmask;
 mod test_get_payment_token;
 #[cfg(test)]
 mod test_holder_share_class;
+#[cfg(test)]
+mod test_meta_revenue_approval;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -1634,6 +1636,13 @@ pub struct MetaRevenueApprovalPayload {
     pub amount: i128,
     pub period_id: u64,
     pub override_existing: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevenueReportApproval {
+    pub payload: MetaRevenueApprovalPayload,
+    pub expiry: u64,
 }
 
 #[contracttype]
@@ -5760,6 +5769,7 @@ impl RevoraRevenueShare {
             amount,
             period_id,
             override_existing,
+            true,
             None,
             None,
         )
@@ -5788,9 +5798,69 @@ impl RevoraRevenueShare {
             amount,
             period_id,
             override_existing,
+            true,
             Some(quote_bytes),
             Some(signature),
         )
+    }
+
+    /// Submit a delegate-approved revenue report without issuer authorization.
+    ///
+    /// Anyone may relay the report. The approval is bound to this offering and
+    /// period, expires at its signed expiry, and is consumed after a successful
+    /// report attempt.
+    pub fn submit_approved_revenue_report(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        period_id: u64,
+    ) -> Result<(), RevoraError> {
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+        let approval_key = MetaDataKey::RevenueApproved(offering_id, period_id);
+        let stored_approval: Val =
+            env.storage().persistent().get(&approval_key).ok_or(RevoraError::NotAuthorized)?;
+        let approval = RevenueReportApproval::try_from_val(&env, &stored_approval)
+            .map_err(|_| RevoraError::NotAuthorized)?;
+        let payload = approval.payload;
+
+        if payload.issuer != issuer
+            || payload.namespace != namespace
+            || payload.token != token
+            || payload.period_id != period_id
+        {
+            return Err(RevoraError::NotAuthorized);
+        }
+        if env.ledger().timestamp() > approval.expiry {
+            return Err(RevoraError::SignatureExpired);
+        }
+
+        Self::report_revenue_internal(
+            env.clone(),
+            payload.issuer,
+            payload.namespace,
+            payload.token,
+            payload.payout_asset,
+            payload.amount,
+            payload.period_id,
+            payload.override_existing,
+            false,
+            None,
+            None,
+        )?;
+        env.storage().persistent().remove(&approval_key);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5803,12 +5873,15 @@ impl RevoraRevenueShare {
         amount: i128,
         period_id: u64,
         override_existing: bool,
+        require_issuer_auth: bool,
         quote_bytes: Option<Bytes>,
         signature: Option<BytesN<64>>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
-        issuer.require_auth();
+        if require_issuer_auth {
+            issuer.require_auth();
+        }
         let mut amount = amount;
         let mut payout_asset = payout_asset;
 
@@ -11362,7 +11435,7 @@ impl RevoraRevenueShare {
     }
 
     /// Meta-transaction authorization for a revenue report payload.
-    /// This does not mutate revenue data directly; it records a signed approval.
+    /// This records the signed payload and expiry for one-time relayed submission.
     #[allow(clippy::too_many_arguments)]
     pub fn meta_approve_revenue_report(
         env: Env,
@@ -11400,9 +11473,10 @@ impl RevoraRevenueShare {
         }
         let action = MetaAction::ApproveRevenueReport(payload.clone());
         Self::verify_meta_signature(&env, &signer, nonce, expiry, action, &signature)?;
-        env.storage()
-            .persistent()
-            .set(&MetaDataKey::RevenueApproved(offering_id, payload.period_id), &true);
+        env.storage().persistent().set(
+            &MetaDataKey::RevenueApproved(offering_id, payload.period_id),
+            &RevenueReportApproval { payload: payload.clone(), expiry },
+        );
         Self::mark_meta_nonce_used(&env, &signer, nonce);
         env.events().publish(
             (EVENT_META_REV_APPROVE, payload.issuer, payload.namespace, payload.token),
