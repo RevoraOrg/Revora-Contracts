@@ -596,6 +596,8 @@ const EVENT_ROYALTY_PAID: Symbol = symbol_short!("roy_paid");
 const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_INDEXED_V3: Symbol = symbol_short!("ev_idx3");
 pub const MAX_PROOF_DEPTH: u32 = 32;
+/// Maximum number of holders accepted by `simulate_distribution`.
+pub const MAX_SIMULATION_HOLDERS: u32 = 100;
 /// Emitted when a Merkle proof is rejected because its depth exceeds `MAX_PROOF_DEPTH`.
 ///
 /// Topics: `(prf_rej_d, caller)`
@@ -2573,60 +2575,46 @@ impl RevoraRevenueShare {
             .unwrap_or(false)
     }
 
-    /// Selection-sort holder indices by (share_bps desc, address asc).
+    /// Insertion-sort holder indices by (share_bps desc, address XDR asc).
     fn sort_holder_indices(
         env: &Env,
         bps_vec: &Vec<u32>,
         addr_vec: &Vec<Address>,
         n: u32,
     ) -> Vec<u32> {
-        // 256-bit bitmask across four u64 words; covers n ≤ 255.
-        let mut selected: [u64; 4] = [0u64; 4];
-        let mut sorted = Vec::<u32>::new(env);
+        let mut sorted_keys = Vec::<(u32, Bytes, u32)>::new(env);
 
-        for _ in 0..n {
-            let mut best: u32 = u32::MAX;
-            let mut best_bps: u32 = 0;
+        for i in 0..n {
+            let share_bps = bps_vec.get(i).unwrap();
+            let address_xdr = addr_vec.get(i).unwrap().to_xdr(env);
+            let mut insert_at = sorted_keys.len();
 
-            for j in 0..n {
-                let word = (j / 64) as usize;
-                let bit = j % 64;
-                if (selected[word] >> bit) & 1 == 1 {
-                    continue;
-                }
-                let j_bps = bps_vec.get(j).unwrap();
-                let better = best == u32::MAX
-                    || j_bps > best_bps
-                    || (j_bps == best_bps && {
-                        let j_addr = addr_vec.get(j).unwrap();
-                        let b_addr = addr_vec.get(best).unwrap();
-                        Self::addr_lt(env, &j_addr, &b_addr)
-                    });
-                if better {
-                    best = j;
-                    best_bps = j_bps;
+            for j in 0..sorted_keys.len() {
+                let (sorted_bps, sorted_xdr, _) = sorted_keys.get(j).unwrap();
+                if share_bps > sorted_bps
+                    || (share_bps == sorted_bps && Self::xdr_bytes_lt(&address_xdr, &sorted_xdr))
+                {
+                    insert_at = j;
+                    break;
                 }
             }
 
-            if best != u32::MAX {
-                let word = (best / 64) as usize;
-                let bit = best % 64;
-                selected[word] |= 1u64 << bit;
-                sorted.push_back(best);
-            }
+            sorted_keys.insert(insert_at, (share_bps, address_xdr, i));
         }
 
+        let mut sorted = Vec::<u32>::new(env);
+        for (_, _, index) in sorted_keys.iter() {
+            sorted.push_back(index);
+        }
         sorted
     }
 
-    /// Returns `true` iff `a`'s XDR encoding is lexicographically less than `b`'s.
-    fn addr_lt(env: &Env, a: &Address, b: &Address) -> bool {
-        let ba = a.to_xdr(env);
-        let bb = b.to_xdr(env);
-        let min_len = ba.len().min(bb.len());
+    /// Returns `true` iff `a` is lexicographically less than `b`.
+    fn xdr_bytes_lt(a: &Bytes, b: &Bytes) -> bool {
+        let min_len = a.len().min(b.len());
         for i in 0..min_len {
-            let byte_a: u32 = ba.get(i).unwrap().into();
-            let byte_b: u32 = bb.get(i).unwrap().into();
+            let byte_a: u32 = a.get(i).unwrap().into();
+            let byte_b: u32 = b.get(i).unwrap().into();
             if byte_a < byte_b {
                 return true;
             }
@@ -2634,7 +2622,7 @@ impl RevoraRevenueShare {
                 return false;
             }
         }
-        ba.len() < bb.len()
+        a.len() < b.len()
     }
 
     /// Return the effective fee bps for (offering, asset): offering override > platform asset > platform global.
@@ -12542,6 +12530,7 @@ impl RevoraRevenueShare {
     /// Read-only: simulate distribution for sample inputs without mutating state.
     /// Returns expected payouts per holder and total. Uses offering's rounding mode.
     /// For integrators to preview outcomes before executing deposit/claim flows.
+    /// Returns `LimitReached` for more than `MAX_SIMULATION_HOLDERS` holders or duplicates.
     pub fn simulate_distribution(
         env: Env,
         issuer: Address,
@@ -12549,7 +12538,25 @@ impl RevoraRevenueShare {
         token: Address,
         amount: i128,
         holder_shares: Vec<(Address, u32)>,
-    ) -> SimulateDistributionResult {
+    ) -> Result<SimulateDistributionResult, RevoraError> {
+        let n = holder_shares.len();
+        if n > MAX_SIMULATION_HOLDERS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let mut addr_vec = Vec::<Address>::new(&env);
+        let mut bps_vec = Vec::<u32>::new(&env);
+        let mut seen_holders = Map::<Address, bool>::new(&env);
+        for i in 0..n {
+            let (h, b) = holder_shares.get(i).unwrap();
+            if seen_holders.contains_key(h.clone()) {
+                return Err(RevoraError::LimitReached);
+            }
+            seen_holders.set(h.clone(), true);
+            addr_vec.push_back(h);
+            bps_vec.push_back(b);
+        }
+
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
@@ -12559,17 +12566,6 @@ impl RevoraRevenueShare {
         let classes: Option<Vec<(ShareClass, ClassConfig)>> =
             env.storage().persistent().get(&classes_key);
         let mode = Self::get_rounding_mode(env.clone(), issuer, namespace, token.clone());
-
-        let n = holder_shares.len();
-
-        // Extract parallel vecs for the sort helper.
-        let mut addr_vec = Vec::<Address>::new(&env);
-        let mut bps_vec = Vec::<u32>::new(&env);
-        for i in 0..n {
-            let (h, b) = holder_shares.get(i).unwrap();
-            addr_vec.push_back(h);
-            bps_vec.push_back(b);
-        }
 
         let sorted_idx = Self::sort_holder_indices(&env, &bps_vec, &addr_vec, n);
 
@@ -12612,7 +12608,7 @@ impl RevoraRevenueShare {
             total = total.saturating_add(payout);
             payouts.push_back((holder.clone(), payout));
         }
-        SimulateDistributionResult { total_distributed: total, payouts }
+        Ok(SimulateDistributionResult { total_distributed: total, payouts })
     }
 
     // â”€â”€ Issuer two-step transfer (#258) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
