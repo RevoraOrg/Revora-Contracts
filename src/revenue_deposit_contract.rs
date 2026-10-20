@@ -1,6 +1,6 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token::Client as TokenClient,
-    Address, Env, Map, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    token::Client as TokenClient, Address, Env, Map, Vec,
 };
 
 /// Top-level storage keys stored in persistent contract storage.
@@ -124,7 +124,10 @@ impl RevenueDepositContract {
             .get(&DataKey::AuthorizedOfferings)
             .unwrap_or_else(|| Vec::new(&env));
 
-        let pos = offerings.iter().position(|entry| entry == offering).ok_or(ContractError::UnauthorizedDepositor)?;
+        let pos = offerings
+            .iter()
+            .position(|entry| entry == offering)
+            .ok_or(ContractError::UnauthorizedDepositor)?;
         offerings.remove(pos as u32);
         env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
 
@@ -133,7 +136,12 @@ impl RevenueDepositContract {
     }
 
     /// Deposit `amount` of the configured token into `period_id` from an authorized offering.
-    pub fn deposit(env: Env, caller: Address, period_id: u32, amount: i128) -> Result<(), ContractError> {
+    pub fn deposit(
+        env: Env,
+        caller: Address,
+        period_id: u32,
+        amount: i128,
+    ) -> Result<(), ContractError> {
         let offerings: Vec<Address> = env
             .storage()
             .persistent()
@@ -156,7 +164,8 @@ impl RevenueDepositContract {
             .get(&DataKey::Period(period_id))
             .ok_or(ContractError::PeriodNotFound)?;
 
-        period.revenue_amount = period.revenue_amount.checked_add(amount).ok_or(ContractError::Overflow)?;
+        period.revenue_amount =
+            period.revenue_amount.checked_add(amount).ok_or(ContractError::Overflow)?;
         env.storage().persistent().set(&DataKey::Period(period_id), &period);
 
         let token: Address = env.storage().persistent().get(&DataKey::Token).unwrap();
