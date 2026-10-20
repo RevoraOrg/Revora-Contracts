@@ -6,7 +6,7 @@ use std::path::Path;
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// Must stay in sync with `STORAGE_LAYOUT_VERSION` in `src/lib.rs` (asserted by
 /// `tests/storage_layout_json.rs`).
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -207,6 +207,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey3::ProcessedAttestationHash(BytesN<32>)", "bool", "attestation"),
     ("DataKey3::EmitV2Compat", "bool", "contract"),
     ("DataKey3::RemainingBasis(OfferingId, Address)", "i128", "offering+holder"),
+    // ── Issuer-transfer identity keys ──
+    ("DataKey3::CanonicalIssuer(OfferingId)", "Address", "offering"),
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
