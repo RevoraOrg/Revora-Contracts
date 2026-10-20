@@ -81,7 +81,7 @@ fn set_holder_share_rejects_disallowed_jurisdiction_and_emits_audit_event() {
     let events_before = env.events().all().len();
 
     let result =
-        client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500u32);
+        client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::JurisdictionDisallowed)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 0);
     assert!(env.events().all().len() > events_before);
@@ -106,7 +106,7 @@ fn removing_a_jurisdiction_does_not_break_existing_holder_claims() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     client.set_allowed_jurisdictions(
         &issuer,
@@ -115,7 +115,7 @@ fn removing_a_jurisdiction_does_not_break_existing_holder_claims() {
         &soroban_sdk::vec![&env, symbol_short!("ca")],
     );
 
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
 
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 4_000);
@@ -128,7 +128,7 @@ fn apply_snapshot_shares_rejects_disallowed_jurisdiction_without_partial_state()
     let (env, client, issuer, token, _payout_asset) = setup_offering();
     let holder = Address::generate(&env);
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     client.set_holder_jurisdiction(
         &issuer,
         &symbol_short!("def"),
@@ -145,12 +145,12 @@ fn apply_snapshot_shares_rejects_disallowed_jurisdiction_without_partial_state()
     );
 
     let hash = BytesN::from_array(&env, &[7; 32]);
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &hash);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     let events_before = env.events().all().len();
 
     let holders = soroban_sdk::vec![&env, (holder.clone(), 2_500u32)];
     let result =
-        client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+        client.try_apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::JurisdictionDisallowed)));
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 0);
@@ -187,7 +187,7 @@ fn issuer_transfer_migrates_allowed_jurisdictions() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("sg")],
     );
-    client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
+    client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [old_issuer.clone()]));
     client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
 
     assert_eq!(
@@ -296,10 +296,10 @@ fn claim_during_grace_period_succeeds() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Deposit revenue
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Schedule jurisdiction migration to a disallowed jurisdiction
     let effective_ts = now + 3600 * 24; // 1 day in the future
@@ -338,10 +338,10 @@ fn claim_after_grace_period_with_disallowed_jurisdiction_fails() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Deposit revenue
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Schedule jurisdiction migration to a disallowed jurisdiction
     let effective_ts = now + 3600; // 1 hour in the future
@@ -383,10 +383,10 @@ fn claim_after_grace_period_with_allowed_jurisdiction_succeeds() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("uk")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Deposit revenue
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Schedule migration to "uk" which is in the allowlist
     let effective_ts = now + 3600;
@@ -428,8 +428,8 @@ fn migration_into_disallowed_jurisdiction_at_exact_grace_end() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let grace_secs = 60 * 60; // 1 hour grace
     client.set_jurisdiction_grace_period(
@@ -437,7 +437,7 @@ fn migration_into_disallowed_jurisdiction_at_exact_grace_end() {
         &symbol_short!("def"),
         &token,
         &grace_secs,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let effective_ts = now + 3600; // 1 hour from now
     client.set_holder_jurisdiction(
@@ -469,7 +469,7 @@ fn configurable_grace_period_is_honored() {
         &symbol_short!("def"),
         &token,
         &(60 * 60),
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let effective_ts = now + 1800; // 30 minutes in the future
     client.set_holder_jurisdiction(
@@ -524,8 +524,8 @@ fn claim_with_no_pending_migration_succeeds_normally() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
     assert_eq!(payout, 40_000);
@@ -546,8 +546,8 @@ fn migration_with_no_allowlist_never_blocks_claims() {
         &symbol_short!("us"),
         &0u64,
     );
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Schedule migration into any jurisdiction
     let effective_ts = now + 3600;
@@ -742,7 +742,7 @@ fn transfer_blocked_by_jurisdiction_allowlist_returns_jurisdiction_blocked() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
     );
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Set the jurisdiction allowlist to only allow "us" (NOT "ca")
     client.set_jurisdiction_allowlist(
@@ -805,7 +805,7 @@ fn transfer_allowed_when_destination_jurisdiction_in_allowlist() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
     );
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Set allowlist to include "ca"
     client.set_jurisdiction_allowlist(
@@ -867,7 +867,7 @@ fn empty_allowlist_allows_all_transfers() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("xx")],
     );
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Holder2 also has "xx" jurisdiction
     client.set_holder_jurisdiction(&issuer, &ns, &token, &holder2, &symbol_short!("xx"), &0u64);
@@ -919,7 +919,7 @@ fn single_jurisdiction_allowlist_rejects_other_jurisdictions() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us"), symbol_short!("ca")],
     );
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Single jurisdiction allowlist: only "us"
     client.set_jurisdiction_allowlist(
@@ -980,7 +980,7 @@ fn jurisdiction_allowlist_reject_emits_audit_event() {
         &token,
         &soroban_sdk::vec![&env, symbol_short!("us")],
     );
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &100);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     client.set_jurisdiction_allowlist(
         &issuer,

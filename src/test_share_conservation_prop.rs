@@ -55,7 +55,7 @@ proptest! {
                     }
                 }
                 TestOperation::SetHolderShare { issuer, namespace, token, holder, share_bps } => {
-                    let _ = client.try_set_holder_share(&issuer, &namespace, &token, &holder, &share_bps);
+                    let _ = client.try_set_holder_share(&issuer, &namespace, &token, &holder, &share_bps, &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]));
                     if !all_holders.contains(&holder) {
                         all_holders.push(holder);
                     }

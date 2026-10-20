@@ -31,11 +31,11 @@ fn decimals_bounds_and_default() {
         &symbol_short!(""),
         &0);
 
-    assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &0u32).is_ok());
+    assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &0u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
     assert_eq!(client.get_payment_token_decimals(&issuer, &ns, &token), 0u32);
-    assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &18u32).is_ok());
+    assert!(client.try_set_payment_token_decimals(&issuer, &ns, &token, &18u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
     assert_eq!(client.get_payment_token_decimals(&issuer, &ns, &token), 18u32);
-    let err = client.try_set_payment_token_decimals(&issuer, &ns, &token, &19u32).err().unwrap();
+    let err = client.try_set_payment_token_decimals(&issuer, &ns, &token, &19u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).err().unwrap();
     assert_eq!(err, RevoraError::LimitReached);
 
     // New offering default

@@ -156,7 +156,7 @@ fn set_share(
     holder: &Address,
     bps: u32,
 ) {
-    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1);
+    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1, &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]));
 }
 
 // ── Same-class transfers succeed ──────────────────────────────────────────────

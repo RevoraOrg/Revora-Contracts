@@ -49,7 +49,13 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &symbol_short!(""),
         &0,
     );
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     (env, client, issuer, token)
 }
@@ -76,7 +82,14 @@ fn commit_and_apply(
         sdk_holders.push_back((addr.clone(), *bps));
     }
 
-    client.commit_snapshot(issuer, &symbol_short!("def"), token, &snapshot_ref, &content_hash);
+    client.commit_snapshot(
+        issuer,
+        &symbol_short!("def"),
+        token,
+        &snapshot_ref,
+        &content_hash,
+        &soroban_sdk::Vec::from_array(env, [issuer.clone()]),
+    );
     client.apply_snapshot_shares(
         issuer,
         &symbol_short!("def"),
@@ -84,6 +97,7 @@ fn commit_and_apply(
         &snapshot_ref,
         &0,
         &sdk_holders,
+        &soroban_sdk::Vec::from_array(env, [issuer.clone()]),
     );
 }
 

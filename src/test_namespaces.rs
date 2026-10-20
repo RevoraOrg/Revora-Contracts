@@ -31,8 +31,8 @@ fn test_namespace_isolation() {
 
     // Set holder shares differently
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer_a, &ns_1, &token, &holder, &500, &1);
-    client.set_holder_share(&issuer_b, &ns_2, &token, &holder, &1500, &1);
+    client.set_holder_share(&issuer_a, &ns_1, &token, &holder, &500, &1, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
+    client.set_holder_share(&issuer_b, &ns_2, &token, &holder, &1500, &1, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]));
 
     // Verify they are isolated
     assert_eq!(client.get_holder_share(&issuer_a, &ns_1, &token, &holder), 500);
@@ -44,8 +44,8 @@ fn test_namespace_isolation() {
     // But we are using the `token` Address directly. We should probably use a proper token client.
 
     // For simplicity in this isolation test, let's just check metadata/config which are simple set/get
-    client.set_claim_delay(&issuer_a, &ns_1, &token, &3600);
-    client.set_claim_delay(&issuer_b, &ns_2, &token, &7200);
+    client.set_claim_delay(&issuer_a, &ns_1, &token, &3600, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
+    client.set_claim_delay(&issuer_b, &ns_2, &token, &7200, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]));
 
     assert_eq!(client.get_claim_delay(&issuer_a, &ns_1, &token), 3600);
     assert_eq!(client.get_claim_delay(&issuer_b, &ns_2, &token), 7200);
@@ -67,8 +67,8 @@ fn test_same_issuer_different_namespaces() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns_1, &token, &1000, &token, &0, &symbol_short!(""), &0);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns_2, &token, &2000, &token, &0, &symbol_short!(""), &0);
 
-    client.set_snapshot_config(&issuer, &ns_1, &token, &true);
-    client.set_snapshot_config(&issuer, &ns_2, &token, &false);
+    client.set_snapshot_config(&issuer, &ns_1, &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_snapshot_config(&issuer, &ns_2, &token, &false, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(client.get_snapshot_config(&issuer, &ns_1, &token));
     assert!(!client.get_snapshot_config(&issuer, &ns_2, &token));
@@ -116,7 +116,7 @@ fn test_unregistered_namespace_fails() {
     let ns_ghost = symbol_short!("ghost");
 
     // Attempt to set delay on non-existent offering
-    client.set_claim_delay(&issuer, &ns_ghost, &token, &3600);
+    client.set_claim_delay(&issuer, &ns_ghost, &token, &3600, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 }
 
 /// @dev Verifies that an issuer cannot access or modify offerings they do not own, even within the same namespace.
@@ -166,21 +166,21 @@ fn test_transfer_maintains_namespace_isolation() {
     let ns_1 = symbol_short!("ns1");
 
     client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &ns_1, &token_1, &1000, &token_1, &0, &symbol_short!(""), &0);
-    client.set_claim_delay(&issuer_a, &ns_1, &token_1, &3600);
+    client.set_claim_delay(&issuer_a, &ns_1, &token_1, &3600, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
 
     // Transfer to Issuer B
-    client.propose_issuer_transfer(&issuer_a, &ns_1, &token_1, &issuer_b);
+    client.propose_issuer_transfer(&issuer_a, &ns_1, &token_1, &issuer_b, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
     client.accept_issuer_transfer(&issuer_a, &ns_1, &token_1);
 
     // Verify config preserved
     assert_eq!(client.get_claim_delay(&issuer_a, &ns_1, &token_1), 3600);
 
     // Verify Issuer B now has control (e.g. can change delay)
-    client.set_claim_delay(&issuer_b, &ns_1, &token_1, &7200);
+    client.set_claim_delay(&issuer_b, &ns_1, &token_1, &7200, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]));
     assert_eq!(client.get_claim_delay(&issuer_a, &ns_1, &token_1), 7200);
 
     // Verify Issuer A NO LONGER has control
-    let res = client.try_set_claim_delay(&issuer_a, &ns_1, &token_1, &9999);
+    let res = client.try_set_claim_delay(&issuer_a, &ns_1, &token_1, &9999, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
     assert!(res.is_err());
 }
 
@@ -410,8 +410,8 @@ fn test_mixed_sequence_with_share_updates() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
 
     // Set initial shares
-    client.set_holder_share(&issuer, &ns, &token, &holder_a, &5000, &1);
-    client.set_holder_share(&issuer, &ns, &token, &holder_b, &5000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder_a, &5000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &ns, &token, &holder_b, &5000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Whitelist both holders
     client.whitelist_add(&issuer, &issuer, &ns, &token, &holder_a);

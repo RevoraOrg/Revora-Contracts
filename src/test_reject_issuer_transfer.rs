@@ -38,7 +38,7 @@ fn test_reject_issuer_transfer_success() {
     let namespace = symbol_short!("def");
 
     // Propose transfer
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Reject transfer
     let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &token);
@@ -88,7 +88,7 @@ fn test_reject_issuer_transfer_wrong_new_issuer() {
     let wrong_new_issuer = Address::generate(&env);
     let namespace = symbol_short!("def");
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let res = client.try_reject_issuer_transfer(&wrong_new_issuer, &namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
@@ -103,7 +103,7 @@ fn test_reject_issuer_transfer_wrong_namespace() {
     let namespace = symbol_short!("def");
     let wrong_namespace = symbol_short!("wrong");
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let res = client.try_reject_issuer_transfer(&new_issuer, &wrong_namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
@@ -118,7 +118,7 @@ fn test_reject_issuer_transfer_wrong_token() {
     let namespace = symbol_short!("def");
     let wrong_token = Address::generate(&env);
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &wrong_token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));

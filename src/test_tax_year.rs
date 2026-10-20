@@ -66,19 +66,43 @@ fn fiscal_year_config_default_and_roundtrip() {
     assert_eq!(client.get_fiscal_year_start(&issuer, &ns, &token), 1, "default should be January",);
 
     // Set to April (4).
-    client.set_fiscal_year_start(&issuer, &ns, &token, &4);
+    client.set_fiscal_year_start(
+        &issuer,
+        &ns,
+        &token,
+        &4,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(client.get_fiscal_year_start(&issuer, &ns, &token), 4);
 
     // Set to December (12).
-    client.set_fiscal_year_start(&issuer, &ns, &token, &12);
+    client.set_fiscal_year_start(
+        &issuer,
+        &ns,
+        &token,
+        &12,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(client.get_fiscal_year_start(&issuer, &ns, &token), 12);
 
     // Invalid: 0 should be rejected.
-    let result = client.try_set_fiscal_year_start(&issuer, &ns, &token, &0);
+    let result = client.try_set_fiscal_year_start(
+        &issuer,
+        &ns,
+        &token,
+        &0,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert!(result.is_err(), "month 0 should be rejected");
 
     // Invalid: 13 should be rejected.
-    let result = client.try_set_fiscal_year_start(&issuer, &ns, &token, &13);
+    let result = client.try_set_fiscal_year_start(
+        &issuer,
+        &ns,
+        &token,
+        &13,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert!(result.is_err(), "month 13 should be rejected");
 }
 
@@ -91,14 +115,36 @@ fn year_boundary_april_start() {
     let holder = Address::generate(&env);
 
     // Holder gets 100% share.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Configure fiscal year starting in April (4).
-    client.set_fiscal_year_start(&issuer, &ns, &token, &4);
+    client.set_fiscal_year_start(
+        &issuer,
+        &ns,
+        &token,
+        &4,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Deposit revenue and claim in March 2024 → fiscal year 2024 (Apr 2023 – Mar 2024).
     set_time(&env, TS_MAR_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     // Verify tax year 2024 summary.
@@ -109,7 +155,15 @@ fn year_boundary_april_start() {
 
     // Deposit revenue and claim in April 2024 → fiscal year 2025 (Apr 2024 – Mar 2025).
     set_time(&env, TS_APR_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &50_000, &2);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &50_000,
+        &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     // Verify tax year 2025 summary.
@@ -131,21 +185,53 @@ fn multi_year_holder_accumulates_correctly() {
     let ns = symbol_short!("def");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Jan 2024: deposit & claim → FY2024 (Jan start).
     set_time(&env, TS_JAN_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     // Dec 2024: deposit & claim → still FY2024 (still Dec).
     set_time(&env, TS_DEC_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &75_000, &2);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &75_000,
+        &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     // Mar 2025: deposit & claim → FY2025 (Mar 2025, fiscal year Jan start).
     set_time(&env, TS_MAR_2025);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &50_000, &3);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &50_000,
+        &3,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     // Verify accumulations.
@@ -168,11 +254,27 @@ fn fiscal_year_january_default() {
     let ns = symbol_short!("def");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Jan 2024 → FY2024.
     set_time(&env, TS_JAN_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     let fy2024 = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2024);
@@ -181,7 +283,15 @@ fn fiscal_year_january_default() {
 
     // Dec 2024 → still FY2024 (default Jan start).
     set_time(&env, TS_DEC_2024);
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &50_000, &2);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &50_000,
+        &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.claim(&holder, &issuer, &ns, &token, &0);
 
     let fy2024b = client.get_holder_tax_year(&issuer, &ns, &token, &holder, &2024);

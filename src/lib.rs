@@ -371,6 +371,13 @@ pub enum RevoraError {
     OracleQuoteStale = 91,
     /// A redemption request overlaps an existing pending redemption window.
     RedemptionWindowOverlap = 92,
+    /// The provided issuer signers do not meet the offering's configured quorum
+    /// (or the primary issuer is missing from the signer set). Unique signers
+    /// are counted; repeating the same address does not raise the count.
+    QuorumNotReached = 93,
+    /// `register_offering` was given co-issuers that are duplicated or that
+    /// include the primary issuer.
+    InvalidCoIssuers = 94,
 }
 
 pub mod tax_bucket;
@@ -2473,21 +2480,46 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    /// Require that enough issuers have authorized the operation (quorum check).
+    /// Require that the offering's configured issuer quorum has authorized the
+    /// operation.
     ///
-    /// Requires authentication from every registered issuer (primary + co-issuers).
-    fn require_issuer_quorum_auth(env: &Env, issuers: &Issuers) {
-        // Collect all issuers (primary + co)
-        let mut all_issuers = Vec::new(env);
-        all_issuers.push_back(issuers.primary.clone());
-        for co_issuer in issuers.co.iter() {
-            all_issuers.push_back(co_issuer.clone());
+    /// `signers` is the caller-supplied list of issuer addresses authorizing
+    /// this invocation. The list is deduplicated (repeating an address is
+    /// counted once and cannot manufacture quorum), every unique signer must be
+    /// a member of `issuers` (primary or co-issuer) and must pass
+    /// `require_auth`, the **primary issuer must always be among the signers**,
+    /// and the unique-signer count must be at least `issuers.quorum`.
+    fn require_issuer_quorum_auth(
+        env: &Env,
+        issuers: &Issuers,
+        signers: &Vec<Address>,
+    ) -> Result<(), RevoraError> {
+        let mut unique: Vec<Address> = Vec::new(env);
+        for signer in signers.iter() {
+            if !unique.contains(&signer) {
+                unique.push_back(signer);
+            }
         }
 
-        // Require authentication from every issuer.
-        for issuer in all_issuers.iter() {
-            issuer.require_auth();
+        let mut primary_signed = false;
+        for signer in unique.iter() {
+            let is_issuer = signer == issuers.primary || issuers.co.contains(&signer);
+            if !is_issuer {
+                return Err(RevoraError::NotAuthorized);
+            }
+            if signer == issuers.primary {
+                primary_signed = true;
+            }
+            signer.require_auth();
         }
+
+        // The primary issuer is the offering's root of authority: quorum can
+        // never be satisfied without them, even when co-issuers alone would
+        // reach the configured count.
+        if !primary_signed || unique.len() < issuers.quorum {
+            return Err(RevoraError::QuorumNotReached);
+        }
+        Ok(())
     }
 
     /// Input validation (#35): require period_id > 0.
@@ -3912,6 +3944,7 @@ impl RevoraRevenueShare {
         token: Address,
         asset: Address,
         fee_bps: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         let offering =
             Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
@@ -3919,7 +3952,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
         if fee_bps > MAX_PLATFORM_FEE_BPS {
             return Err(RevoraError::InvalidRevenueShareBps);
         }
@@ -4555,8 +4588,9 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         new_issuer: Address,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
-        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, 0)
+        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, 0, signers)
     }
 
     /// Propose an issuer transfer with a custom expiry window.
@@ -4571,8 +4605,17 @@ impl RevoraRevenueShare {
         token: Address,
         new_issuer: Address,
         expiry_secs: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
-        Self::do_propose_issuer_transfer(env, issuer, namespace, token, new_issuer, expiry_secs)
+        Self::do_propose_issuer_transfer(
+            env,
+            issuer,
+            namespace,
+            token,
+            new_issuer,
+            expiry_secs,
+            signers,
+        )
     }
 
     fn do_propose_issuer_transfer(
@@ -4582,6 +4625,7 @@ impl RevoraRevenueShare {
         token: Address,
         new_issuer: Address,
         expiry_secs: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -4592,7 +4636,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -4634,6 +4678,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         new_issuer: Address,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -4644,7 +4689,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::NotAuthorized);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -4894,6 +4939,7 @@ impl RevoraRevenueShare {
         issuer: Address,
         namespace: Symbol,
         token: Address,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -4904,7 +4950,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::NotAuthorized);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -5244,6 +5290,21 @@ impl RevoraRevenueShare {
         let total_issuers = 1 + co_issuers.len();
         if quorum == 0 || quorum > total_issuers {
             return Err(RevoraError::LimitReached);
+        }
+
+        // Co-issuers must be unique and must not include the primary issuer.
+        // A duplicated co-issuer (or the primary sneaking into `co`) would let a
+        // single address occupy two slots, inflating the apparent signer set and
+        // making the stored `quorum` unattainable or trivially gameable.
+        for (i, co) in co_issuers.iter().enumerate() {
+            if co == primary_issuer {
+                return Err(RevoraError::InvalidCoIssuers);
+            }
+            for (j, other) in co_issuers.iter().enumerate() {
+                if i < j && co == other {
+                    return Err(RevoraError::InvalidCoIssuers);
+                }
+            }
         }
 
         // Negative Amount Validation Matrix: SupplyCap requires >= 0 (#163)
@@ -7552,6 +7613,7 @@ impl RevoraRevenueShare {
     ///
     /// ### Constraints
     /// - `max_bps` must be <= 10,000.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_concentration_limit(
         env: Env,
         issuer: Address,
@@ -7560,6 +7622,7 @@ impl RevoraRevenueShare {
         max_bps: u32,
         enforce: bool,
         max_staleness_secs: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -7578,7 +7641,7 @@ impl RevoraRevenueShare {
         // Auth-first: authenticate before any state reads or side effects.
         // This prevents unauthenticated callers from probing offering existence
         // and ensures event-only mode never silently skips authorization.
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         // Verify offering exists and issuer is current
         let offering_id = OfferingId {
@@ -8164,6 +8227,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         concentration_bps: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -8177,7 +8241,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8262,6 +8326,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         mode: RoundingMode,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -8273,7 +8338,7 @@ impl RevoraRevenueShare {
         }
 
         // Auth-first: authenticate before any state reads.
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8312,6 +8377,7 @@ impl RevoraRevenueShare {
         token: Address,
         min_stake: i128,
         max_stake: i128,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -8323,7 +8389,7 @@ impl RevoraRevenueShare {
         }
 
         // Auth-first: authenticate before any state reads.
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8389,6 +8455,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         min_amount: i128,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -8400,7 +8467,7 @@ impl RevoraRevenueShare {
         }
 
         // Auth-first: authenticate before any state reads.
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8463,6 +8530,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         threshold: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -8473,7 +8541,7 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8641,6 +8709,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         decimals: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         if decimals > MAX_TOKEN_DECIMALS {
             return Err(RevoraError::LimitReached);
@@ -8651,7 +8720,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8696,6 +8765,7 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::PeriodAlreadyDeposited)` if revenue has already been deposited for this `period_id`.
     /// - `Err(RevoraError::PaymentTokenMismatch)` if `payment_token` differs from the token locked by the first successful deposit.
     /// - `Err(RevoraError::ContractFrozen)` if the contract is frozen.
+    #[allow(clippy::too_many_arguments)]
     pub fn deposit_revenue(
         env: Env,
         issuer: Address,
@@ -8704,6 +8774,7 @@ impl RevoraRevenueShare {
         payment_token: Address,
         amount: i128,
         period_id: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -8721,7 +8792,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8745,6 +8816,7 @@ impl RevoraRevenueShare {
         amount: i128,
         period_id: u64,
         snapshot_reference: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -8770,7 +8842,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -8824,6 +8896,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         enabled: bool,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
 
@@ -8833,7 +8906,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId { issuer, namespace, token };
         Self::require_not_frozen(&env)?;
@@ -8941,6 +9014,7 @@ impl RevoraRevenueShare {
         token: Address,
         snapshot_ref: u64,
         content_hash: BytesN<32>,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -8952,7 +9026,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         // Snapshot distribution must be enabled for this offering.
         let offering_id = OfferingId {
@@ -9024,6 +9098,7 @@ impl RevoraRevenueShare {
     /// ### Errors
     /// - `OfferingNotFound`, `SnapshotNotEnabled`, `OutdatedSnapshot`,
     ///   `LimitReached`, `InvalidShareBps`, `ContractFrozen`.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_snapshot_shares(
         env: Env,
         issuer: Address,
@@ -9032,6 +9107,7 @@ impl RevoraRevenueShare {
         snapshot_ref: u64,
         start_index: u32,
         holders: Vec<(Address, u32)>,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -9042,7 +9118,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -9307,6 +9383,7 @@ impl RevoraRevenueShare {
     /// Use `nonce = 1` on the first call; increment by at least 1 on every
     /// subsequent call.  The contract persists the last accepted value so the
     /// caller can derive the next valid nonce from `get_holder_share_nonce`.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_holder_share(
         env: Env,
         issuer: Address,
@@ -9315,6 +9392,7 @@ impl RevoraRevenueShare {
         holder: Address,
         share_bps: u32,
         nonce: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -9325,7 +9403,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -9804,6 +9882,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         delay_secs: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -9814,7 +9893,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::NotAuthorized);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId { issuer: issuer.clone(), namespace, token };
         env.storage().persistent().set(&DataKey::ClaimDelaySecs(offering_id), &delay_secs);
@@ -9840,6 +9919,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         grace_secs: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -9850,7 +9930,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::NotAuthorized);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         if !(MIN_JURISDICTION_GRACE_SECS..=MAX_JURISDICTION_GRACE_SECS).contains(&grace_secs) {
             return Err(RevoraError::InvalidAmount);
@@ -10842,6 +10922,7 @@ impl RevoraRevenueShare {
         token: Address,
         share_class: ShareClass,
         priority_index: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -10852,7 +10933,7 @@ impl RevoraRevenueShare {
         // Issuer-quorum requires the primary signer and the configured number
         // of co-signers to have authorized. This matches `set_holder_share`
         // and other governance-equivalent mutations.
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),
@@ -12360,6 +12441,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         month: u32,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         if !(1..=12).contains(&month) {
             return Err(RevoraError::InvalidAmount);
@@ -12367,7 +12449,7 @@ impl RevoraRevenueShare {
         let offering =
             Self::get_offering(env.clone(), issuer.clone(), namespace.clone(), token.clone())
                 .ok_or(RevoraError::OfferingNotFound)?;
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId { issuer, namespace, token };
         env.storage().persistent().set(&DataKey3::FiscalYearStartMonth(offering_id), &month);
@@ -14767,7 +14849,13 @@ mod issue_370_373_tests {
         }
 
         let transfer_token = old_tokens.get(7).unwrap();
-        client.propose_issuer_transfer(&old_issuer, &namespace, &transfer_token, &new_issuer);
+        client.propose_issuer_transfer(
+            &old_issuer,
+            &namespace,
+            &transfer_token,
+            &new_issuer,
+            &soroban_sdk::Vec::from_array(&env, [old_issuer.clone()]),
+        );
         client.accept_issuer_transfer(&new_issuer, &namespace, &transfer_token);
 
         assert_eq!(client.get_offering_count(&old_issuer, &namespace), 25);
@@ -15666,6 +15754,7 @@ impl RevoraRevenueShare {
         namespace: Symbol,
         token: Address,
         snapshot_ref: u64,
+        signers: Vec<Address>,
     ) -> Result<(), RevoraError> {
         Self::require_not_frozen(&env)?;
         Self::require_not_paused(&env)?;
@@ -15676,7 +15765,7 @@ impl RevoraRevenueShare {
         if offering.issuers.primary != issuer {
             return Err(RevoraError::OfferingNotFound);
         }
-        Self::require_issuer_quorum_auth(&env, &offering.issuers);
+        Self::require_issuer_quorum_auth(&env, &offering.issuers, &signers)?;
 
         let offering_id = OfferingId {
             issuer: issuer.clone(),

@@ -37,7 +37,7 @@ fn setup_offering(
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     // Mint to issuer, then deposit revenue so contract has a balance
     token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &1_000_000);
@@ -48,7 +48,7 @@ fn setup_offering(
         &payment_token.address(),
         &500_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     (client, issuer, offering_token, payment_token.address(), holder, admin)
 }
@@ -454,7 +454,7 @@ fn fulfill_redemption_zero_share() {
     client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
 
     // Clear holder share before fulfill
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let result = client.try_fulfill_redemption(
         &issuer,
@@ -572,7 +572,7 @@ fn redemption_events_emitted() {
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     token::StellarAssetClient::new(&env, &payment_token.address()).mint(&issuer, &1_000_000);
     client.deposit_revenue(
         &issuer,
@@ -581,7 +581,7 @@ fn redemption_events_emitted() {
         &payment_token.address(),
         &500_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     set_timestamp(&env, 1000);
     client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);

@@ -87,7 +87,7 @@ fn set_share(
     holder: &Address,
     bps: u32,
 ) {
-    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1);
+    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1, &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]));
 }
 
 /// Read the `HolderShareTotal` for the default offering directly from storage.
@@ -708,8 +708,8 @@ fn share_total_invariant_after_transfer() {
         &1_000,
         &payout,
         &0);
-    client2.set_holder_share(&issuer, &ns, &token, &from, &4_000, &1);
-    client2.set_holder_share(&issuer, &ns, &token, &to, &2_000, &1);
+    client2.set_holder_share(&issuer, &ns, &token, &from, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client2.set_holder_share(&issuer, &ns, &token, &to, &2_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let total_before = read_total(&env, &contract_id, &issuer, &token);
     assert_eq!(total_before, 6_000);
@@ -750,10 +750,10 @@ fn subsequent_set_holder_share_respects_post_transfer_state() {
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &bob), 5_000);
 
     // charlie can get up to 3000 bps (10000 - 7000)
-    assert!(client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &charlie, &3_000u32).is_ok());
+    assert!(client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &charlie, &3_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
 
     // charlie cannot get 3001 — total would be 10001
-    let r = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &charlie, &3_001u32);
+    let r = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &charlie, &3_001u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(r, Err(Ok(RevoraError::InvalidShareBps)));
 }
 
@@ -1151,8 +1151,8 @@ fn transfer_does_not_affect_other_offerings() {
         &0);
 
     // Set shares in both offerings
-    client.set_holder_share(&issuer, &ns, &token_a, &from, &4_000, &1);
-    client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000, &1);
+    client.set_holder_share(&issuer, &ns, &token_a, &from, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &ns, &token_b, &from, &6_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Transfer on offering A only
     client.transfer_with_attestation(&issuer, &ns, &token_a, &from, &to, &2_000u32, &symbol_short!("def"), &attest(&env),
