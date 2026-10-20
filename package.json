@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "$HOME/.cargo/bin/cargo build",
+    "build": "node api.js && $HOME/.cargo/bin/cargo build",
     "test": "$HOME/.cargo/bin/cargo test",
     "release": "$HOME/.cargo/bin/cargo build --release"
   }

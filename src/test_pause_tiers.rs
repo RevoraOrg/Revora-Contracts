@@ -179,6 +179,61 @@ fn unpause_safety_from_soft_restores_not_paused() {
     assert!(!client.is_paused());
 }
 
+// ── Section A2: Role hierarchy — safety cannot override admin HardPaused ─────
+
+/// Safety `unpause_safety` must not lift an admin `HardPaused`; state stays
+/// `HardPaused` and the call returns `NotAuthorized`.
+#[test]
+fn unpause_safety_cannot_lift_hard_pause() {
+    let env = Env::default();
+    let (client, admin, safety) = setup(&env);
+
+    client.hard_pause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+
+    let result = client.try_unpause_safety(&safety);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NotAuthorized)),
+        "safety role must not be able to lift an admin HardPaused"
+    );
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+    assert!(client.is_paused());
+}
+
+/// Safety `pause_safety` must not downgrade an admin `HardPaused` to
+/// `SoftPaused`; state stays `HardPaused`.
+#[test]
+fn pause_safety_cannot_downgrade_hard_pause() {
+    let env = Env::default();
+    let (client, admin, safety) = setup(&env);
+
+    client.hard_pause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+
+    client.pause_safety(&safety);
+    assert_eq!(
+        client.get_pause_state(),
+        PauseState::HardPaused,
+        "safety pause must not downgrade HardPaused to SoftPaused"
+    );
+    assert!(client.is_paused());
+}
+
+/// Safety soft-pause followed by safety unpause returns to `NotPaused`.
+#[test]
+fn safety_soft_pause_then_unpause_restores_not_paused() {
+    let env = Env::default();
+    let (client, _admin, safety) = setup(&env);
+
+    client.pause_safety(&safety);
+    assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
+
+    client.unpause_safety(&safety);
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
+    assert!(!client.is_paused());
+}
+
 // ── Section B: SoftPaused — claim allowed, mutations blocked ─────────────────
 
 /// Under SoftPaused, `claim` succeeds and the holder receives their payout.
@@ -386,6 +441,29 @@ fn safety_cannot_hard_pause() {
     );
     // State must remain SoftPaused, not escalated
     assert_eq!(client.get_pause_state(), PauseState::SoftPaused);
+}
+
+/// Safety cannot lift an admin HardPaused via `unpause_safety` — regression
+/// guard for the monotonic role hierarchy.
+#[test]
+fn safety_unpause_after_admin_hard_pause_is_rejected() {
+    let env = Env::default();
+    let (client, admin, safety) = setup(&env);
+
+    client.hard_pause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+
+    let result = client.try_unpause_safety(&safety);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NotAuthorized)),
+        "safety unpause must be rejected while HardPaused"
+    );
+    assert_eq!(client.get_pause_state(), PauseState::HardPaused);
+
+    // Admin can still lift the hard pause.
+    client.unpause_admin(&admin);
+    assert_eq!(client.get_pause_state(), PauseState::NotPaused);
 }
 
 // ── Section E: De-escalation hard → soft ─────────────────────────────────────
