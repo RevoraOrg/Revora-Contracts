@@ -371,6 +371,8 @@ pub enum RevoraError {
     OracleQuoteStale = 91,
     /// A redemption request overlaps an existing pending redemption window.
     RedemptionWindowOverlap = 92,
+    /// An accrual index calculation would overflow its fixed-point integer.
+    ArithmeticOverflow = 93,
 }
 
 pub mod tax_bucket;
@@ -418,6 +420,8 @@ mod test_time_windows;
 // mod test_claim_transfer_fail;
 #[cfg(test)]
 mod proptest_helpers;
+#[cfg(test)]
+mod test_accrual_overflow;
 #[cfg(test)]
 mod test_accrual_reconciliation_prop;
 #[cfg(test)]
@@ -764,6 +768,10 @@ const EVENT_REG_LIMIT_DELTA: Symbol = symbol_short!("rg_lim_d");
 
 const BPS_DENOMINATOR: i128 = 10_000;
 const ACCRUAL_SCALE_E18: i128 = 1_000_000_000_000_000_000;
+/// Largest canonical (7-decimal) amount that can be multiplied by 1e18
+/// without overflowing i128. Revenue paths reject larger normalized amounts
+/// before transferring tokens or writing storage.
+pub const MAX_DEPOSIT_AMOUNT: i128 = i128::MAX / ACCRUAL_SCALE_E18;
 /// Stellar network canonical decimal precision (7 decimal places, i.e., stroops).
 const STELLAR_CANONICAL_DECIMALS: u32 = 7;
 /// Maximum accepted decimal precision (safety cap for normalization math).
@@ -2782,16 +2790,14 @@ impl RevoraRevenueShare {
         offering_id: &OfferingId,
         amount: i128,
         period_id: u64,
-    ) {
+    ) -> Result<(), RevoraError> {
         if amount == 0 {
-            return;
+            return Ok(());
         }
-        const E18: i128 = 1_000_000_000_000_000_000;
-        const BPS_MAX: i128 = 10_000;
         let idx_key = DataKey2::AccrualIndex(offering_id.clone());
         let current: i128 = env.storage().persistent().get(&idx_key).unwrap_or(0);
-        let delta = amount.saturating_mul(E18).checked_div(BPS_MAX).unwrap_or(0);
-        let new_idx = current.saturating_add(delta);
+        let delta = Self::accrual_delta_e18(amount)?;
+        let new_idx = current.checked_add(delta).ok_or(RevoraError::ArithmeticOverflow)?;
         env.storage().persistent().set(&idx_key, &new_idx);
         env.events().publish(
             (
@@ -2807,6 +2813,42 @@ impl RevoraRevenueShare {
             ),
             (new_idx,),
         );
+        Ok(())
+    }
+
+    fn validate_report_accrual_indices(
+        env: &Env,
+        offering_id: &OfferingId,
+        amount: i128,
+        normalized_amount: i128,
+    ) -> Result<(), RevoraError> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let current: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::AccrualIndex(offering_id.clone()))
+            .unwrap_or(0);
+        let delta = Self::accrual_delta_e18(amount)?;
+        current.checked_add(delta).ok_or(RevoraError::ArithmeticOverflow)?;
+
+        let total_share_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShareTotal(offering_id.clone()))
+            .unwrap_or(0);
+        if total_share_bps > 0 {
+            let report_delta =
+                Self::checked_accrual_delta_e18(normalized_amount, total_share_bps as i128)?;
+            let report_current: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::ReportAccPerShareE18(offering_id.clone()))
+                .unwrap_or(0);
+            report_current.checked_add(report_delta).ok_or(RevoraError::ArithmeticOverflow)?;
+        }
+        Ok(())
     }
 
     fn validate_window(window: &AccessWindow) -> Result<(), RevoraError> {
@@ -3043,12 +3085,26 @@ impl RevoraRevenueShare {
             .unwrap_or(0)
     }
 
-    fn accrual_delta_e18(amount: i128) -> i128 {
+    fn accrual_delta_e18(amount: i128) -> Result<i128, RevoraError> {
         amount
             .checked_mul(ACCRUAL_SCALE_E18)
-            .unwrap_or(i128::MAX)
+            .ok_or(RevoraError::ArithmeticOverflow)?
             .checked_div(BPS_DENOMINATOR)
-            .unwrap_or(0)
+            .ok_or(RevoraError::ArithmeticOverflow)
+    }
+
+    fn checked_accrual_delta_e18(amount: i128, denominator: i128) -> Result<i128, RevoraError> {
+        if denominator <= 0 {
+            return Err(RevoraError::ArithmeticOverflow);
+        }
+        if amount > MAX_DEPOSIT_AMOUNT {
+            return Err(RevoraError::ArithmeticOverflow);
+        }
+        amount
+            .checked_mul(ACCRUAL_SCALE_E18)
+            .ok_or(RevoraError::ArithmeticOverflow)?
+            .checked_div(denominator)
+            .ok_or(RevoraError::ArithmeticOverflow)
     }
 
     fn get_acc_per_share_at_index(env: &Env, offering_id: &OfferingId, index: u32) -> i128 {
@@ -3371,38 +3427,35 @@ impl RevoraRevenueShare {
     /// # Security
     /// - Only called from the non-event-only branch of `report_revenue_internal`
     ///   after the report has been durably written to storage.
-    /// - Uses saturating arithmetic throughout; overflow produces `i128::MAX`
-    ///   rather than a panic or wrap-around.
+    /// - Returns `ArithmeticOverflow` instead of saturating or silently
+    ///   retaining the previous index.
     fn advance_report_accrual_index(
         env: &Env,
         offering_id: &OfferingId,
         normalized_amount: i128,
         period_id: u64,
-    ) {
+    ) -> Result<(), RevoraError> {
         if normalized_amount == 0 {
-            return;
+            return Ok(());
         }
         let total_share_bps_key = DataKey::HolderShareTotal(offering_id.clone());
         let total_share_bps: u32 =
             env.storage().persistent().get(&total_share_bps_key).unwrap_or(0);
         if total_share_bps == 0 {
-            return;
+            return Ok(());
         }
 
         // delta = normalized_amount * 1e18 / total_share_bps
-        let delta_e18 = normalized_amount
-            .checked_mul(ACCRUAL_SCALE_E18)
-            .unwrap_or(i128::MAX)
-            .checked_div(total_share_bps as i128)
-            .unwrap_or(0);
+        let delta_e18 =
+            Self::checked_accrual_delta_e18(normalized_amount, total_share_bps as i128)?;
 
         if delta_e18 == 0 {
-            return;
+            return Ok(());
         }
 
         let key = DataKey2::ReportAccPerShareE18(offering_id.clone());
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        let next = current.saturating_add(delta_e18);
+        let next = current.checked_add(delta_e18).ok_or(RevoraError::ArithmeticOverflow)?;
         env.storage().persistent().set(&key, &next);
 
         env.events().publish(
@@ -3414,6 +3467,7 @@ impl RevoraRevenueShare {
             ),
             (period_id, next, total_share_bps),
         );
+        Ok(())
     }
 
     /// Settle a holder's pending dividend from the report-time accrual index
@@ -3697,6 +3751,37 @@ impl RevoraRevenueShare {
             }
         }
 
+        // Preflight every accrual index update before the token transfer or any
+        // persistent write. The transaction is atomic, but rejecting here keeps
+        // the failure boundary explicit and prevents an overflow from being
+        // hidden behind a later storage mutation.
+        let decimals = Self::get_payment_token_decimals(
+            env.clone(),
+            offering_id.issuer.clone(),
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+        );
+        let normalized = Self::normalize_amount_checked(amount, decimals)?;
+        let acc_delta_e18 = Self::accrual_delta_e18(normalized)?;
+        let global_acc_key = DataKey2::GlobalAccPerShareE18(offering_id.clone());
+        let current_acc: i128 = env.storage().persistent().get(&global_acc_key).unwrap_or(0);
+        let next_acc =
+            current_acc.checked_add(acc_delta_e18).ok_or(RevoraError::ArithmeticOverflow)?;
+
+        let total_share_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderShareTotal(offering_id.clone()))
+            .unwrap_or(0);
+        let next_accrual = if total_share_bps > 0 {
+            let delta = Self::checked_accrual_delta_e18(normalized, total_share_bps as i128)?;
+            let key = DataKey::AccrualIndexE18(offering_id.clone());
+            let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+            Some((key, current.checked_add(delta).ok_or(RevoraError::ArithmeticOverflow)?))
+        } else {
+            None
+        };
+
         // Transfer tokens from issuer to contract
         let contract_addr = env.current_contract_address();
         if token::Client::new(env, &payment_token)
@@ -3726,17 +3811,6 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&count_key, &(count + 1));
         Self::commit_period_id(env, last_period_key, period_id);
 
-        let decimals = Self::get_payment_token_decimals(
-            env.clone(),
-            offering_id.issuer.clone(),
-            offering_id.namespace.clone(),
-            offering_id.token.clone(),
-        );
-        let normalized = Self::normalize_amount(amount, decimals);
-        let acc_delta_e18 = Self::accrual_delta_e18(normalized);
-        let global_acc_key = DataKey2::GlobalAccPerShareE18(offering_id.clone());
-        let current_acc: i128 = env.storage().persistent().get(&global_acc_key).unwrap_or(0);
-        let next_acc = current_acc.saturating_add(acc_delta_e18);
         env.storage().persistent().set(&global_acc_key, &next_acc);
         env.storage()
             .persistent()
@@ -3757,25 +3831,7 @@ impl RevoraRevenueShare {
         }
 
         // Update the e18 accrual index
-        let decimals = Self::get_payment_token_decimals(
-            env.clone(),
-            issuer.clone(),
-            namespace.clone(),
-            token.clone(),
-        );
-        let normalized_amount = Self::normalize_amount(amount, decimals);
-        let total_share_bps_key = DataKey::HolderShareTotal(offering_id.clone());
-        let total_share_bps: u32 =
-            env.storage().persistent().get(&total_share_bps_key).unwrap_or(0);
-
-        if total_share_bps > 0 {
-            let accrual_delta = (normalized_amount.checked_mul(E18))
-                .and_then(|x| x.checked_div(total_share_bps as i128))
-                .unwrap_or(0);
-            let current_accrual_key = DataKey::AccrualIndexE18(offering_id.clone());
-            let current_accrual: i128 =
-                env.storage().persistent().get(&current_accrual_key).unwrap_or(0);
-            let new_accrual = current_accrual.checked_add(accrual_delta).unwrap_or(current_accrual);
+        if let Some((current_accrual_key, new_accrual)) = next_accrual {
             env.storage().persistent().set(&current_accrual_key, &new_accrual);
         }
 
@@ -6012,6 +6068,15 @@ impl RevoraRevenueShare {
                         return Err(RevoraError::PeriodAlreadyClosed);
                     }
 
+                    let decimals = Self::get_payment_token_decimals(
+                        env.clone(),
+                        offering_id.issuer.clone(),
+                        offering_id.namespace.clone(),
+                        offering_id.token.clone(),
+                    );
+                    let normalized = Self::normalize_amount_checked(amount, decimals)?;
+                    Self::validate_report_accrual_indices(&env, &offering_id, amount, normalized)?;
+
                     actual_override = true;
                     reports.set(period_id, (amount, current_timestamp));
                     env.storage().persistent().set(&reports_key, &reports);
@@ -6121,6 +6186,15 @@ impl RevoraRevenueShare {
                         );
                         return Ok(());
                     }
+
+                    let decimals = Self::get_payment_token_decimals(
+                        env.clone(),
+                        offering_id.issuer.clone(),
+                        offering_id.namespace.clone(),
+                        offering_id.token.clone(),
+                    );
+                    let normalized = Self::normalize_amount_checked(amount, decimals)?;
+                    Self::validate_report_accrual_indices(&env, &offering_id, amount, normalized)?;
 
                     actual_initial = true;
                     reports.set(period_id, (amount, current_timestamp));
@@ -6270,7 +6344,7 @@ impl RevoraRevenueShare {
         // Advance the cumulative accrual index. Skipped in event-only mode (no persistent state)
         // and when amount == 0. Rejected duplicates (rv_rej) never reach this point (early return).
         if !event_only {
-            Self::update_and_emit_accrual_index(&env, &offering_id, amount, period_id);
+            Self::update_and_emit_accrual_index(&env, &offering_id, amount, period_id)?;
 
             // Advance the report-time dividend accrual ledger (O(1) per report).
             // Uses the same decimal normalisation as deposit_revenue so amounts are
@@ -6284,8 +6358,8 @@ impl RevoraRevenueShare {
                     offering_id.namespace.clone(),
                     offering_id.token.clone(),
                 );
-                let normalized = Self::normalize_amount(amount, decimals);
-                Self::advance_report_accrual_index(&env, &offering_id, normalized, period_id);
+                let normalized = Self::normalize_amount_checked(amount, decimals)?;
+                Self::advance_report_accrual_index(&env, &offering_id, normalized, period_id)?;
             }
         }
 
@@ -8619,6 +8693,19 @@ impl RevoraRevenueShare {
                 None => return 0,
             };
             amount.checked_div(factor).unwrap_or(0)
+        }
+    }
+
+    fn normalize_amount_checked(amount: i128, from_decimals: u32) -> Result<i128, RevoraError> {
+        if from_decimals == STELLAR_CANONICAL_DECIMALS {
+            return Ok(amount);
+        }
+        let exp = STELLAR_CANONICAL_DECIMALS.abs_diff(from_decimals);
+        let factor = 10_i128.checked_pow(exp).ok_or(RevoraError::ArithmeticOverflow)?;
+        if from_decimals < STELLAR_CANONICAL_DECIMALS {
+            amount.checked_mul(factor).ok_or(RevoraError::ArithmeticOverflow)
+        } else {
+            amount.checked_div(factor).ok_or(RevoraError::ArithmeticOverflow)
         }
     }
 
@@ -12508,10 +12595,11 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&time_key, &deposit_time);
 
         let normalized = Self::normalize_amount(amount, STELLAR_CANONICAL_DECIMALS);
-        let acc_delta_e18 = Self::accrual_delta_e18(normalized);
+        let acc_delta_e18 =
+            Self::accrual_delta_e18(normalized).expect("test period accrual must fit");
         let global_acc_key = DataKey2::GlobalAccPerShareE18(offering_id.clone());
         let current_acc: i128 = env.storage().persistent().get(&global_acc_key).unwrap_or(0);
-        let next_acc = current_acc.saturating_add(acc_delta_e18);
+        let next_acc = current_acc.checked_add(acc_delta_e18).expect("test accrual must fit");
         env.storage().persistent().set(&global_acc_key, &next_acc);
         env.storage()
             .persistent()
