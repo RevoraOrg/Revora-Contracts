@@ -37,6 +37,9 @@
 //! with fixed concrete inputs so `cargo test` catches basic regressions without the
 //! Kani tool-chain.
 
+#[cfg(test)]
+extern crate std;
+
 /// Default expiry (7 days in seconds) mirroring `ISSUER_TRANSFER_EXPIRY_SECS`.
 pub const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60; // 604_800
 /// Minimum configurable expiry (1 hour) mirroring `MIN_ISSUER_TRANSFER_EXPIRY_SECS`.
@@ -425,6 +428,7 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{boxed::Box, format, string::String, vec::Vec};
     use proptest::prelude::*;
 
     fn base_storage(issuer: AddrId) -> StorageModel {
@@ -744,6 +748,7 @@ mod tests {
 #[cfg(test)]
 mod orphan_pending_guard_tests {
     use super::*;
+    use std::{boxed::Box, string::String};
     use std::panic::catch_unwind;
 
     /// Guard message asserted by the negative cases.
