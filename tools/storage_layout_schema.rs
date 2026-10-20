@@ -91,6 +91,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::PlatformFeePerAsset(Address)", "u32", "asset"),
     ("DataKey::SnapshotFinalizationRequired", "bool", "contract"),
     ("DataKey::LastSnapshotCommitRef(OfferingId)", "u64", "offering"),
+    ("DataKey::GovernanceContract", "Address", "contract"),
     ("DataKey2::SnapshotFinalized(OfferingId, u64)", "bool", "offering+snapshot"),
     ("DataKey2::SupplyCap(OfferingId)", "i128", "offering"),
     ("DataKey2::DepositedRevenue(OfferingId)", "i128", "offering"),

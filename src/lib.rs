@@ -69,6 +69,12 @@ pub trait FxOracle {
     fn quote(env: Env, from: Symbol, to: Symbol) -> (i128, u64);
 }
 
+/// Cross-contract client trait for Revora Governance (#1326).
+#[contractclient(name = "GovernanceContractClient")]
+pub trait GovernanceContractInterface {
+    fn is_dispute_freeze_active(env: Env, offering_id: OfferingId) -> bool;
+}
+
 /// A single entry in an oracle fallback chain.
 ///
 /// Each entry identifies an oracle contract address together with the currency
@@ -1817,8 +1823,9 @@ pub(crate) enum DataKey {
     PlatformFeePerAsset(Address),
     /// Whether snapshot finalization is enforced globally.
     SnapshotFinalizationRequired,
-    /// Latest committed snapshot reference for an offering.
     LastSnapshotCommitRef(OfferingId),
+    /// Configured governance contract address for cross-contract disputes and multisig hooks (#1326).
+    GovernanceContract,
 }
 
 /// Per-holder anchor for checkpoint-compressed accrual ranges.
@@ -4404,6 +4411,7 @@ impl RevoraRevenueShare {
     /// ### Panics
     /// Panics if the contract has already been initialized.
     /// Get the current issuer for an offering token (used for auth checks after transfers).
+    /// Internal helper: get the current issuer for an offering token.
     fn get_current_issuer(
         env: &Env,
         issuer: Address,
@@ -4413,6 +4421,16 @@ impl RevoraRevenueShare {
         let offering_id = OfferingId { issuer, namespace, token };
         let key = DataKey::OfferingIssuer(offering_id);
         env.storage().persistent().get(&key)
+    }
+
+    /// Public endpoint: get the current issuer for an offering token.
+    pub fn get_issuer(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Option<Address> {
+        Self::get_current_issuer(&env, issuer, namespace, token)
     }
 
     fn ensure_issuer_registered(env: &Env, issuer: &Address) {
@@ -8883,6 +8901,36 @@ impl RevoraRevenueShare {
         }
     }
 
+    /// Get the latest committed snapshot reference for an offering.
+    pub fn get_last_snapshot_commit_ref(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> u64 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get(&DataKey::LastSnapshotCommitRef(offering_id))
+            .unwrap_or(0)
+    }
+
+    /// Get a holder's share from a specific committed snapshot.
+    pub fn get_snapshot_holder_share(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        snapshot_id: u64,
+        holder: Address,
+    ) -> u32 {
+        let offering_id = OfferingId { issuer, namespace, token };
+        env.storage()
+            .persistent()
+            .get(&DataKey::SnapshotHolderShare(offering_id, snapshot_id, holder))
+            .unwrap_or(0)
+    }
+
     // â”€â”€ Deterministic Snapshot Expansion (#054) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // Design:
@@ -10429,6 +10477,10 @@ impl RevoraRevenueShare {
     ///
     /// When `true`, claims for this offering are halted (returns [`RevoraError::DisputeFreezeActive`]).
     pub fn is_dispute_freeze_active(env: &Env, offering_id: OfferingId) -> bool {
+        if let Some(gov_addr) = env.storage().persistent().get::<DataKey, Address>(&DataKey::GovernanceContract) {
+            let client = GovernanceContractClient::new(env, &gov_addr);
+            return client.is_dispute_freeze_active(&offering_id);
+        }
         let crit_key = DataKey3::CriticalDisputeCount(offering_id.clone());
         env.storage().persistent().get::<DataKey3, u32>(&crit_key).unwrap_or(0) > 0
     }
@@ -12632,6 +12684,49 @@ impl RevoraRevenueShare {
         }
         env.storage().persistent().set(&key, &admin);
         Self::emit_v2_event(&env, (EVENT_ADMIN_SET,), admin);
+        Ok(())
+    }
+
+    /// Set the governance contract address (admin-only).
+    pub fn set_governance_contract(env: Env, governance: Address) -> Result<(), RevoraError> {
+        let admin: Address =
+            env.storage().persistent().get(&DataKey::Admin).ok_or(RevoraError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().persistent().set(&DataKey::GovernanceContract, &governance);
+        Ok(())
+    }
+
+    /// Get the configured governance contract address, if set.
+    pub fn get_governance_contract(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::GovernanceContract)
+    }
+
+    /// Privileged hook: execute admin update triggered by the configured governance contract (#1326).
+    pub fn set_admin_from_governance(
+        env: Env,
+        new_admin: Address,
+    ) -> Result<(), RevoraError> {
+        let gov: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GovernanceContract)
+            .ok_or(RevoraError::NotInitialized)?;
+        gov.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        Self::emit_v2_event(&env, (EVENT_ADMIN_SET,), new_admin);
+        Ok(())
+    }
+
+    /// Privileged hook: execute emergency freeze triggered by the configured governance contract (#1326).
+    pub fn freeze_from_governance(env: Env) -> Result<(), RevoraError> {
+        let gov: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GovernanceContract)
+            .ok_or(RevoraError::NotInitialized)?;
+        gov.require_auth();
+        env.storage().persistent().set(&DataKey::Frozen, &true);
+        Self::emit_v2_event(&env, (EVENT_FREEZE_V2,), true);
         Ok(())
     }
 
