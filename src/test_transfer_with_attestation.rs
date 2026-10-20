@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! # Tests for `transfer_with_attestation` and `verify_attestation_digest`
 //!
 //! Covers every guard in `transfer_with_attestation` (see numbered guards in the implementation):
@@ -18,8 +19,6 @@
 //! | storage invariants                   | `shares_updated_correctly`, `share_total_invariant` |
 //! | happy path                           | `happy_path_full_transfer`, `happy_path_partial_transfer` |
 //! | attestation nonce/expiry             | `expired_attestation_rejected`, `replayed_attestation_nonce_rejected`, `attestation_used_at_exact_expiry` |
-
-#![cfg(test)]
 
 use soroban_sdk::{
     symbol_short,
