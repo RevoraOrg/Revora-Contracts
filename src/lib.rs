@@ -49,6 +49,7 @@
 extern crate std;
 
 mod safe_math;
+mod revenue_deposit_contract;
 
 use crate::safe_math::SafeMath;
 
@@ -450,8 +451,11 @@ mod test_utils;
 
 #[cfg(test)]
 mod test_platform_fee_per_asset;
+
 #[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
+#[cfg(test)]
+mod test;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
