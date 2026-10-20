@@ -109,7 +109,7 @@ impl RevenueDepositContract {
             env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
         }
 
-        env.events().publish(&symbol_short!("dep_allow_add"), &offering);
+        env.events().publish((&symbol_short!("dep_add"),), &offering);
         Ok(())
     }
 
@@ -131,7 +131,7 @@ impl RevenueDepositContract {
         offerings.remove(pos as u32);
         env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
 
-        env.events().publish(&symbol_short!("dep_allow_rm"), &offering);
+        env.events().publish((&symbol_short!("dep_rm"),), &offering);
         Ok(())
     }
 
