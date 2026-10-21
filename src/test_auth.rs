@@ -80,6 +80,62 @@ use soroban_sdk::{
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
+// ── initialize authorization / single-init (front-running protection) ─────────
+
+#[test]
+fn initialize_without_admin_auth_fails() {
+    use soroban_sdk::{testutils::MockAuth, testutils::MockAuthInvoke, IntoVal};
+    let env = Env::default();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let none_safety: Option<Address> = None;
+    let none_eo: Option<bool> = None;
+
+    // Only `attacker` signs; the installed `admin` has not authorized.
+    let res = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "initialize",
+                args: (&admin, none_safety.clone(), none_eo).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_initialize(&admin, &none_safety, &none_eo);
+    assert!(res.is_err());
+    assert_eq!(client.get_admin(), None);
+}
+
+#[test]
+fn second_initialize_errors_and_keeps_original_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    let res = client.try_initialize(&attacker, &None::<Address>, &None::<bool>);
+    assert_eq!(res, Err(Ok(RevoraError::LimitReached)));
+    assert_eq!(client.get_admin(), Some(admin));
+}
+
+#[test]
+fn set_admin_after_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = make_client(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &None::<Address>, &None::<bool>);
+    let res = client.try_set_admin(&attacker);
+    assert_eq!(res, Err(Ok(RevoraError::LimitReached)));
+    assert_eq!(client.get_admin(), Some(admin));
+}
+
 // ── Shared test helpers ───────────────────────────────────────────────────────
 
 fn make_client(env: &Env) -> RevoraRevenueShareClient {
@@ -87,8 +143,10 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient {
     RevoraRevenueShareClient::new(env, &id)
 }
 
-/// Initialize admin + optional safety role.  Does NOT call `mock_all_auths`.
+/// Initialize admin + optional safety role.  `initialize` requires the admin's auth,
+/// so this mocks all auths for the env (tests below inherit the mock).
 fn init_admin_safety(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Address) {
+    env.mock_all_auths();
     let admin = Address::generate(env);
     let safety = Address::generate(env);
     client.initialize(&admin, &Some(safety.clone()), &None::<bool>);

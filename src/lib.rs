@@ -4964,10 +4964,22 @@ impl RevoraRevenueShare {
 
     /// Initialize admin and optional safety role for emergency pause (#7).
     /// `event_only` configures the contract to skip persistent business state (#72).
-    /// Can only be called once; panics if already initialized.
-    pub fn initialize(env: Env, admin: Address, safety: Option<Address>, event_only: Option<bool>) {
+    ///
+    /// `admin` must authorize the call, so a third party cannot front-run deployment and
+    /// install their own admin. Deploy and initialize in a single transaction.
+    ///
+    /// # Errors
+    /// - `LimitReached`: the contract is already initialized (admin set via `initialize`
+    ///   or `set_admin`); the existing admin is left untouched.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        safety: Option<Address>,
+        event_only: Option<bool>,
+    ) -> Result<(), RevoraError> {
+        admin.require_auth();
         if env.storage().persistent().has(&DataKey::Admin) {
-            return; // Already initialized, no-op
+            return Err(RevoraError::LimitReached); // Already initialized
         }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         Self::emit_v2_event(&env, (EVENT_ADMIN_SET,), admin.clone());
@@ -4986,6 +4998,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::DeployedVersion, &CONTRACT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
+        Ok(())
     }
 
     /// Soft-pause the contract (Admin only).

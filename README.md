@@ -84,4 +84,4 @@ The `npm` scripts in `package.json` are thin wrappers around `cargo build/test`.
 
 ## Deployment notes
 
-No deployment scripts or contract IDs are tracked here. A deployer would build the WASM, deploy with the Stellar CLI, call `initialize`, and then verify `is_testnet_mode()` is `false` for any production use. Treat this as guidance, not a tested runbook. Review [AUTH_MATRIX.md](AUTH_MATRIX.md) and [docs/admin-rotation-safety-flow.md](docs/admin-rotation-safety-flow.md) first.
+No deployment scripts or contract IDs are tracked here. A deployer would build the WASM, deploy with the Stellar CLI and call `initialize` (which requires the admin's auth and errors with `LimitReached` on a second call) in the same transaction as the deploy, or immediately after, to avoid front-running, and then verify `is_testnet_mode()` is `false` for any production use. Treat this as guidance, not a tested runbook. Review [AUTH_MATRIX.md](AUTH_MATRIX.md) and [docs/admin-rotation-safety-flow.md](docs/admin-rotation-safety-flow.md) first.
