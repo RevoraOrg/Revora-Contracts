@@ -409,6 +409,8 @@ mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
+mod test_set_transfer_restrictions_adversarial;
+#[cfg(test)]
 mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_testnet_mode;
@@ -7624,6 +7626,28 @@ impl RevoraRevenueShare {
         let restrictions = TransferRestrictions { category, max_holders };
         env.storage().persistent().set(&key, &restrictions);
         Ok(())
+    }
+
+    /// Read-only view of the `(offering, category)` holder cap written by
+    /// [`Self::set_transfer_restrictions`].
+    ///
+    /// Returns `None` when no cap has been written for that category, so callers
+    /// can distinguish "unset" from "explicitly set to zero". Read-only and
+    /// unauthenticated: it exposes only what the issuer already wrote on-chain.
+    pub fn get_transfer_restrictions(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        category: Symbol,
+    ) -> Option<TransferRestrictions> {
+        let offering_id = OfferingId {
+            issuer,
+            namespace,
+            token,
+        };
+        let key = DataKey2::TransferRestrictions(offering_id, category);
+        env.storage().persistent().get(&key)
     }
 
     #[allow(clippy::too_many_arguments)]
