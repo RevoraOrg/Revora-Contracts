@@ -41,11 +41,11 @@ fn test_reject_issuer_transfer_success() {
     client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
 
     // Reject transfer
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert!(res.is_ok());
 
     // Verify it was rejected by checking we can't accept it anymore
-    let accept_res = client.try_accept_issuer_transfer(&new_issuer, &namespace, &token);
+    let accept_res = client.try_accept_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert_eq!(accept_res, Err(Ok(RevoraError::NoTransferPending)));
     
     // Check events
@@ -75,7 +75,7 @@ fn test_reject_issuer_transfer_no_pending() {
     let new_issuer = Address::generate(&env);
     let namespace = symbol_short!("def");
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -90,7 +90,7 @@ fn test_reject_issuer_transfer_wrong_new_issuer() {
 
     client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
 
-    let res = client.try_reject_issuer_transfer(&wrong_new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &wrong_new_issuer, &namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -105,7 +105,7 @@ fn test_reject_issuer_transfer_wrong_namespace() {
 
     client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &wrong_namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &wrong_namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -120,6 +120,6 @@ fn test_reject_issuer_transfer_wrong_token() {
 
     client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &wrong_token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &wrong_token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }

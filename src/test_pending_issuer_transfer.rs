@@ -61,7 +61,7 @@
 
 #![cfg(test)]
 
-use crate::{DataKey2, PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
@@ -105,19 +105,6 @@ fn setup() -> Tenant {
         &symbol_short!(""),
         &0u32,
     );
-
-    // Seed the global issuer/namespace registries so `accept_issuer_transfer` /
-    // `reject_issuer_transfer` (which scan via `find_pending_transfer_for_new_issuer`)
-    // can resolve the pending transfer. `register_offering` on master does not
-    // populate these indices; this mirrors `issue_370_*` test setup in src/lib.rs.
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
-        env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer);
-        env.storage().persistent().set(&DataKey2::IssuerRegistered(issuer.clone()), &true);
-        env.storage().persistent().set(&DataKey2::NamespaceCount(issuer.clone()), &1_u32);
-        env.storage().persistent().set(&DataKey2::NamespaceItem(issuer.clone(), 0), &NS);
-        env.storage().persistent().set(&DataKey2::NamespaceRegistered(issuer.clone(), NS), &true);
-    });
 
     Tenant { env, client, issuer, token }
 }
@@ -297,7 +284,7 @@ fn pending_clears_after_accept() {
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    t.client.accept_issuer_transfer(&new_issuer, &NS, &t.token);
+    t.client.accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 
     // And the offering now lives under the new issuer — no pending anywhere.
@@ -311,7 +298,7 @@ fn pending_clears_after_reject() {
     t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    t.client.reject_issuer_transfer(&new_issuer, &NS, &t.token);
+    t.client.reject_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 }
 
@@ -340,7 +327,7 @@ fn failed_cancel_without_pending_leaves_state_unchanged() {
 fn failed_accept_without_pending_leaves_state_unchanged() {
     let t = setup();
     let stranger = Address::generate(&t.env);
-    let err = t.client.try_accept_issuer_transfer(&stranger, &NS, &t.token).unwrap_err();
+    let err = t.client.try_accept_issuer_transfer(&t.issuer, &stranger, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::NoTransferPending));
     assert_eq!(pending(&t), None);
 }
@@ -403,7 +390,8 @@ fn expired_pending_stays_readable_until_cleared() {
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
     // Accept is what enforces the deadline.
-    let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
+    let err =
+        t.client.try_accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
 
     // The failed accept must not have cleared the pending record.
@@ -426,7 +414,8 @@ fn expired_default_window_read_stable_and_accept_rejected() {
     t.env.ledger().with_mut(|l| l.timestamp = t0 + 8 * 24 * 60 * 60);
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
+    let err =
+        t.client.try_accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
     assert_eq!(pending(&t), Some(new_issuer));
 }

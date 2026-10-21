@@ -4509,46 +4509,6 @@ impl RevoraRevenueShare {
             .get::<DataKey, PendingTransfer>(&DataKey::PendingIssuerTransfer(offering_id))
     }
 
-    fn find_pending_transfer_for_new_issuer(
-        env: &Env,
-        namespace: &Symbol,
-        token: &Address,
-        new_issuer: &Address,
-    ) -> Option<OfferingId> {
-        let issuer_count: u32 = env.storage().persistent().get(&DataKey2::IssuerCount).unwrap_or(0);
-        for i in 0..issuer_count {
-            let issuer: Address = env.storage().persistent().get(&DataKey2::IssuerItem(i)).unwrap();
-            let ns_count: u32 = env
-                .storage()
-                .persistent()
-                .get(&DataKey2::NamespaceCount(issuer.clone()))
-                .unwrap_or(0);
-            for j in 0..ns_count {
-                let namespace_item: Symbol = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey2::NamespaceItem(issuer.clone(), j))
-                    .unwrap();
-                if namespace_item != *namespace {
-                    continue;
-                }
-                let offering_id = OfferingId {
-                    issuer: issuer.clone(),
-                    namespace: namespace_item.clone(),
-                    token: token.clone(),
-                };
-                if let Some(pending) = env.storage().persistent().get::<DataKey, PendingTransfer>(
-                    &DataKey::PendingIssuerTransfer(offering_id.clone()),
-                ) {
-                    if pending.new_issuer == *new_issuer {
-                        return Some(offering_id);
-                    }
-                }
-            }
-        }
-        None
-    }
-
     pub fn propose_issuer_transfer(
         env: Env,
         issuer: Address,
@@ -4682,6 +4642,7 @@ impl RevoraRevenueShare {
 
     pub fn accept_issuer_transfer(
         env: Env,
+        old_issuer: Address,
         new_issuer: Address,
         namespace: Symbol,
         token: Address,
@@ -4690,15 +4651,24 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env)?;
         new_issuer.require_auth();
 
-        let offering_id =
-            Self::find_pending_transfer_for_new_issuer(&env, &namespace, &token, &new_issuer)
-                .ok_or(RevoraError::NoTransferPending)?;
+        // The pending record is keyed by the original issuer's OfferingId. The
+        // accepting issuer already knows who proposed the transfer, so resolve
+        // it directly instead of scanning the global issuer/namespace indexes.
+        let offering_id = OfferingId {
+            issuer: old_issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
 
         let pending: PendingTransfer = env
             .storage()
             .persistent()
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
             .ok_or(RevoraError::NoTransferPending)?;
+
+        if pending.new_issuer != new_issuer {
+            return Err(RevoraError::NoTransferPending);
+        }
 
         let current_timestamp = env.ledger().timestamp();
         let effective_expiry = if pending.expiry_secs == 0 {
@@ -4928,6 +4898,7 @@ impl RevoraRevenueShare {
 
     pub fn reject_issuer_transfer(
         env: Env,
+        old_issuer: Address,
         new_issuer: Address,
         namespace: Symbol,
         token: Address,
@@ -4936,15 +4907,23 @@ impl RevoraRevenueShare {
         Self::require_not_paused(&env)?;
         new_issuer.require_auth();
 
-        let offering_id =
-            Self::find_pending_transfer_for_new_issuer(&env, &namespace, &token, &new_issuer)
-                .ok_or(RevoraError::NoTransferPending)?;
+        // Resolve the pending record directly from the old issuer instead of
+        // scanning every registered issuer and namespace.
+        let offering_id = OfferingId {
+            issuer: old_issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
 
         let pending: PendingTransfer = env
             .storage()
             .persistent()
             .get(&DataKey::PendingIssuerTransfer(offering_id.clone()))
             .ok_or(RevoraError::NoTransferPending)?;
+
+        if pending.new_issuer != new_issuer {
+            return Err(RevoraError::NoTransferPending);
+        }
 
         let old_issuer = offering_id.issuer.clone();
 
@@ -14707,20 +14686,6 @@ mod issue_370_373_tests {
         let new_issuer = Address::generate(&env);
         let namespace = Symbol::new(&env, "def");
 
-        // Security: seed issuer registry so pending transfer lookup scans the old issuer.
-        env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
-            env.storage().persistent().set(&DataKey2::IssuerItem(0), &old_issuer);
-            env.storage().persistent().set(&DataKey2::IssuerRegistered(old_issuer.clone()), &true);
-            env.storage().persistent().set(&DataKey2::NamespaceCount(old_issuer.clone()), &1_u32);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::NamespaceItem(old_issuer.clone(), 0), &namespace);
-            env.storage()
-                .persistent()
-                .set(&DataKey2::NamespaceRegistered(old_issuer.clone(), namespace.clone()), &true);
-        });
-
         let new_token_0 = Address::generate(&env);
         let new_token_1 = Address::generate(&env);
         client.register_offering(
@@ -14768,7 +14733,7 @@ mod issue_370_373_tests {
 
         let transfer_token = old_tokens.get(7).unwrap();
         client.propose_issuer_transfer(&old_issuer, &namespace, &transfer_token, &new_issuer);
-        client.accept_issuer_transfer(&new_issuer, &namespace, &transfer_token);
+        client.accept_issuer_transfer(&old_issuer, &new_issuer, &namespace, &transfer_token);
 
         assert_eq!(client.get_offering_count(&old_issuer, &namespace), 25);
         let (old_page, old_cursor) = client.get_offerings_page(&old_issuer, &namespace, &0, &100);

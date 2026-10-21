@@ -170,7 +170,7 @@ fn test_transfer_maintains_namespace_isolation() {
 
     // Transfer to Issuer B
     client.propose_issuer_transfer(&issuer_a, &ns_1, &token_1, &issuer_b);
-    client.accept_issuer_transfer(&issuer_a, &ns_1, &token_1);
+    client.accept_issuer_transfer(&issuer_a, &issuer_b, &ns_1, &token_1);
 
     // Verify config preserved
     assert_eq!(client.get_claim_delay(&issuer_a, &ns_1, &token_1), 3600);

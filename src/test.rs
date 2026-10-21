@@ -6970,7 +6970,7 @@ fn issuer_transfer_accept_completes_transfer() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Verify no pending transfer after acceptance
     assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), None);
@@ -6988,7 +6988,7 @@ fn issuer_transfer_accept_emits_event() {
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     let before = legacy_events(&env).len();
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(legacy_events(&env).len() > before);
 }
 
@@ -7002,7 +7002,7 @@ fn issuer_transfer_new_issuer_can_deposit_revenue() {
     mint_tokens(&env, &payment_token, &pt_admin, &new_issuer, &5_000_000);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer should be able to deposit revenue
     let result = client.try_deposit_revenue(
@@ -7146,7 +7146,7 @@ fn issuer_transfer_new_issuer_can_set_holder_share() {
     let holder = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer should be able to set holder shares
     let result =
@@ -7161,7 +7161,7 @@ fn issuer_transfer_old_issuer_loses_access() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Old issuer should not be able to deposit revenue
     let result = client.try_deposit_revenue(
@@ -7182,7 +7182,7 @@ fn issuer_transfer_old_issuer_cannot_set_holder_share() {
     let holder = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Old issuer should not be able to set holder shares
     let result =
@@ -7473,7 +7473,7 @@ fn issuer_transfer_default_expiry_used_when_expiry_secs_zero() {
     let seven_days = 7u64 * 24 * 60 * 60;
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days - 1);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "should accept within default 7-day window");
 }
 
@@ -7488,7 +7488,7 @@ fn issuer_transfer_default_expiry_rejects_after_seven_days() {
     let seven_days = 7u64 * 24 * 60 * 60;
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + seven_days + 1);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err(), "should reject after default 7-day expiry");
 }
 
@@ -7509,7 +7509,7 @@ fn issuer_transfer_custom_expiry_accepted_within_window() {
 
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60); // +1h
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "should accept within custom 2h window");
 }
 
@@ -7530,7 +7530,7 @@ fn issuer_transfer_custom_expiry_rejected_after_window() {
 
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours + 1);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err(), "should reject after custom 2h expiry");
 }
 
@@ -7551,7 +7551,7 @@ fn issuer_transfer_custom_expiry_accepted_at_exact_boundary() {
 
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + two_hours);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "should accept at exact expiry boundary (timestamp == expiry)");
 }
 
@@ -7572,7 +7572,7 @@ fn issuer_transfer_expiry_below_min_clamped_to_min() {
 
     // Should still be valid at 30 minutes (clamped to 1h minimum)
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 60);
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "clamped-to-min expiry should still be valid at 30min");
 }
 
@@ -7595,7 +7595,7 @@ fn issuer_transfer_expiry_above_max_clamped_to_max() {
     let thirty_days_plus_one = 30u64 * 24 * 60 * 60 + 1;
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + thirty_days_plus_one);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err(), "clamped-to-max expiry should expire after 30 days");
 }
 
@@ -7617,7 +7617,7 @@ fn issuer_transfer_min_clamp_accept_at_exact_one_hour_boundary() {
     // Accept at exactly 1h (the clamped minimum) — should succeed (inclusive)
     let one_hour = 60u64 * 60;
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + one_hour);
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "min-clamped expiry should accept at exactly 1h boundary");
 }
 
@@ -7639,7 +7639,7 @@ fn issuer_transfer_max_clamp_accept_within_thirty_day_window() {
     // Accept at 15 days — well within the clamped 30-day window
     let fifteen_days = 15u64 * 24 * 60 * 60;
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + fifteen_days);
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "max-clamped expiry should accept within 30-day window");
 }
 
@@ -7664,7 +7664,7 @@ fn replace_issuer_transfer_preserves_custom_expiry() {
 
     // Accept at 1h — should succeed because the 2h expiry was preserved
     env.ledger().with_mut(|li| li.timestamp = li.timestamp + 60 * 60);
-    let result = client.try_accept_issuer_transfer(&new_issuer_2, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer_2, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "replace should preserve original custom expiry");
 }
 
@@ -7733,7 +7733,7 @@ fn issuer_transfer_cannot_propose_when_already_pending() {
 fn issuer_transfer_cannot_accept_when_no_pending() {
     let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
 
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &issuer, &symbol_short!("def"), &token);
     assert!(result.is_err());
 }
 
@@ -7770,7 +7770,7 @@ fn issuer_transfer_accept_requires_auth() {
     let _issuer = Address::generate(&env);
 
     // No mock_all_auths - should panic
-    client.accept_issuer_transfer(&_issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&_issuer, &_issuer, &symbol_short!("def"), &token);
 }
 
 #[test]
@@ -7792,10 +7792,10 @@ fn issuer_transfer_double_accept_fails() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Second accept should fail (no pending transfer)
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err());
 }
 
@@ -7810,7 +7810,7 @@ fn issuer_transfer_to_same_address() {
         client.try_propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &issuer);
     assert!(result.is_ok());
 
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok());
 }
 
@@ -7838,7 +7838,7 @@ fn issuer_transfer_multiple_offerings_isolation() {
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token_b, &new_issuer_b);
 
     // Accept only token_a transfer
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token_a);
+    client.accept_issuer_transfer(&issuer, &new_issuer_a, &symbol_short!("def"), &token_a);
 
     // Verify token_a transferred but token_b still pending
     assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token_a), None);
@@ -7868,7 +7868,7 @@ fn issuer_transfer_reject_clears_pending() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    client.reject_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     assert_eq!(client.get_pending_issuer_transfer(&issuer, &symbol_short!("def"), &token), None);
 }
@@ -7880,7 +7880,7 @@ fn issuer_transfer_reject_emits_event() {
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     let before = legacy_events(&env).len();
-    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    client.reject_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     let after = legacy_events(&env).len();
     assert_eq!(after, before + 1);
 }
@@ -7893,7 +7893,7 @@ fn issuer_transfer_wrong_address_cannot_reject() {
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
 
-    let result = client.try_reject_issuer_transfer(&wrong_address, &symbol_short!("def"), &token);
+    let result = client.try_reject_issuer_transfer(&issuer, &wrong_address, &symbol_short!("def"), &token);
     assert!(result.is_err());
 }
 
@@ -7902,7 +7902,7 @@ fn issuer_transfer_reject_fails_when_no_pending() {
     let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
     let new_issuer = Address::generate(&env);
 
-    let result = client.try_reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_reject_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err());
 }
 
@@ -7913,7 +7913,7 @@ fn issuer_transfer_reject_then_can_propose_again() {
     let new_issuer_2 = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer_1);
-    client.reject_issuer_transfer(&new_issuer_1, &symbol_short!("def"), &token);
+    client.reject_issuer_transfer(&issuer, &new_issuer_1, &symbol_short!("def"), &token);
 
     // Should be able to propose to different address
     let result =
@@ -7935,7 +7935,7 @@ fn issuer_transfer_reject_requires_auth() {
     let token = Address::generate(&env);
 
     // No mock_all_auths - should panic
-    client.reject_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    client.reject_issuer_transfer(&new_issuer, &new_issuer, &symbol_short!("def"), &token);
 }
 
 // ===========================================================================
@@ -8792,7 +8792,7 @@ fn issuer_transfer_accept_blocked_when_frozen() {
     client.set_admin(&admin);
     client.freeze();
 
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_err());
 }
 
@@ -8833,7 +8833,7 @@ fn issuer_transfer_preserves_audit_summary() {
 
     // Transfer issuer
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Audit summary should still be accessible
     let summary_after = client.get_audit_summary(&issuer, &symbol_short!("def"), &token).unwrap();
@@ -8847,7 +8847,7 @@ fn issuer_transfer_new_issuer_can_report_revenue() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer can report revenue
     let result = client.try_report_revenue(
@@ -8868,7 +8868,7 @@ fn issuer_transfer_new_issuer_can_set_concentration_limit() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer can set concentration limit
     let result = client.try_set_concentration_limit(
@@ -8888,7 +8888,7 @@ fn issuer_transfer_new_issuer_can_set_rounding_mode() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer can set rounding mode
     let result = client.try_set_rounding_mode(
@@ -8906,7 +8906,7 @@ fn issuer_transfer_new_issuer_can_set_claim_delay() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer can set claim delay
     let result = client.try_set_claim_delay(&new_issuer, &symbol_short!("def"), &token, &3600);
@@ -8925,7 +8925,7 @@ fn issuer_transfer_holders_can_still_claim() {
 
     // Transfer issuer
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Holder should still be able to claim
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
@@ -8944,7 +8944,7 @@ fn issuer_transfer_then_new_deposits_and_claims_work() {
 
     // Transfer issuer
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer sets share and deposits
     client.set_holder_share(&new_issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
@@ -8968,7 +8968,7 @@ fn issuer_transfer_get_offering_still_works() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // get_offering should find the offering under new issuer now
     let offering = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
@@ -8984,7 +8984,7 @@ fn issuer_transfer_preserves_revenue_share_bps() {
     let offering_before = client.get_offering(&issuer, &symbol_short!("def"), &token);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     let offering_after = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
     assert_eq!(
@@ -8999,7 +8999,7 @@ fn issuer_transfer_old_issuer_cannot_report_concentration() {
     let new_issuer = Address::generate(&env);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Old issuer should not be able to report concentration
     let result = client.try_report_concentration(&issuer, &symbol_short!("def"), &token, &5_000);
@@ -9014,7 +9014,7 @@ fn issuer_transfer_new_issuer_can_report_concentration() {
     client.set_concentration_limit(&issuer, &symbol_short!("def"), &token, &6_000, &false, &0u64);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // New issuer can report concentration
     let result =
@@ -9048,7 +9048,7 @@ fn issuer_transfer_accept_emits_iss_acc_event_with_correct_fields() {
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
     let before = legacy_events(&env).len();
-    client.accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     let events = legacy_events(&env);
     assert!(events.len() > before, "iss_acc event must be emitted");
 
@@ -9090,7 +9090,7 @@ fn issuer_transfer_pending_error_code_on_double_propose() {
 fn no_transfer_pending_error_code_on_accept_without_propose() {
     let (_env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
 
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &issuer, &symbol_short!("def"), &token);
     assert_eq!(result, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -9144,7 +9144,7 @@ fn issuer_transfer_wrong_address_cannot_accept() {
         Some(new_issuer2.clone())
     );
     // Accept completes and grants control to new_issuer2 (not any other address)
-    client2.accept_issuer_transfer(&issuer2, &symbol_short!("def"), &token2);
+    client2.accept_issuer_transfer(&issuer2, &new_issuer2, &symbol_short!("def"), &token2);
     let offering = client2.get_offering(&new_issuer2, &symbol_short!("def"), &token2).unwrap();
     assert_eq!(offering.issuer, new_issuer2);
 }
@@ -9185,7 +9185,7 @@ fn issuer_transfer_migrates_vesting_schedule_after_cliff() {
     env.ledger().with_mut(|li| li.timestamp = 1_500);
 
     client.propose_issuer_transfer(&issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
 
     let migrated_schedule: crate::vesting::VestingSchedule = env
         .storage()
@@ -9230,7 +9230,7 @@ fn issuer_transfer_rejects_pre_cliff_vesting_schedule() {
 
     env.ledger().with_mut(|li| li.timestamp = 1_500);
 
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert_eq!(result, Err(Ok(RevoraError::VestingTransferBlocked)));
 }
 
@@ -9276,7 +9276,7 @@ fn issuer_transfer_accept_at_exact_expiry_boundary_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs);
 
     // Accept should succeed at exact boundary
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(result.is_ok(), "Accept should succeed at exact expiry boundary");
 
     // Verify transfer completed
@@ -9305,7 +9305,7 @@ fn issuer_transfer_accept_one_second_past_expiry_fails() {
     env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 1);
 
     // Accept should fail with IssuerTransferExpired
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert_eq!(
         result,
         Err(Ok(RevoraError::IssuerTransferExpired)),
@@ -9353,7 +9353,7 @@ fn issuer_transfer_expiry_handles_timestamp_overflow_safely() {
 
     // Accept should succeed because saturating_add(EXPIRY) saturates at u64::MAX,
     // and current_timestamp (near_max + 500) is not > u64::MAX
-    let result = client.try_accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &new_issuer, &symbol_short!("def"), &token);
     assert!(
         result.is_ok(),
         "Accept should succeed when saturating_add prevents overflow"
@@ -9382,7 +9382,7 @@ fn issuer_transfer_self_transfer_ignores_expiry() {
     env.ledger().with_mut(|li| li.timestamp = 1000 + expiry_secs + 10000);
 
     // Accept should succeed because self-transfer short-circuits before expiry check
-    let result = client.try_accept_issuer_transfer(&issuer, &symbol_short!("def"), &token);
+    let result = client.try_accept_issuer_transfer(&issuer, &issuer, &symbol_short!("def"), &token);
     assert!(
         result.is_ok(),
         "Self-transfer should succeed regardless of expiry"
@@ -11745,7 +11745,7 @@ fn test_metadata_after_issuer_transfer() {
 
     // Propose and accept transfer
     client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
-    client.accept_issuer_transfer(&old_issuer, &symbol_short!("def"), &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &symbol_short!("def"), &token);
 
     // Metadata should still be accessible under old issuer key
     let retrieved = client.get_offering_metadata(&old_issuer, &symbol_short!("def"), &token);
@@ -13618,7 +13618,7 @@ mod regression {
             &symbol_short!(""),
             &0);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
-        client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+        client.accept_issuer_transfer(&old_issuer, &new_issuer, &symbol_short!("def"), &token);
 
         // New issuer can look up the offering directly
         let result = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
@@ -13651,7 +13651,7 @@ mod regression {
             &symbol_short!(""),
             &0);
         client.propose_issuer_transfer(&old_issuer, &symbol_short!("def"), &token, &new_issuer);
-        client.accept_issuer_transfer(&new_issuer, &symbol_short!("def"), &token);
+        client.accept_issuer_transfer(&old_issuer, &new_issuer, &symbol_short!("def"), &token);
 
         // New issuer can look up the offering directly
         let result = client.get_offering(&new_issuer, &symbol_short!("def"), &token);
@@ -14830,24 +14830,6 @@ fn test_offerings_page_after_issuer_transfer() {
     let issuer2 = Address::generate(&env);
     let ns = symbol_short!("test");
 
-    // Security: seed the issuer registry so accept_issuer_transfer can find pending transfers.
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
-        env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer1);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::IssuerRegistered(issuer1.clone()), &true);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::NamespaceCount(issuer1.clone()), &1_u32);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::NamespaceItem(issuer1.clone(), 0), &ns);
-        env.storage()
-            .persistent()
-            .set(&DataKey2::NamespaceRegistered(issuer1.clone(), ns.clone()), &true);
-    });
-
     // Register offerings for issuer1
     let t1 = Address::generate(&env);
     let t2 = Address::generate(&env);
@@ -14894,7 +14876,7 @@ fn test_offerings_page_after_issuer_transfer() {
 
     // Transfer t2 from issuer1 to issuer2
     client.propose_issuer_transfer(&issuer1, &ns, &t2, &issuer2);
-    client.accept_issuer_transfer(&issuer2, &ns, &t2);
+    client.accept_issuer_transfer(&issuer1, &issuer2, &ns, &t2);
 
     // Verify issuer1 now has 2 offerings (t2 copied, not moved)
     let (page1_after, _) = client.get_offerings_page(&issuer1, &ns, &0, &20);
@@ -14978,7 +14960,7 @@ fn config_migration_setup() -> (
 
     // Execute issuer transfer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // ── Assert all configs migrated to new issuer ──
 
@@ -15069,7 +15051,7 @@ fn test_issuer_transfer_partial_config_unset_configs_default() {
 
     // Execute transfer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // Set configs must have migrated.
     let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
@@ -15116,7 +15098,7 @@ fn test_issuer_transfer_then_set_config_by_new_issuer() {
 
     // Transfer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // New issuer overwrites each config with a different value.
     client.set_investment_constraints(&new_issuer, &ns, &token, &200, &2000);
@@ -15156,7 +15138,7 @@ fn test_issuer_transfer_old_issuer_cannot_set_investment_constraints() {
         config_migration_setup();
 
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     let result =
         client.try_set_investment_constraints(&old_issuer, &ns, &token, &100, &1000);
@@ -15173,7 +15155,7 @@ fn test_issuer_transfer_old_issuer_cannot_set_claim_delay() {
         config_migration_setup();
 
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     let result = client.try_set_claim_delay(&old_issuer, &ns, &token, &3600);
     assert!(
@@ -15189,7 +15171,7 @@ fn test_issuer_transfer_old_issuer_cannot_set_snapshot_config() {
         config_migration_setup();
 
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     let result = client.try_set_snapshot_config(&old_issuer, &ns, &token, &true);
     assert!(
@@ -15215,7 +15197,7 @@ fn test_issuer_transfer_old_issuer_fresh_registration_has_clean_defaults() {
 
     // Transfer to new issuer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // Old issuer registers a fresh offering for a different token.
     let new_token = Address::generate(&_env);
@@ -15274,7 +15256,7 @@ fn test_issuer_transfer_large_snapshot_ref_preserved() {
 
     // Transfer.
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // Verify large ref migrated.
     assert_eq!(
@@ -15299,7 +15281,7 @@ fn test_issuer_transfer_investment_constraints_both_zero_migrates() {
     client.set_investment_constraints(&old_issuer, &ns, &token, &0, &0);
 
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     let inv_cons = client.get_investment_constraints(&new_issuer, &ns, &token).unwrap();
     assert_eq!(inv_cons.min_stake, 0, "min_stake=0 must migrate");
@@ -15324,7 +15306,7 @@ fn test_issuer_transfer_claim_delay_zero_migrates() {
     client.set_claim_delay(&old_issuer, &ns, &token, &0);
 
     client.propose_issuer_transfer(&old_issuer, &ns, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns, &token);
 
     // Both should report 0 — either from migrated zero value or from default.
     assert_eq!(
@@ -15384,7 +15366,7 @@ fn test_issuer_transfer_config_isolated_across_namespaces() {
 
     // Transfer ns_a only.
     client.propose_issuer_transfer(&old_issuer, &ns_a, &token, &new_issuer);
-    client.accept_issuer_transfer(&new_issuer, &ns_a, &token);
+    client.accept_issuer_transfer(&old_issuer, &new_issuer, &ns_a, &token);
 
     // ns_a configs must be under new issuer.
     let inv_cons = client.get_investment_constraints(&new_issuer, &ns_a, &token).unwrap();
