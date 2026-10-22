@@ -6447,6 +6447,99 @@ fn simulate_distribution_uses_rounding_mode() {
     assert_eq!(result.payouts.get(0).clone().unwrap().1, 33);
 }
 
+#[test]
+fn simulate_distribution_orders_by_share_then_address() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holders = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let shares = Vec::from_array(
+        &env,
+        [
+            (holders[0].clone(), 4_000u32),
+            (holders[1].clone(), 7_000u32),
+            (holders[2].clone(), 4_000u32),
+            (holders[3].clone(), 7_000u32),
+        ],
+    );
+
+    let result =
+        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    let xdr_lt = |a: &Address, b: &Address| {
+        let a_xdr = a.to_xdr(&env);
+        let b_xdr = b.to_xdr(&env);
+        for i in 0..a_xdr.len().min(b_xdr.len()) {
+            let a_byte: u32 = a_xdr.get(i).unwrap().into();
+            let b_byte: u32 = b_xdr.get(i).unwrap().into();
+            if a_byte != b_byte {
+                return a_byte < b_byte;
+            }
+        }
+        a_xdr.len() < b_xdr.len()
+    };
+    let expected = [
+        if xdr_lt(&holders[1], &holders[3]) { holders[1].clone() } else { holders[3].clone() },
+        if xdr_lt(&holders[1], &holders[3]) { holders[3].clone() } else { holders[1].clone() },
+        if xdr_lt(&holders[0], &holders[2]) { holders[0].clone() } else { holders[2].clone() },
+        if xdr_lt(&holders[0], &holders[2]) { holders[2].clone() } else { holders[0].clone() },
+    ];
+
+    assert_eq!(result.payouts.len(), 4);
+    for (i, holder) in expected.iter().enumerate() {
+        assert_eq!(result.payouts.get(i as u32).unwrap().0, holder.clone());
+    }
+}
+
+#[test]
+fn simulate_distribution_rejects_257_holders() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let mut shares = Vec::new(&env);
+    for _ in 0..257 {
+        shares.push_back((Address::generate(&env), 1u32));
+    }
+
+    let result = client.try_simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &shares,
+    );
+    assert!(matches!(result, Err(Ok(RevoraError::LimitReached))));
+}
+
+#[test]
+fn simulate_distribution_handles_maximum_holder_count() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let mut shares = Vec::new(&env);
+    for _ in 0..MAX_SIMULATION_HOLDERS {
+        shares.push_back((Address::generate(&env), 100u32));
+    }
+
+    let result =
+        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    assert_eq!(result.payouts.len(), MAX_SIMULATION_HOLDERS);
+}
+
+#[test]
+fn simulate_distribution_rejects_duplicate_holders() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+    let shares = Vec::from_array(&env, [(holder.clone(), 6_000u32), (holder, 4_000u32)]);
+
+    let result = client.try_simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &shares,
+    );
+    assert!(matches!(result, Err(Ok(RevoraError::LimitReached))));
+}
+
 // ===========================================================================
 // Upgradeability guard and freeze (#32)
 // ===========================================================================
