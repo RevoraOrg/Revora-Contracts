@@ -11,7 +11,7 @@ sibling hashes accepted in a single Merkle membership proof.
 
 Proofs longer than 32 siblings are rejected **before any hashing** with:
 
-- **Error** `RevoraError::ProofTooDeep` (wire value `77`)
+- **Error** `RevoraError::ProofTooDeep` (wire value `90`)
 - **Event** `prf_rej_d` — topics `(prf_rej_d, caller)`, data `(proof_len, MAX_PROOF_DEPTH)`
 
 ---
@@ -104,7 +104,7 @@ No auth required. No storage reads or writes.
 | Name | Wire value | Module |
 |------|-----------|--------|
 | `MerkleError::ProofTooDeep` | `1003` | `merkle_helpers` |
-| `RevoraError::ProofTooDeep` | `77` | `lib.rs` |
+| `RevoraError::ProofTooDeep` | `90` | `lib.rs` |
 
 Wire values are **frozen**. Do not renumber.
 

@@ -48,7 +48,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol,
     let payout = Address::generate(&env);
 
     client.initialize(&admin);
-    client.register_offering(&issuer, &namespace, &token, &5_000_u32, &payout, &0_u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token, &5_000_u32, &payout, &0_u32, &symbol_short!(""), &0u32);
 
     (env, client, admin, issuer, namespace, token)
 }

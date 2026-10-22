@@ -71,19 +71,18 @@ fn setup_offering_with_contract_id(
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("ns"),
         &offering_token,
         &10_000,
         &payment_token,
         &0,
+        &symbol_short!(""),
+        &0,
     );
 
     (env, client, issuer, offering_token, payment_token, contract_id)
-}
-
-fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
-    let (env, client, issuer, token, payment_token, _) = setup_offering_with_contract_id();
-    (env, client, issuer, token, payment_token)
 }
 
 proptest! {
@@ -125,11 +124,11 @@ proptest! {
         let holder_d = Address::generate(&env);
         let holder_e = Address::generate(&env);
 
-        client.set_holder_share(&issuer, &ns, &token, &holder_a, &3_000u32);
-        client.set_holder_share(&issuer, &ns, &token, &holder_b, &2_500u32);
-        client.set_holder_share(&issuer, &ns, &token, &holder_c, &1_500u32);
-        client.set_holder_share(&issuer, &ns, &token, &holder_d, &1_000u32);
-        client.set_holder_share(&issuer, &ns, &token, &holder_e, &2_000u32);
+        client.set_holder_share(&issuer, &ns, &token, &holder_a, &3_000u32, &1);
+        client.set_holder_share(&issuer, &ns, &token, &holder_b, &2_500u32, &1);
+        client.set_holder_share(&issuer, &ns, &token, &holder_c, &1_500u32, &1);
+        client.set_holder_share(&issuer, &ns, &token, &holder_d, &1_000u32, &1);
+        client.set_holder_share(&issuer, &ns, &token, &holder_e, &2_000u32, &1);
 
         mint(&env, &payment_token, &issuer, 10_000_000);
         client.deposit_revenue(&issuer, &ns, &token, &payment_token, &10_000_000i128, &1u64);
@@ -164,7 +163,9 @@ proptest! {
             .unwrap();
 
             if let Some(ref expected) = baseline {
-                prop_assert_eq!(result.payouts, expected.payouts);
+                // `expected` is behind a shared reference and soroban `Vec`
+                // is not `Copy`; clone the preview payouts for the comparison.
+                prop_assert_eq!(result.payouts, expected.payouts.clone());
                 prop_assert_eq!(result.total_distributed, expected.total_distributed);
             } else {
                 baseline = Some(result);
@@ -190,7 +191,7 @@ fn close_period_aborts_when_share_ledger_is_inconsistent() {
     let ns = symbol_short!("ns");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1);
 
     let before_events = env.events().all().len();
     env.as_contract(&contract_id, || {
@@ -309,7 +310,7 @@ fn claim_after_close_is_allowed() {
     let holder = Address::generate(&env);
 
     // Set holder share to 100%.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
     // Deposit revenue for period 1.
     mint(&env, &payment_token, &issuer, 1_000);
@@ -381,23 +382,34 @@ fn measure_cpu_for_n_holders(n: u32) -> u64 {
     let (payment_token, _) = create_payment_token(&env);
     let ns = symbol_short!("ns");
 
-    client.register_offering(&issuer, &ns, &offering_token, &10_000, &payment_token, &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &offering_token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     for _ in 0..n {
         let holder = Address::generate(&env);
-        client.set_holder_share(&issuer, &ns, &offering_token, &holder, &1);
+        client.set_holder_share(&issuer, &ns, &offering_token, &holder, &1, &1);
     }
 
-    let before = env.budget().cpu_instruction_count();
+    let before = env.budget().cpu_instruction_cost();
     client.close_period(&issuer, &ns, &offering_token, &1);
-    let after = env.budget().cpu_instruction_count();
+    let after = env.budget().cpu_instruction_cost();
     after.saturating_sub(before)
 }
 
 /// Compute R² (coefficient of determination) for a linear fit of (x,y) points.
 fn r_squared(points: &[(f64, f64)]) -> f64 {
     let n = points.len() as f64;
-    if n < 2 {
+    if n < 2.0 {
         return 0.0;
     }
 
@@ -430,7 +442,9 @@ fn r_squared(points: &[(f64, f64)]) -> f64 {
 #[test]
 fn close_period_cpu_grows_linearly_with_holders() {
     let test_counts = [1u32, 10u32, 100u32, 1000u32];
-    let mut points = Vec::new();
+    // `Vec` in scope is `soroban_sdk::Vec`; the CPU-fit table is a plain
+    // host-side std collection of (holder_count, cpu_instructions) points.
+    let mut points: std::vec::Vec<(f64, f64)> = std::vec::Vec::new();
 
     for n in test_counts {
         let cpu = measure_cpu_for_n_holders(n) as f64;
@@ -453,11 +467,22 @@ fn close_period_zero_holders_has_constant_cost() {
     let ns = symbol_short!("ns");
     let (payment_token, _) = create_payment_token(&env);
 
-    client.register_offering(&issuer, &ns, &token, &10_000, &payment_token, &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &10_000,
+        &payment_token,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
-    let before = env.budget().cpu_instruction_count();
+    let before = env.budget().cpu_instruction_cost();
     client.close_period(&issuer, &ns, &token, &1);
-    let after = env.budget().cpu_instruction_count();
+    let after = env.budget().cpu_instruction_cost();
 
     assert!(after - before > 0, "CPU cost must be positive");
     // Assert that cost is within a reasonable constant bound
@@ -470,7 +495,7 @@ fn close_period_zero_holders_has_constant_cost() {
 fn setup_dual_sig_offering(
     env: &Env,
     client: &RevoraRevenueShareClient,
-) -> (Address, Address, Address, Address, Address) {
+) -> (Address, Address, Address, Address, Symbol) {
     env.mock_all_auths();
     let issuer = Address::generate(env);
     let co_issuer = Address::generate(env);
@@ -642,10 +667,11 @@ fn close_period_dual_sig_unknown_offering_returns_not_found() {
 // Architecture note:
 //   `DeferredDataKey::DeferredReports(period_id: u32)` stores one deferred
 //   distribution amount per period_id in persistent storage.
-//   The internal `RevoraRevenueShare::close_period(env, period_id)` reads,
-//   removes, and emits the deferred entry for a single period_id — O(1) per
-//   call. Testing 1000 sequential flushes therefore exercises the cumulative
-//   I/O cost of a realistic worst-case release scenario.
+//   The crate-internal helper `issue_370_373_tests::close_period(env,
+//   period_id)` reads, removes, and emits the deferred entry for a single
+//   period_id — O(1) per call. Testing 1000 sequential flushes therefore
+//   exercises the cumulative I/O cost of a realistic worst-case release
+//   scenario.
 //
 // Budget rationale (Soroban network limits):
 //   - Network CPU limit per transaction:   100,000,000 instructions
@@ -687,13 +713,17 @@ fn populate_deferred_queue(env: &Env, contract_id: &Address, count: u32) {
 /// `RevoraRevenueShare::close_period(env, period_id)` for each period_id
 /// in [0..count].  Returns the total CPU instructions consumed.
 fn flush_deferred_queue(env: &Env, contract_id: &Address, count: u32) -> u64 {
-    let before = env.budget().cpu_instruction_count();
+    let before = env.budget().cpu_instruction_cost();
     env.as_contract(contract_id, || {
         for i in 0..count {
-            RevoraRevenueShare::close_period(env.clone(), i);
+            // O(1) deferred-flush helper declared in the crate's
+            // `issue_370_373_tests` test module (free fn, not a method on
+            // `RevoraRevenueShare`, whose `close_period` takes the full
+            // issuer/namespace/token/period_id argument set).
+            crate::issue_370_373_tests::close_period(env.clone(), i);
         }
     });
-    let after = env.budget().cpu_instruction_count();
+    let after = env.budget().cpu_instruction_cost();
     after.saturating_sub(before)
 }
 
@@ -739,11 +769,11 @@ fn close_period_single_deferred_flush_within_per_call_budget() {
     // Populate one entry.
     populate_deferred_queue(&env, &contract_id, 1);
 
-    let before = env.budget().cpu_instruction_count();
+    let before = env.budget().cpu_instruction_cost();
     env.as_contract(&contract_id, || {
-        RevoraRevenueShare::close_period(env.clone(), 0);
+        crate::issue_370_373_tests::close_period(env.clone(), 0);
     });
-    let after = env.budget().cpu_instruction_count();
+    let after = env.budget().cpu_instruction_cost();
     let cpu = after.saturating_sub(before);
 
     assert!(
@@ -764,11 +794,11 @@ fn close_period_flush_absent_entry_is_noop_within_budget() {
     let contract_id = env.register_contract(None, RevoraRevenueShare);
 
     // Do NOT populate any entries; period_id 999 has no deferred data.
-    let before = env.budget().cpu_instruction_count();
+    let before = env.budget().cpu_instruction_cost();
     env.as_contract(&contract_id, || {
-        RevoraRevenueShare::close_period(env.clone(), 999);
+        crate::issue_370_373_tests::close_period(env.clone(), 999);
     });
-    let after = env.budget().cpu_instruction_count();
+    let after = env.budget().cpu_instruction_cost();
     let cpu = after.saturating_sub(before);
 
     assert!(
@@ -830,7 +860,7 @@ fn close_period_deferred_queue_flush_leaves_no_residue() {
     // Flush all entries.
     env.as_contract(&contract_id, || {
         for i in 0..N {
-            RevoraRevenueShare::close_period(env.clone(), i);
+            crate::issue_370_373_tests::close_period(env.clone(), i);
         }
     });
 

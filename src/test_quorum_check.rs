@@ -3,7 +3,8 @@
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
-fn setup_multisig() -> (Env, Address, Address, Address, Address) {
+fn setup_multisig() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address)
+{
     let env = Env::default();
     env.mock_all_auths();
 
@@ -61,8 +62,9 @@ fn test_check_quorum_off_by_one_below() {
     let owners = Vec::from_array(&env, [owner.clone()]);
     single_client.init_multisig(&admin, &owners, &1, &86400, &10_000);
 
-    // Proposed action auto-approves the proposer
-    let proposal_id = single_client.propose_action(&owner, &ProposalAction::Freeze).unwrap();
+    // The generated client unwraps the contract Result, so this yields the `u32`
+    // proposal id directly (and panics on contract errors).
+    let proposal_id = single_client.propose_action(&owner, &ProposalAction::Freeze);
     let result = single_client.check_quorum(&proposal_id);
     assert!(result, "single owner with 10_000 bps must meet 10_000 quorum");
 }

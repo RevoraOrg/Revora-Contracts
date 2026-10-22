@@ -59,7 +59,7 @@ fn frozen_setup(
     let issuer = admin.clone();
     let token = Address::generate(env);
     let payout_asset = Address::generate(env);
-    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
 
     // Freeze the contract — all subsequent mutating calls must return ContractFrozen.
     client.freeze();
@@ -74,15 +74,7 @@ fn frozen_register_offering_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, _, payout_asset) = frozen_setup(&env);
     let new_token = Address::generate(&env);
-    let result = client.try_register_offering(
-        &issuer,
-        &symbol_short!("ns2"),
-        &new_token,
-        &500u32,
-        &payout_asset,
-        &0i128,
-        &symbol_short!(""),
-        &0);
+    let result = client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns2"), &new_token, &500u32, &payout_asset, &0i128, &symbol_short!(""), &0);
     assert_frozen_err(result);
     // Verify no partial write: offering must not exist.
     assert!(client.get_offering(&issuer, &symbol_short!("ns2"), &new_token).is_none());
@@ -460,10 +452,10 @@ fn frozen_claim_is_not_blocked() {
     let ns = symbol_short!("test");
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
-    client.register_offering(&issuer, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32);
+    client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32, &1);
 
     // Freeze the contract.
     client.freeze();
@@ -510,11 +502,11 @@ fn frozen_set_holder_share_no_partial_write() {
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
 
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
     client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000); // 50%
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
 
     (env, client, admin, ns, token, issuer, holder)
 }
@@ -717,12 +709,12 @@ fn freeze_is_scoped_to_offering() {
     let ns = symbol_short!("test");
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
-    let payout = env.register_stellar_asset_contract(admin.clone());
+    let payout = env.register_stellar_asset_contract_v2(admin.clone()).address();
     let holder = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token_a, &2500, &payout, &0);
-    client.register_offering(&issuer, &ns, &token_b, &2500, &payout, &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0, &symbol_short!(""), &0u32);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0, &symbol_short!(""), &0u32);
 
     // Freeze holder on token_a offering
     client.emergency_freeze_holder(
@@ -850,7 +842,16 @@ fn ofac_setup(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Add
     let payout = Address::generate(env);
     
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(env), &1u32, &ns, &token, &1_000, &payout, &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &Vec::new(env),
+        &1u32,
+        &ns,
+        &token,
+        &1_000,
+        &payout,
+        &0);
     
     (client, admin, issuer, token)
 }
@@ -864,7 +865,7 @@ fn ofac_attestation_auto_freezes_holder() {
     let ns = symbol_short!("ofac");
     
     // Set up holder with shares
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
     
     // Submit OFAC attestation
     let attestation_hash = BytesN::from_array(&env, &[0x01u8; 32]);
@@ -882,7 +883,7 @@ fn ofac_attestation_replay_is_idempotent() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
     
     let attestation_hash = BytesN::from_array(&env, &[0x02u8; 32]);
     
@@ -904,7 +905,7 @@ fn ofac_attestation_emits_auto_frz_event() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
     
     let attestation_hash = BytesN::from_array(&env, &[0x03u8; 32]);
     let before = env.events().all().len();
@@ -952,7 +953,7 @@ fn ofac_attestation_blocked_when_contract_frozen() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
     
     // Freeze the contract globally
     client.freeze();
@@ -974,8 +975,8 @@ fn multiple_ofac_attestations_freeze_independently() {
     let holder2 = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &500);
-    client.set_holder_share(&issuer, &ns, &token, &holder2, &500);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &500, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder2, &500, &1);
     
     let hash1 = BytesN::from_array(&env, &[0x05u8; 32]);
     let hash2 = BytesN::from_array(&env, &[0x06u8; 32]);
@@ -999,7 +1000,7 @@ fn ofac_attestation_uses_sanctions_match_reason() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
     
     let attestation_hash = BytesN::from_array(&env, &[0x07u8; 32]);
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
@@ -1203,7 +1204,7 @@ fn ofac_attestation_with_existing_freeze_combines_bitmask() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
 
     // First, manual freeze with CourtOrder
     client.emergency_freeze_holder(

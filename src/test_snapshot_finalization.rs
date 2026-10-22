@@ -20,7 +20,7 @@ fn setup_snapshot_test(
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payout_asset, &0, &symbol_short!(""), &0);
     (env, client, issuer, token, payout_asset, contract_id)
 }
 
@@ -52,6 +52,37 @@ fn finalize_snapshot_succeeds_when_hash_matches() {
 }
 
 #[test]
+fn apply_snapshot_shares_rejects_finalized_snapshot() {
+    let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
+
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+    let holders = soroban_sdk::vec![&env, (holder1.clone(), 5_000u32), (holder2.clone(), 5_000u32)];
+    let content_hash =
+        compute_snapshot_content_hash(&env, &[(holder1.clone(), 5_000), (holder2.clone(), 5_000)]);
+
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash);
+    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+    client.finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
+
+    let result = client.try_apply_snapshot_shares(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1,
+        &0,
+        &holders,
+    );
+    assert!(result.is_err());
+    assert!(matches!(
+        result.err(),
+        Some(Ok(RevoraError::SnapshotAlreadyFinalized))
+    ));
+}
+
+#[test]
 fn finalize_snapshot_fails_when_hash_mismatch() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
@@ -67,6 +98,9 @@ fn finalize_snapshot_fails_when_hash_mismatch() {
     let result = client.try_finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotHashMismatch))));
+
+    let live_share = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(live_share, 0, "unverified snapshot data must not change live shares");
 }
 
 #[test]

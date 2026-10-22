@@ -20,15 +20,21 @@
 ///     fn fuzz_register_offering(bps in arb_valid_bps(), &None) {
 ///         let env = Env::default();
 ///         env.mock_all_auths();
-///         let client = make_client(&env);
+///         let client = make_client(&env.clone());
 ///         let issuer = Address::generate(&env);
 ///         let token  = Address::generate(&env);
-///         client.register_offering(&issuer, &symbol_short!("def"), &token, &bps, &token, &0, &symbol_short!(""), &0);
+///         client.register_offering(
+///             &issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &bps,
+///             &token, &0, &symbol_short!(""), &0,
+///         );
 ///     }
 /// }
 /// ```
-
 use proptest::prelude::*;
+extern crate alloc;
+
+use alloc::vec::Vec;
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
 
 /// Return a reproducible shuffled copy of a slice using a deterministic local PRNG.
 /// Useful for regression tests that need to exercise many re-orderings of the same fixture.
@@ -105,13 +111,7 @@ pub fn arb_positive_period_id() -> impl Strategy<Value = u64> {
 
 /// Boundary period IDs: 0, 1, 2, u64::MAX-1, u64::MAX.
 pub fn arb_boundary_period_id() -> impl Strategy<Value = u64> {
-    prop_oneof![
-        Just(0u64),
-        Just(1u64),
-        Just(2u64),
-        Just(u64::MAX - 1),
-        Just(u64::MAX),
-    ]
+    prop_oneof![Just(0u64), Just(1u64), Just(2u64), Just(u64::MAX - 1), Just(u64::MAX),]
 }
 
 /// Concentration bps values (0–10 000 inclusive).
@@ -130,11 +130,7 @@ pub fn arb_claim_delay_secs() -> impl Strategy<Value = u64> {
 /// Each element is exactly 10 greater than the previous (gap avoids off-by-one collisions).
 /// Invariant: `result[i] > result[i-1]` for all i.
 pub fn arb_strictly_increasing_periods(len: usize) -> impl Strategy<Value = Vec<u64>> {
-    Just(
-        (1..=len)
-            .map(|i| (i as u64) * 10)
-            .collect::<Vec<u64>>(),
-    )
+    Just((1..=len).map(|i| (i as u64) * 10).collect::<Vec<u64>>())
 }
 
 // ── Operation enum ───────────────────────────────────────────────────────────
@@ -142,22 +138,62 @@ pub fn arb_strictly_increasing_periods(len: usize) -> impl Strategy<Value = Vec<
 /// Represents a single contract operation for sequence-based fuzz testing.
 ///
 /// Each variant encodes the parameters needed to invoke the corresponding
-/// contract entry point. Addresses are represented as `u8` indices into a
-/// pre-generated address pool so strategies remain `Send + Sync`.
+/// contract entry point. Identities are generated per operation, so a harness
+/// that replays a sequence re-registers the offering it is about to exercise.
 #[derive(Debug, Clone)]
 pub enum TestOperation {
     /// `register_offering(issuer, &Vec::new(&env), &1u32, namespace, token, bps, payout_asset, supply_cap)`
-    RegisterOffering { issuer: Address, namespace: Symbol, token: Address, bps: u32, payout_asset: Address, supply_cap: i128 },
+    RegisterOffering {
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        bps: u32,
+        payout_asset: Address,
+        supply_cap: i128,
+    },
     /// `report_revenue(issuer, namespace, token, payout_asset, amount, period_id, override_existing)`
-    ReportRevenue { issuer: Address, namespace: Symbol, token: Address, payout_asset: Address, amount: i128, period_id: u64, override_existing: bool },
+    ReportRevenue {
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        payout_asset: Address,
+        amount: i128,
+        period_id: u64,
+        override_existing: bool,
+    },
     /// `deposit_revenue(issuer, namespace, token, payment_token, amount, period_id)`
-    DepositRevenue { issuer: Address, namespace: Symbol, token: Address, payment_token: Address, amount: i128, period_id: u64 },
+    DepositRevenue {
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        payment_token: Address,
+        amount: i128,
+        period_id: u64,
+    },
     /// `set_holder_share(issuer, namespace, token, holder, share_bps)`
-    SetHolderShare { issuer: Address, namespace: Symbol, token: Address, holder: Address, share_bps: u32 },
+    SetHolderShare {
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+        share_bps: u32,
+    },
     /// `blacklist_add(caller, issuer, namespace, token, investor)`
-    BlacklistAdd { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
+    BlacklistAdd {
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+    },
     /// `blacklist_remove(caller, issuer, namespace, token, investor)`
-    BlacklistRemove { caller: Address, issuer: Address, namespace: Symbol, token: Address, investor: Address },
+    BlacklistRemove {
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        investor: Address,
+    },
     /// `set_concentration_limit(issuer, namespace, token, max_bps, enforce, max_staleness_secs)`
     SetConcentrationLimit { max_bps: u32, enforce: bool, max_staleness_secs: u64 },
     /// `report_concentration(issuer, namespace, token, concentration_bps)`
@@ -172,43 +208,84 @@ pub enum TestOperation {
 
 // ── Operation strategies ─────────────────────────────────────────────────────
 
+/// Structurally valid offering identity for operations produced by the
+/// strategies below.
+///
+/// The strategies stay pure — they never receive the harness `Env` — so every
+/// generated operation carries its own freshly generated identity. A harness
+/// replays a sequence by registering each `RegisterOffering` first, so the
+/// tuple only has to be internally consistent, not match the harness addresses.
+fn new_identity() -> (Address, Symbol, Address, Address) {
+    let env = Env::default();
+    (
+        Address::generate(&env),
+        Symbol::new(&env, "def"),
+        Address::generate(&env),
+        Address::generate(&env),
+    )
+}
+
 /// Strategy for a single valid `RegisterOffering` operation.
-pub fn arb_register_offering(, &None) -> impl Strategy<Value = TestOperation> {
-    (arb_valid_bps(), 0i128..=1_000_000_000i128)
-        .prop_map(|(bps, supply_cap)| TestOperation::RegisterOffering { bps, supply_cap })
+pub fn arb_register_offering() -> impl Strategy<Value = TestOperation> {
+    (arb_valid_bps(), 0i128..=1_000_000_000i128).prop_map(|(bps, supply_cap)| {
+        let (issuer, namespace, token, payout_asset) = new_identity();
+        TestOperation::RegisterOffering { issuer, namespace, token, bps, payout_asset, supply_cap }
+    })
 }
 
 /// Strategy for a single valid `ReportRevenue` operation.
 pub fn arb_report_revenue() -> impl Strategy<Value = TestOperation> {
     (any_positive_amount(), arb_positive_period_id(), any::<bool>()).prop_map(
-        |(amount, period_id, override_existing)| TestOperation::ReportRevenue {
-            amount,
-            period_id,
-            override_existing,
+        |(amount, period_id, override_existing)| {
+            let (issuer, namespace, token, payout_asset) = new_identity();
+            TestOperation::ReportRevenue {
+                issuer,
+                namespace,
+                token,
+                payout_asset,
+                amount,
+                period_id,
+                override_existing,
+            }
         },
     )
 }
 
 /// Strategy for a single valid `DepositRevenue` operation.
 pub fn arb_deposit_revenue() -> impl Strategy<Value = TestOperation> {
-    (any_positive_amount(), arb_positive_period_id())
-        .prop_map(|(amount, period_id)| TestOperation::DepositRevenue { amount, period_id })
+    (any_positive_amount(), arb_positive_period_id()).prop_map(|(amount, period_id)| {
+        let (issuer, namespace, token, payment_token) = new_identity();
+        TestOperation::DepositRevenue { issuer, namespace, token, payment_token, amount, period_id }
+    })
 }
 
 /// Strategy for a single valid `SetHolderShare` operation.
 pub fn arb_set_holder_share() -> impl Strategy<Value = TestOperation> {
-    (any::<u8>(), arb_valid_bps())
-        .prop_map(|(holder_index, share_bps)| TestOperation::SetHolderShare { holder_index, share_bps })
+    arb_valid_bps().prop_map(|share_bps| {
+        let (issuer, namespace, token, _) = new_identity();
+        let holder = Address::generate(&Env::default());
+        TestOperation::SetHolderShare { issuer, namespace, token, holder, share_bps }
+    })
 }
 
 /// Strategy for a single `BlacklistAdd` operation.
 pub fn arb_blacklist_add() -> impl Strategy<Value = TestOperation> {
-    any::<u8>().prop_map(|target_index| TestOperation::BlacklistAdd { target_index })
+    Just(()).prop_map(|_| {
+        let (issuer, namespace, token, _) = new_identity();
+        let caller = Address::generate(&Env::default());
+        let investor = Address::generate(&Env::default());
+        TestOperation::BlacklistAdd { caller, issuer, namespace, token, investor }
+    })
 }
 
 /// Strategy for a single `BlacklistRemove` operation.
 pub fn arb_blacklist_remove() -> impl Strategy<Value = TestOperation> {
-    any::<u8>().prop_map(|target_index| TestOperation::BlacklistRemove { target_index })
+    Just(()).prop_map(|_| {
+        let (issuer, namespace, token, _) = new_identity();
+        let caller = Address::generate(&Env::default());
+        let investor = Address::generate(&Env::default());
+        TestOperation::BlacklistRemove { caller, issuer, namespace, token, investor }
+    })
 }
 
 /// Strategy for a single `SetConcentrationLimit` operation.
@@ -221,7 +298,7 @@ pub fn arb_set_concentration_limit() -> impl Strategy<Value = TestOperation> {
 /// Strategy for any single valid operation (uniform distribution across all variants).
 pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
     prop_oneof![
-        arb_register_offering(, &None),
+        arb_register_offering(),
         arb_report_revenue(),
         arb_deposit_revenue(),
         arb_set_holder_share(),
@@ -241,7 +318,8 @@ pub fn any_test_operation() -> impl Strategy<Value = TestOperation> {
 
 /// Strategy for a single `ReportConcentration` operation.
 pub fn arb_report_concentration() -> impl Strategy<Value = TestOperation> {
-    arb_valid_bps().prop_map(|concentration_bps| TestOperation::ReportConcentration { concentration_bps })
+    arb_valid_bps()
+        .prop_map(|concentration_bps| TestOperation::ReportConcentration { concentration_bps })
 }
 
 /// Strategy for any single valid operation (uniform distribution).

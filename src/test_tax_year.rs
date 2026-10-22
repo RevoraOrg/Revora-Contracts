@@ -4,7 +4,7 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,7 +34,18 @@ fn setup_env(ts: u64) -> (Env, RevoraRevenueShareClient<'static>, Address, Addre
     let payout_asset = crate::test_utils::create_token(&env, &payout_admin);
     crate::test_utils::mint_tokens(&env, &payout_asset, &issuer, 1_000_000);
 
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &10_000, &payout_asset, &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &10_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     (env, client, issuer, token, payout_asset)
 }
@@ -52,11 +63,7 @@ fn fiscal_year_config_default_and_roundtrip() {
     let ns = symbol_short!("def");
 
     // Default is January (1).
-    assert_eq!(
-        client.get_fiscal_year_start(&issuer, &ns, &token),
-        1,
-        "default should be January",
-    );
+    assert_eq!(client.get_fiscal_year_start(&issuer, &ns, &token), 1, "default should be January",);
 
     // Set to April (4).
     client.set_fiscal_year_start(&issuer, &ns, &token, &4);
@@ -84,7 +91,7 @@ fn year_boundary_april_start() {
     let holder = Address::generate(&env);
 
     // Holder gets 100% share.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
     // Configure fiscal year starting in April (4).
     client.set_fiscal_year_start(&issuer, &ns, &token, &4);
@@ -124,7 +131,7 @@ fn multi_year_holder_accumulates_correctly() {
     let ns = symbol_short!("def");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
     // Jan 2024: deposit & claim → FY2024 (Jan start).
     set_time(&env, TS_JAN_2024);
@@ -161,7 +168,7 @@ fn fiscal_year_january_default() {
     let ns = symbol_short!("def");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
 
     // Jan 2024 → FY2024.
     set_time(&env, TS_JAN_2024);

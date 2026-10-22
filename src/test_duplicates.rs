@@ -29,6 +29,8 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &5000,
@@ -63,6 +65,8 @@ fn test_register_duplicate_offering_is_idempotent() {
     // First registration
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &5000,
@@ -79,6 +83,8 @@ fn test_register_duplicate_offering_is_idempotent() {
     // Second registration (same identity, different bps)
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &6000,
@@ -108,6 +114,8 @@ fn test_pagination_stability_with_idempotency() {
     // Register A, then B, then A again
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token_a,
         &1000,
@@ -118,6 +126,8 @@ fn test_pagination_stability_with_idempotency() {
     );
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token_b,
         &2000,
@@ -128,6 +138,8 @@ fn test_pagination_stability_with_idempotency() {
     );
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token_a,
         &3000,
@@ -154,6 +166,8 @@ fn test_get_offering_matches_first_registration() {
 
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &1000,
@@ -164,6 +178,8 @@ fn test_get_offering_matches_first_registration() {
     );
     client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &namespace,
         &token,
         &2000,

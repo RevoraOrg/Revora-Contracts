@@ -24,7 +24,6 @@
 use core::fmt::Debug;
 
 use crate::{DataKey2, RevoraError};
-#[deny(clippy::arithmetic_side_effects)]
 use soroban_sdk::{Address, Bytes, BytesN, Env};
 
 // ─────────────────────────────────────────────────────────────────────────────

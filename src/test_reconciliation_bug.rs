@@ -13,7 +13,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal};
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -27,7 +27,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient {
 /// Returns (token_contract_address, admin_address).
 fn create_payment_token(env: &Env) -> (Address, Address) {
     let admin = Address::generate(env);
-    let token_id = env.register_stellar_asset_contract(admin.clone());
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
     (token_id, admin)
 }
 
@@ -42,13 +42,13 @@ fn setup_offering_with_payment_token(
 ) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let (payment_token, _pt_admin) = create_payment_token(&env);
 
     // Register offering (5000 bps = 50% revenue share)
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &5_000, &payment_token, &0, &symbol_short!(""), &0);
 
     // Mint payment tokens to the issuer so they can deposit
     mint_tokens(&env, &payment_token, &issuer, 10_000_000);

@@ -4,6 +4,7 @@ use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use proptest::prelude::*;
 use soroban_sdk::{
     symbol_short,
+    testutils::{Address as _, Events as _},
     Address, Env, Vec,
 };
 
@@ -16,7 +17,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 fn setup_offering(env: &Env, issuer: &Address, token: &Address, ns: &soroban_sdk::Symbol) {
     let client = make_client(env);
     client.initialize(issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(issuer, ns, token, &1000u32, token, &0_i128);
+    client.register_offering(issuer, &Vec::new(&env), &1u32, ns, token, &1000u32, token, &0_i128, &symbol_short!(""), &0u32);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -101,7 +102,7 @@ proptest! {
         let ns = symbol_short!("def");
 
         setup_offering(&env, &issuer, &token, &ns);
-        let client = make_client(&env);
+        let client = make_client(&env.clone());
 
         // Prebuild a stable pool of 256 addresses.
         // Duplicates/overlaps are intentionally produced because u8 values are mapped by index.

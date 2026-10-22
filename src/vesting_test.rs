@@ -451,7 +451,7 @@ fn test_accelerate_vesting_idempotent() {
     let beneficiary = Address::generate(&env);
     let token = Address::generate(&env);
     
-    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear);
+    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear, &0);
     
     let trigger_id = symbol_short!("acq");
     client.accelerate_vesting(&beneficiary, &trigger_id, &5000u32);
@@ -472,7 +472,7 @@ fn test_accelerate_vesting_invalid_bps() {
     let beneficiary = Address::generate(&env);
     let token = Address::generate(&env);
     
-    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear);
+    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &200, &1200, &VestingCurve::Linear, &0);
     
     let trigger_id = symbol_short!("ipo");
     
@@ -495,7 +495,7 @@ fn test_vested_progress_at() {
 
     // Register 1000 tokens, cliff at 100, start at 100, end at 1100
     // Total duration = 1000. So 1 token per 1 tick.
-    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &100, &1100, &VestingCurve::Linear);
+    client.vesting_register(&issuer, &beneficiary, &token, &1000, &100, &100, &1100, &VestingCurve::Linear, &0);
 
     // Test at cliff - 1 (ts: 99). Vested = 0. BPS = 0
     let progress_before_cliff = client.vested_progress_at(&offering_id, &beneficiary, &99);
@@ -512,4 +512,50 @@ fn test_vested_progress_at() {
     // Test at end + 1 (ts: 1101). Vested = 1000. BPS = 10000 (100%)
     let progress_after_end = client.vested_progress_at(&offering_id, &beneficiary, &1101);
     assert_eq!(progress_after_end, 10000);
+}
+
+#[test]
+fn test_cliff_secs_gate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &contract_id);
+    
+    let issuer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = Address::generate(&env);
+    
+    // Total 1000, start 100, end 1100. Cliff secs = 50.
+    client.vesting_register(
+        &issuer,
+        &beneficiary,
+        &token,
+        &1000,
+        &100, // cliff_ts
+        &100, // start_ts
+        &1100, // end_ts
+        &VestingCurve::Linear,
+        &50 // cliff_secs
+    );
+    
+    // At ts 149 (before start + cliff_secs)
+    env.ledger().with_mut(|l| l.timestamp = 149);
+    let claimable_err = client.try_vesting_claim(&beneficiary).unwrap_err();
+    assert_eq!(claimable_err.unwrap().unwrap(), VestingError::VestingCliffNotReached as u32);
+    
+    let progress = client.vested_progress_at(&VestingOfferingId { issuer: issuer.clone(), token: token.clone() }, &beneficiary, &149);
+    assert_eq!(progress, 0);
+
+    let vested_amt = client.get_vested_amount(&beneficiary).unwrap();
+    assert_eq!(vested_amt, 0);
+    
+    // At ts 150 (exactly start + cliff_secs)
+    env.ledger().with_mut(|l| l.timestamp = 150);
+    let progress_at_cliff = client.vested_progress_at(&VestingOfferingId { issuer: issuer.clone(), token: token.clone() }, &beneficiary, &150);
+    // Vested should be 50 tokens (since 1000 duration, 1 token per sec, 50 secs elapsed).
+    // BPS = 50 / 1000 = 5% = 500
+    assert_eq!(progress_at_cliff, 500);
+
+    let vested_amt_at_cliff = client.get_vested_amount(&beneficiary).unwrap();
+    assert_eq!(vested_amt_at_cliff, 50);
 }
