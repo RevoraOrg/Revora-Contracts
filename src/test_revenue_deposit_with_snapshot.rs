@@ -1,3 +1,4 @@
+
 //! Adversarial coverage for `deposit_revenue_with_snapshot` (issue #1133).
 //!
 //! `deposit_revenue_with_snapshot` folds snapshot-reference validation, issuer
@@ -19,6 +20,7 @@
 //! | snapshots never enabled                     | `SnapshotNotEnabled`, no state      |
 //! | snapshots disabled after a deposit          | `SnapshotNotEnabled`, ref kept      |
 //! | caller is not the offering issuer           | `SnapshotNotEnabled`, no state      |
+//! | finalization required, unfinalized ref      | `SnapshotNotFinalized`, no state    |
 
 #![cfg(test)]
 
@@ -287,6 +289,29 @@ fn deposit_with_snapshot_rejects_when_snapshots_are_disabled() {
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
+    assert_eq!(client.get_last_snapshot_ref(&issuer, &namespace(), &token), 0);
+}
+
+#[test]
+fn deposit_with_snapshot_rejects_unfinalized_reference_when_finalization_required() {
+    let (_env, client, issuer, token, payment_token) = setup();
+    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_finalization_required(&issuer, &true);
+
+    let result = client.try_deposit_revenue_with_snapshot(
+        &issuer,
+        &namespace(),
+        &token,
+        &payment_token,
+        &1_000,
+        &1,
+        &1,
+    );
+
+    assert!(matches!(
+        result.err(),
+        Some(Ok(RevoraError::SnapshotNotFinalized))
+    ));
     assert_eq!(client.get_last_snapshot_ref(&issuer, &namespace(), &token), 0);
 }
 
