@@ -600,6 +600,8 @@ const EVENT_ROYALTY_PAID: Symbol = symbol_short!("roy_paid");
 const EVENT_INDEXED_V2: Symbol = symbol_short!("ev_idx2");
 const EVENT_INDEXED_V3: Symbol = symbol_short!("ev_idx3");
 pub const MAX_PROOF_DEPTH: u32 = 32;
+/// Maximum number of holders accepted by `simulate_distribution`.
+pub const MAX_SIMULATION_HOLDERS: u32 = 100;
 /// Emitted when a Merkle proof is rejected because its depth exceeds `MAX_PROOF_DEPTH`.
 ///
 /// Topics: `(prf_rej_d, caller)`
@@ -861,9 +863,9 @@ const EVENT_CLAIM_DELAY_SET: Symbol = symbol_short!("dly_set");
 /// A `migrate_storage` call must pass a version strictly greater than the
 /// currently deployed version. Downgrades and no-op migrations are rejected.
 /// Bumped when storage or semantics change; used for migration and compatibility.
-pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 23);
+pub const CONTRACT_VERSION: (u32, u32, u32) = (1, 0, 24);
 /// Persistent storage layout version. Bump when adding/renaming DataKey variants.
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 /// Assert that `to` is a strict forward semver upgrade over `from`.
 ///
@@ -933,6 +935,26 @@ pub enum FreezeReason {
     CourtOrder = 5,
     IssuerDispute = 6,
     Manual = 7,
+}
+
+/// Role that imposed an offering or holder-reason freeze.
+/// Admin authority takes precedence and can only be cleared by the current admin.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreezeAuthority {
+    Admin,
+    Issuer,
+}
+
+/// Additive authority metadata; legacy flags/masks keep their existing encoding.
+/// A live freeze without metadata is treated as admin-imposed (fail closed).
+#[contracttype]
+#[derive(Clone)]
+pub enum FreezeDataKey {
+    /// Authority for an offering's `DataKey2::FrozenOffering` flag.
+    OfferingAuthority(OfferingId),
+    /// Authority for one active bit in `DataKey2::HolderFreezeMask`.
+    HolderAuthority(OfferingId, Address, FreezeReason),
 }
 
 impl FreezeReason {
@@ -1759,7 +1781,14 @@ pub(crate) enum DataKey {
     /// Per-offering: rounding mode for share math.
     RoundingMode(OfferingId),
     /// Per-offering: revenue reports map (period_id -> (amount, timestamp)).
+    /// DEPRECATED: Use RevenueReport + ReportPeriodEntry/ReportPeriodCount instead.
     RevenueReports(OfferingId),
+    /// Per-offering per period: individual revenue report (amount, timestamp).
+    RevenueReport(OfferingId, u64),
+    /// Per-offering: count of reported periods for enumeration.
+    ReportPeriodCount(OfferingId),
+    /// Per-offering per index: period_id for reported period enumeration.
+    ReportPeriodEntry(OfferingId, u32),
     /// Per-offering per period: cumulative reported revenue amount.
     RevenueIndex(OfferingId, u64),
     /// Revenue amount deposited for (offering_id, period_id).
@@ -2591,60 +2620,46 @@ impl RevoraRevenueShare {
             .unwrap_or(false)
     }
 
-    /// Selection-sort holder indices by (share_bps desc, address asc).
+    /// Insertion-sort holder indices by (share_bps desc, address XDR asc).
     fn sort_holder_indices(
         env: &Env,
         bps_vec: &Vec<u32>,
         addr_vec: &Vec<Address>,
         n: u32,
     ) -> Vec<u32> {
-        // 256-bit bitmask across four u64 words; covers n ≤ 255.
-        let mut selected: [u64; 4] = [0u64; 4];
-        let mut sorted = Vec::<u32>::new(env);
+        let mut sorted_keys = Vec::<(u32, Bytes, u32)>::new(env);
 
-        for _ in 0..n {
-            let mut best: u32 = u32::MAX;
-            let mut best_bps: u32 = 0;
+        for i in 0..n {
+            let share_bps = bps_vec.get(i).unwrap();
+            let address_xdr = addr_vec.get(i).unwrap().to_xdr(env);
+            let mut insert_at = sorted_keys.len();
 
-            for j in 0..n {
-                let word = (j / 64) as usize;
-                let bit = j % 64;
-                if (selected[word] >> bit) & 1 == 1 {
-                    continue;
-                }
-                let j_bps = bps_vec.get(j).unwrap();
-                let better = best == u32::MAX
-                    || j_bps > best_bps
-                    || (j_bps == best_bps && {
-                        let j_addr = addr_vec.get(j).unwrap();
-                        let b_addr = addr_vec.get(best).unwrap();
-                        Self::addr_lt(env, &j_addr, &b_addr)
-                    });
-                if better {
-                    best = j;
-                    best_bps = j_bps;
+            for j in 0..sorted_keys.len() {
+                let (sorted_bps, sorted_xdr, _) = sorted_keys.get(j).unwrap();
+                if share_bps > sorted_bps
+                    || (share_bps == sorted_bps && Self::xdr_bytes_lt(&address_xdr, &sorted_xdr))
+                {
+                    insert_at = j;
+                    break;
                 }
             }
 
-            if best != u32::MAX {
-                let word = (best / 64) as usize;
-                let bit = best % 64;
-                selected[word] |= 1u64 << bit;
-                sorted.push_back(best);
-            }
+            sorted_keys.insert(insert_at, (share_bps, address_xdr, i));
         }
 
+        let mut sorted = Vec::<u32>::new(env);
+        for (_, _, index) in sorted_keys.iter() {
+            sorted.push_back(index);
+        }
         sorted
     }
 
-    /// Returns `true` iff `a`'s XDR encoding is lexicographically less than `b`'s.
-    fn addr_lt(env: &Env, a: &Address, b: &Address) -> bool {
-        let ba = a.to_xdr(env);
-        let bb = b.to_xdr(env);
-        let min_len = ba.len().min(bb.len());
+    /// Returns `true` iff `a` is lexicographically less than `b`.
+    fn xdr_bytes_lt(a: &Bytes, b: &Bytes) -> bool {
+        let min_len = a.len().min(b.len());
         for i in 0..min_len {
-            let byte_a: u32 = ba.get(i).unwrap().into();
-            let byte_b: u32 = bb.get(i).unwrap().into();
+            let byte_a: u32 = a.get(i).unwrap().into();
+            let byte_b: u32 = b.get(i).unwrap().into();
             if byte_a < byte_b {
                 return true;
             }
@@ -2652,7 +2667,7 @@ impl RevoraRevenueShare {
                 return false;
             }
         }
-        ba.len() < bb.len()
+        a.len() < b.len()
     }
 
     /// Return the effective fee bps for (offering, asset): offering override > platform asset > platform global.
@@ -4389,26 +4404,53 @@ impl RevoraRevenueShare {
         env: &Env,
         offering_id: &OfferingId,
     ) -> (AuditSummary, bool) {
-        let reports_key = DataKey::RevenueReports(offering_id.clone());
-        let reports: Map<u64, (i128, u64)> =
-            env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(env));
+        // Try new storage layout first
+        let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
         let mut total_revenue: i128 = 0;
         let mut is_saturated = false;
-        let keys = reports.keys();
-        for i in 0..keys.len() {
-            let period_id = keys.get(i).unwrap();
-            if let Some((amount, _)) = reports.get(period_id) {
-                if let Ok(next) = total_revenue.s_add(amount) {
-                    total_revenue = next;
-                } else {
-                    is_saturated = true;
-                    total_revenue = i128::MAX;
+        let mut report_count: u64 = 0;
+
+        if count > 0 {
+            // New layout: iterate over ReportPeriodEntry
+            for i in 0..count {
+                let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), i);
+                if let Some(period_id) = env.storage().persistent().get::<DataKey, u64>(&entry_key) {
+                    let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
+                    if let Some((amount, _)) = env.storage().persistent().get::<DataKey, (i128, u64)>(&report_key) {
+                        if let Ok(next) = total_revenue.s_add(amount) {
+                            total_revenue = next;
+                        } else {
+                            is_saturated = true;
+                            total_revenue = i128::MAX;
+                        }
+                        report_count = report_count.s_add(1).unwrap_or(u64::MAX);
+                    }
                 }
             }
+        } else {
+            // Legacy fallback: use RevenueReports map
+            let reports_key = DataKey::RevenueReports(offering_id.clone());
+            let reports: Map<u64, (i128, u64)> =
+                env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(env));
+
+            let keys = reports.keys();
+            for i in 0..keys.len() {
+                let period_id = keys.get(i).unwrap();
+                if let Some((amount, _)) = reports.get(period_id) {
+                    if let Ok(next) = total_revenue.s_add(amount) {
+                        total_revenue = next;
+                    } else {
+                        is_saturated = true;
+                        total_revenue = i128::MAX;
+                    }
+                }
+            }
+            report_count = reports.len() as u64;
         }
 
-        (AuditSummary { total_revenue, report_count: reports.len() as u64 }, is_saturated)
+        (AuditSummary { total_revenue, report_count }, is_saturated)
     }
 
     /// Initialize the contract with an admin and an optional safety role.
@@ -5202,7 +5244,21 @@ impl RevoraRevenueShare {
         Ok(())
     }
 
-    // â”€â”€ Offering management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    /// Helper: block only when the contract is HardPaused. Claim and other
+    /// holder outflows remain allowed under SoftPaused per the pause tier docs.
+    fn require_not_hard_paused(env: &Env) -> Result<(), RevoraError> {
+        let state = env
+            .storage()
+            .persistent()
+            .get::<DataKey, PauseState>(&DataKey::Paused)
+            .unwrap_or(PauseState::NotPaused);
+        if state == PauseState::HardPaused {
+            return Err(RevoraError::ContractPaused);
+        }
+        Ok(())
+    }
+
+    // â”€â”€ Offering management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Register a new revenue-share offering.
     ///
@@ -6004,12 +6060,22 @@ impl RevoraRevenueShare {
                 (amount, payout_asset.clone()),
             );
         } else {
-            let reports_key = DataKey::RevenueReports(offering_id.clone());
-            let mut reports: Map<u64, (i128, u64)> =
-                env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+            let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
             let idx_key = DataKey::RevenueIndex(offering_id.clone(), period_id);
 
-            match reports.get(period_id) {
+            // Try to get existing report from new storage first, then fall back to legacy map
+            let existing_report: Option<(i128, u64)> = env.storage().persistent().get(&report_key);
+            let existing_report = if existing_report.is_none() {
+                // Legacy fallback: check the old RevenueReports map
+                let reports_key = DataKey::RevenueReports(offering_id.clone());
+                let reports: Map<u64, (i128, u64)> =
+                    env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+                reports.get(period_id)
+            } else {
+                existing_report
+            };
+
+            match existing_report {
                 Some((existing_amount, _)) => {
                     if !override_existing {
                         env.events().publish(
@@ -6056,8 +6122,8 @@ impl RevoraRevenueShare {
                     }
 
                     actual_override = true;
-                    reports.set(period_id, (amount, current_timestamp));
-                    env.storage().persistent().set(&reports_key, &reports);
+                    // Write to new per-period key
+                    env.storage().persistent().set(&report_key, &(amount, current_timestamp));
                     env.storage().persistent().set(&idx_key, &amount);
 
                     let summary_key = DataKey::AuditSummary(offering_id.clone());
@@ -6166,10 +6232,17 @@ impl RevoraRevenueShare {
                     }
 
                     actual_initial = true;
-                    reports.set(period_id, (amount, current_timestamp));
-                    env.storage().persistent().set(&reports_key, &reports);
+                    // Write to new per-period key
+                    env.storage().persistent().set(&report_key, &(amount, current_timestamp));
                     env.storage().persistent().set(&idx_key, &amount);
                     Self::commit_period_id(&env, last_report_period_key.clone(), period_id);
+
+                    // Append to reported period index for enumeration
+                    let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+                    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+                    let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), count);
+                    env.storage().persistent().set(&entry_key, &period_id);
+                    env.storage().persistent().set(&count_key, &(count + 1));
 
                     let summary_key = DataKey::AuditSummary(offering_id.clone());
                     let mut summary: AuditSummary = env
@@ -6388,6 +6461,86 @@ impl RevoraRevenueShare {
         );
 
         Ok(corrected)
+    }
+
+    /// Migrate legacy `RevenueReports` map to the new per-period storage layout.
+    ///
+    /// This function reads all entries from the legacy `RevenueReports` map and writes
+    /// them to the new `RevenueReport` keys and `ReportPeriodEntry`/`ReportPeriodCount` index.
+    /// It is idempotent: calling it multiple times will not duplicate data.
+    ///
+    /// ### Auth
+    /// Only the current issuer or the contract admin may call this.
+    ///
+    /// ### Returns
+    /// The number of reports migrated.
+    pub fn migrate_revenue_reports(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+    ) -> Result<u32, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        // Auth: caller must be current issuer or admin.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone()).ok_or(RevoraError::NotInitialized)?;
+        if caller != current_issuer && caller != admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: namespace.clone(),
+            token: token.clone(),
+        };
+
+        // Check if migration already done (ReportPeriodCount exists and > 0)
+        let count_key = DataKey::ReportPeriodCount(offering_id.clone());
+        let existing_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if existing_count > 0 {
+            return Ok(0); // Already migrated
+        }
+
+        // Read legacy RevenueReports map
+        let reports_key = DataKey::RevenueReports(offering_id.clone());
+        let reports: Map<u64, (i128, u64)> =
+            env.storage().persistent().get(&reports_key).unwrap_or_else(|| Map::new(&env));
+
+        let keys = reports.keys();
+        let mut migrated: u32 = 0;
+
+        for i in 0..keys.len() {
+            let period_id = keys.get(i).unwrap();
+            if let Some((amount, timestamp)) = reports.get(period_id) {
+                // Write to new per-period key
+                let report_key = DataKey::RevenueReport(offering_id.clone(), period_id);
+                env.storage().persistent().set(&report_key, &(amount, timestamp));
+
+                // Append to reported period index
+                let entry_key = DataKey::ReportPeriodEntry(offering_id.clone(), migrated);
+                env.storage().persistent().set(&entry_key, &period_id);
+                migrated = migrated.s_add(1).unwrap_or(u32::MAX);
+            }
+        }
+
+        // Write the count
+        if migrated > 0 {
+            env.storage().persistent().set(&count_key, &migrated);
+        }
+
+        // Emit migration event
+        Self::emit_v2_event(
+            &env,
+            (symbol_short!("rev_mig"), issuer, namespace, token),
+            (migrated,),
+        );
+
+        Ok(migrated)
     }
 
     /// Read-only comparison between the stored `AuditSummary` cache and the
@@ -10179,6 +10332,11 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NoPendingClaims);
         }
 
+        // #1313: HardPaused blocks every state-mutating outflow including claim;
+        // SoftPaused still permits claims. Global freeze blocks all outflows.
+        Self::require_not_hard_paused(&env)?;
+        Self::require_not_frozen(&env)?;
+
         Self::require_claim_window_open(&env, &offering_id)?;
 
         let count_key = DataKey::PeriodCount(offering_id.clone());
@@ -10188,6 +10346,13 @@ impl RevoraRevenueShare {
         let start_idx: u32 = env.storage().persistent().get(&idx_key).unwrap_or(0);
 
         if start_idx >= period_count {
+            return Err(RevoraError::NoPendingClaims);
+        }
+
+        // #1312: a holder with no share schedule has nothing claimable.
+        let holder_schedule =
+            Self::get_holder_share_schedule(&env, &offering_id, &holder);
+        if holder_schedule.is_empty() {
             return Err(RevoraError::NoPendingClaims);
         }
 
@@ -10240,17 +10405,16 @@ impl RevoraRevenueShare {
             if delay_secs > 0 && now < deposit_time.saturating_add(delay_secs) {
                 break;
             }
-            let rev_key = DataKey::PeriodRevenue(offering_id.clone(), period_id);
-            let revenue: i128 = env.storage().persistent().get(&rev_key).unwrap();
-            let decimals = Self::get_payment_token_decimals(
-                env.clone(),
-                offering_id.issuer.clone(),
-                offering_id.namespace.clone(),
-                offering_id.token.clone(),
+            // #1312: pay each period at the share in effect during that period
+            // (walking the HolderShareSchedule), matching get_claimable's preview.
+            let payout = Self::compute_holder_payout_for_range(
+                &env,
+                &offering_id,
+                &holder,
+                i,
+                i.saturating_add(1),
             );
-            let normalized = Self::normalize_amount(revenue, decimals);
-            let payout = normalized * (share_bps as i128) / 10_000;
-            total_payout += payout;
+            total_payout = total_payout.saturating_add(payout);
             claimed_periods.push_back(period_id);
             last_claimed_idx = i + 1;
         }
@@ -10287,7 +10451,16 @@ impl RevoraRevenueShare {
             );
         }
 
-        // Transfer only if there is a positive payout
+        // #1312: include anchor/settled amounts so transfer == returned == event amount.
+        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
+        if let Some(a) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key) {
+            if start_idx <= a.end_idx && a.end_idx < last_claimed_idx {
+                total_payout = total_payout.saturating_add(a.claimable_sum);
+                env.storage().persistent().remove(&anchor_key);
+            }
+        }
+
+        // Transfer only if there is a positive payout (transfer == returned == event).
         if total_payout > 0 {
             let payment_token = Self::get_locked_payment_token_for_offering(&env, &offering_id)
                 .ok_or(RevoraError::PaymentTokenMismatch)?;
@@ -10301,14 +10474,6 @@ impl RevoraRevenueShare {
         }
         // Advance claim index only for periods actually claimed (respecting delay)
         env.storage().persistent().set(&idx_key, &last_claimed_idx);
-
-        let anchor_key = DataKey2::AccrualAnchor(offering_id.clone(), holder.clone());
-        if let Some(a) = env.storage().persistent().get::<DataKey2, AccrualAnchor>(&anchor_key) {
-            if start_idx <= a.end_idx && a.end_idx < last_claimed_idx {
-                total_payout = total_payout.saturating_add(a.claimable_sum);
-                env.storage().persistent().remove(&anchor_key);
-            }
-        }
 
         // Versioned v2 event: [2, holder, total_payout, periods] ΓÇö always emitted (#RC26Q2-C31)
         Self::emit_v2_event(
@@ -11859,7 +12024,7 @@ impl RevoraRevenueShare {
         amount: i128,
     ) -> Result<i128, RevoraError> {
         Self::require_not_frozen(&env)?;
-        Self::require_not_paused(&env)?;
+        Self::require_not_hard_paused(&env)?;
         issuer.require_auth();
 
         let offering_id = OfferingId {
@@ -12585,6 +12750,7 @@ impl RevoraRevenueShare {
     /// Read-only: simulate distribution for sample inputs without mutating state.
     /// Returns expected payouts per holder and total. Uses offering's rounding mode.
     /// For integrators to preview outcomes before executing deposit/claim flows.
+    /// Returns `LimitReached` for more than `MAX_SIMULATION_HOLDERS` holders or duplicates.
     pub fn simulate_distribution(
         env: Env,
         issuer: Address,
@@ -12592,7 +12758,25 @@ impl RevoraRevenueShare {
         token: Address,
         amount: i128,
         holder_shares: Vec<(Address, u32)>,
-    ) -> SimulateDistributionResult {
+    ) -> Result<SimulateDistributionResult, RevoraError> {
+        let n = holder_shares.len();
+        if n > MAX_SIMULATION_HOLDERS {
+            return Err(RevoraError::LimitReached);
+        }
+
+        let mut addr_vec = Vec::<Address>::new(&env);
+        let mut bps_vec = Vec::<u32>::new(&env);
+        let mut seen_holders = Map::<Address, bool>::new(&env);
+        for i in 0..n {
+            let (h, b) = holder_shares.get(i).unwrap();
+            if seen_holders.contains_key(h.clone()) {
+                return Err(RevoraError::LimitReached);
+            }
+            seen_holders.set(h.clone(), true);
+            addr_vec.push_back(h);
+            bps_vec.push_back(b);
+        }
+
         let offering_id = OfferingId {
             issuer: issuer.clone(),
             namespace: namespace.clone(),
@@ -12602,17 +12786,6 @@ impl RevoraRevenueShare {
         let classes: Option<Vec<(ShareClass, ClassConfig)>> =
             env.storage().persistent().get(&classes_key);
         let mode = Self::get_rounding_mode(env.clone(), issuer, namespace, token.clone());
-
-        let n = holder_shares.len();
-
-        // Extract parallel vecs for the sort helper.
-        let mut addr_vec = Vec::<Address>::new(&env);
-        let mut bps_vec = Vec::<u32>::new(&env);
-        for i in 0..n {
-            let (h, b) = holder_shares.get(i).unwrap();
-            addr_vec.push_back(h);
-            bps_vec.push_back(b);
-        }
 
         let sorted_idx = Self::sort_holder_indices(&env, &bps_vec, &addr_vec, n);
 
@@ -12655,7 +12828,7 @@ impl RevoraRevenueShare {
             total = total.saturating_add(payout);
             payouts.push_back((holder.clone(), payout));
         }
-        SimulateDistributionResult { total_distributed: total, payouts }
+        Ok(SimulateDistributionResult { total_distributed: total, payouts })
     }
 
     // â”€â”€ Issuer two-step transfer (#258) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -13010,15 +13183,27 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::FrozenOffering(offering_id);
+        let key = DataKey2::FrozenOffering(offering_id.clone());
+        let authority_key = FreezeDataKey::OfferingAuthority(offering_id);
+        let was_frozen = env.storage().persistent().get::<_, bool>(&key).unwrap_or(false);
+        let previous = env.storage().persistent().get::<_, FreezeAuthority>(&authority_key);
+        // Missing metadata on an active legacy freeze must never grant issuer access.
+        let authority = if is_admin || (was_frozen && previous != Some(FreezeAuthority::Issuer)) {
+            FreezeAuthority::Admin
+        } else {
+            FreezeAuthority::Issuer
+        };
+        env.storage().persistent().set(&authority_key, &authority);
         env.storage().persistent().set(&key, &true);
-        env.events().publish((EVENT_FREEZE_OFFERING, issuer, namespace, token), (caller, true));
+        env.events()
+            .publish((EVENT_FREEZE_OFFERING, issuer, namespace, token), (caller, true, authority));
         Ok(())
     }
 
     /// Unfreeze a single offering.
     ///
-    /// Authorization mirrors `freeze_offering`: issuer or admin.
+    /// Issuers may clear issuer-imposed freezes; only the admin may clear admin
+    /// or legacy freezes. Unfreezing an already-unfrozen offering remains a no-op.
     pub fn unfreeze_offering(
         env: Env,
         caller: Address,
@@ -13044,9 +13229,28 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
-        let key = DataKey2::FrozenOffering(offering_id);
+        let key = DataKey2::FrozenOffering(offering_id.clone());
+        let authority_key = FreezeDataKey::OfferingAuthority(offering_id);
+        let was_frozen = env.storage().persistent().get::<_, bool>(&key).unwrap_or(false);
+        let authority = if was_frozen {
+            env.storage()
+                .persistent()
+                .get::<_, FreezeAuthority>(&authority_key)
+                .unwrap_or(FreezeAuthority::Admin)
+        } else if is_admin {
+            FreezeAuthority::Admin
+        } else {
+            FreezeAuthority::Issuer
+        };
+        if was_frozen && authority == FreezeAuthority::Admin && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
         env.storage().persistent().set(&key, &false);
-        env.events().publish((EVENT_UNFREEZE_OFFERING, issuer, namespace, token), (caller, false));
+        env.storage().persistent().remove(&authority_key);
+        env.events().publish(
+            (EVENT_UNFREEZE_OFFERING, issuer, namespace, token),
+            (caller, false, authority),
+        );
         Ok(())
     }
 
@@ -13117,10 +13321,20 @@ impl RevoraRevenueShare {
         });
 
         let reason_bit = reason.to_bitmask();
-        if current_mask & reason_bit != 0 {
-            // Reason already active — idempotent no-op (do not emit duplicate event).
+        let authority_key = FreezeDataKey::HolderAuthority(offering_id, holder.clone(), reason);
+        let previous = env
+            .storage()
+            .persistent()
+            .get::<_, FreezeAuthority>(&authority_key)
+            .unwrap_or(FreezeAuthority::Admin);
+        let already_frozen = current_mask & reason_bit != 0;
+        if already_frozen && (!is_admin || previous == FreezeAuthority::Admin) {
+            // Preserve idempotency and never downgrade an existing admin/legacy reason.
             return Ok(());
         }
+        let authority = if is_admin { FreezeAuthority::Admin } else { FreezeAuthority::Issuer };
+        // An admin re-freeze upgrades an issuer-owned reason and emits the new authority.
+        env.storage().persistent().set(&authority_key, &authority);
 
         current_mask |= reason_bit;
 
@@ -13130,7 +13344,10 @@ impl RevoraRevenueShare {
         }
 
         env.storage().persistent().set(&key, &current_mask);
-        env.events().publish((EVENT_FRZ_SET, issuer, namespace, token), (caller, holder, reason));
+        env.events().publish(
+            (EVENT_FRZ_SET, issuer, namespace, token),
+            (caller, holder, reason, authority),
+        );
         Ok(())
     }
 
@@ -13249,7 +13466,8 @@ impl RevoraRevenueShare {
     ///
     /// # Authorization
     /// Same as [`emergency_freeze_holder`]: caller must be the offering's current
-    /// issuer or the contract admin.
+    /// issuer or the contract admin. Admin-imposed and legacy reasons may only
+    /// be cleared by the admin; issuer-imposed reasons may be cleared by either.
     ///
     /// # Errors
     /// | Error | Condition |
@@ -13307,7 +13525,18 @@ impl RevoraRevenueShare {
             return Err(RevoraError::FreezeReasonMismatch);
         }
 
+        let authority_key = FreezeDataKey::HolderAuthority(offering_id, holder.clone(), reason);
+        let authority = env
+            .storage()
+            .persistent()
+            .get::<_, FreezeAuthority>(&authority_key)
+            .unwrap_or(FreezeAuthority::Admin);
+        if authority == FreezeAuthority::Admin && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
         let new_mask = current_mask & !reason_bit;
+        env.storage().persistent().remove(&authority_key);
 
         // Clean up legacy key if present.
         if env.storage().persistent().has(&legacy_key) {
@@ -13317,14 +13546,16 @@ impl RevoraRevenueShare {
         if new_mask == 0 {
             // All reasons cleared — full unfreeze.
             env.storage().persistent().remove(&key);
-            env.events()
-                .publish((EVENT_FRZ_CLR, issuer, namespace, token), (caller, holder, reason));
+            env.events().publish(
+                (EVENT_FRZ_CLR, issuer, namespace, token),
+                (caller, holder, reason, authority),
+            );
         } else {
             // Partial unfreeze — update mask and emit scoped event.
             env.storage().persistent().set(&key, &new_mask);
             env.events().publish(
                 (EVENT_FREEZE_REASON_CLEARED, issuer, namespace, token),
-                (caller, holder, reason, new_mask),
+                (caller, holder, reason, new_mask, authority),
             );
         }
 
@@ -13426,7 +13657,8 @@ impl RevoraRevenueShare {
     /// - `Err(RevoraError::ContractFrozen)` if the contract is globally frozen.
     ///
     /// ### Events
-    /// - Emits `auto_frz` with `(issuer, namespace, token)` topics and `(holder, attestation_hash)` data.
+    /// - Emits `auto_frz` with `(issuer, namespace, token)` topics and
+    ///   `(holder, attestation_hash, FreezeAuthority::Admin)` data.
     #[allow(clippy::too_many_arguments)]
     pub fn process_ofac_attestation(
         env: Env,
@@ -13477,11 +13709,23 @@ impl RevoraRevenueShare {
             env.storage()
                 .persistent()
                 .set(&fk, &(current_mask | FreezeReason::SanctionsMatch.to_bitmask()));
+            // Automatic sanctions holds are admin-owned, including when this bit
+            // was previously imposed by the issuer.
+            env.storage().persistent().set(
+                &FreezeDataKey::HolderAuthority(
+                    offering_id,
+                    holder.clone(),
+                    FreezeReason::SanctionsMatch,
+                ),
+                &FreezeAuthority::Admin,
+            );
         }
 
         // Emit structured event for audit trail
-        env.events()
-            .publish((EVENT_AUTO_FRZ, issuer, namespace, token), (holder, attestation_hash));
+        env.events().publish(
+            (EVENT_AUTO_FRZ, issuer, namespace, token),
+            (holder, attestation_hash, FreezeAuthority::Admin),
+        );
 
         Ok(())
     }
