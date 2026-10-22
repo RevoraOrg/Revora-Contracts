@@ -4109,6 +4109,9 @@ impl RevoraRevenueShare {
         payment_asset: Address,
         payment_amount: i128,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+
         issuer.require_auth();
         seller.require_auth();
         buyer.require_auth();
@@ -7929,6 +7932,8 @@ impl RevoraRevenueShare {
         amount_bps: u32,
         category: Symbol,
     ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
         Self::check_transfer_eligibility(
             &env, &issuer, &namespace, &token, &from, &to, amount_bps, &category,
         )?;
@@ -7949,6 +7954,9 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
             .unwrap_or(0);
+        if amount_bps > from_share {
+            return Err(RevoraError::InvalidAmount);
+        }
 
         let to_share: u32 = env
             .storage()
@@ -8004,6 +8012,32 @@ impl RevoraRevenueShare {
                 }
             }
         }
+
+        let new_from_share = from_share - amount_bps;
+        let new_to_share = to_share.saturating_add(amount_bps);
+
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            from.clone(),
+            new_from_share,
+            None,
+            None,
+        )?;
+        Self::set_holder_share_internal(
+            &env,
+            issuer.clone(),
+            namespace.clone(),
+            token.clone(),
+            to.clone(),
+            new_to_share,
+            None,
+            None,
+        )?;
+
+        env.events().publish((EVENT_XFER_ATT, issuer, namespace, token), (from, to, amount_bps));
 
         Ok(())
     }
@@ -16064,3 +16098,214 @@ mod test_storage_layout_version;
 mod secondary_market_royalty_adversarial_test;
 #[cfg(test)]
 mod test_offering_count_adversarial;
+
+#[cfg(test)]
+mod test_atomic_swap_share_transfer {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Events as _};
+
+    struct SwapCtx<'a> {
+        client: RevoraRevenueShareClient<'a>,
+        cid: Address,
+        admin: Address,
+        issuer: Address,
+        seller: Address,
+        buyer: Address,
+        token: Address,
+        payment_asset: Address,
+    }
+
+    fn read_share_total(env: &Env, cid: &Address, issuer: &Address, token: &Address) -> u32 {
+        let offering_id = OfferingId {
+            issuer: issuer.clone(),
+            namespace: symbol_short!("fee"),
+            token: token.clone(),
+        };
+        env.as_contract(cid, || {
+            env.storage().persistent().get(&DataKey::HolderShareTotal(offering_id)).unwrap_or(0)
+        })
+    }
+
+    fn setup(env: &Env, seller_bps: u32, buyer_balance: i128) -> SwapCtx<'_> {
+        env.mock_all_auths();
+        let cid = env.register_contract(None, RevoraRevenueShare);
+        let client = RevoraRevenueShareClient::new(env, &cid);
+        let admin = Address::generate(env);
+        let issuer = admin.clone();
+        let seller = Address::generate(env);
+        let buyer = Address::generate(env);
+        let token = Address::generate(env);
+        let payout_asset = Address::generate(env);
+        let ns = symbol_short!("fee");
+
+        client.initialize(&admin, &None::<Address>, &None::<bool>);
+        client.register_offering(
+            &issuer,
+            &Vec::new(env),
+            &1u32,
+            &ns,
+            &token,
+            &10_000,
+            &payout_asset,
+            &0,
+            &symbol_short!(""),
+            &0,
+        );
+        client.set_holder_share(&issuer, &ns, &token, &seller, &seller_bps, &1);
+
+        let payment_asset = crate::test_utils::create_token(env, &admin);
+        crate::test_utils::mint_tokens(env, &payment_asset, &buyer, buyer_balance);
+
+        SwapCtx { client, cid, admin, issuer, seller, buyer, token, payment_asset }
+    }
+
+    #[test]
+    fn atomic_swap_transfers_shares_and_preserves_holder_share_total() {
+        let env = Env::default();
+        let c = setup(&env, 5_000, 1_000);
+        let ns = symbol_short!("fee");
+        let cat = symbol_short!("A");
+        let asset = &c.payment_asset;
+
+        assert_eq!(read_share_total(&env, &c.cid, &c.issuer, &c.token), 5_000);
+
+        c.client.set_secondary_market_royalty_bps(&c.issuer, &ns, &c.token, asset, &500);
+        c.client.atomic_swap(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &2_000,
+            &cat,
+            asset,
+            &1_000,
+        );
+
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.seller), 3_000);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.buyer), 2_000);
+        assert_eq!(read_share_total(&env, &c.cid, &c.issuer, &c.token), 5_000);
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.issuer), 50);
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.seller), 950);
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.buyer), 0);
+
+        let all_events = env.events().all();
+        let mut found_xfer = false;
+        for i in 0..all_events.len() {
+            let (_, topics, data) = all_events.get(i).unwrap();
+            if !topics.is_empty() {
+                let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+                if t0 == EVENT_XFER_ATT {
+                    let (from, to, bps): (Address, Address, u32) = data.into_val(&env);
+                    assert_eq!(from, c.seller);
+                    assert_eq!(to, c.buyer);
+                    assert_eq!(bps, 2_000);
+                    found_xfer = true;
+                }
+            }
+        }
+        assert!(found_xfer, "xfer_att event must be emitted");
+    }
+
+    #[test]
+    fn atomic_swap_amount_exceeding_seller_share_fails_without_moving_payment() {
+        let env = Env::default();
+        let c = setup(&env, 1_500, 1_000);
+        let ns = symbol_short!("fee");
+        let cat = symbol_short!("A");
+        let asset = &c.payment_asset;
+
+        c.client.set_secondary_market_royalty_bps(&c.issuer, &ns, &c.token, asset, &500);
+        let res = c.client.try_atomic_swap(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &2_000,
+            &cat,
+            asset,
+            &1_000,
+        );
+        assert_eq!(res, Err(Ok(RevoraError::InvalidAmount)));
+
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.buyer), 1_000);
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.seller), 0);
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.issuer), 0);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.seller), 1_500);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.buyer), 0);
+        assert_eq!(read_share_total(&env, &c.cid, &c.issuer, &c.token), 1_500);
+    }
+
+    #[test]
+    fn atomic_swap_while_paused_returns_contract_paused() {
+        let env = Env::default();
+        let c = setup(&env, 5_000, 1_000);
+        let ns = symbol_short!("fee");
+        let cat = symbol_short!("A");
+        let asset = &c.payment_asset;
+
+        c.client.pause_admin(&c.admin);
+
+        let res = c.client.try_atomic_swap(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &2_000,
+            &cat,
+            asset,
+            &1_000,
+        );
+        assert_eq!(res, Err(Ok(RevoraError::ContractPaused)));
+        assert_eq!(crate::test_utils::get_balance(&env, asset, &c.buyer), 1_000);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.seller), 5_000);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.buyer), 0);
+    }
+
+    #[test]
+    fn transfer_with_attestation_pause_and_share_movement() {
+        let env = Env::default();
+        let c = setup(&env, 5_000, 0);
+        let ns = symbol_short!("fee");
+        let cat = symbol_short!("A");
+
+        c.client.pause_admin(&c.admin);
+        let paused_res = c.client.try_transfer_with_attestation(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &2_000,
+            &cat,
+        );
+        assert_eq!(paused_res, Err(Ok(RevoraError::ContractPaused)));
+
+        c.client.unpause_admin(&c.admin);
+        c.client.transfer_with_attestation(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &2_000,
+            &cat,
+        );
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.seller), 3_000);
+        assert_eq!(c.client.get_holder_share(&c.issuer, &ns, &c.token, &c.buyer), 2_000);
+        assert_eq!(read_share_total(&env, &c.cid, &c.issuer, &c.token), 5_000);
+
+        let over_res = c.client.try_transfer_with_attestation(
+            &c.issuer,
+            &ns,
+            &c.token,
+            &c.seller,
+            &c.buyer,
+            &3_001,
+            &cat,
+        );
+        assert_eq!(over_res, Err(Ok(RevoraError::InvalidAmount)));
+    }
+}
