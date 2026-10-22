@@ -12,7 +12,8 @@
 
 #![cfg(test)]
 
-use crate::{FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{FreezeReason, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::RoundingMode;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _},
