@@ -91,7 +91,7 @@ fn snapshot_deposit_fails_when_ref_equals_last_ref() {
     let (_env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
     // Enable snapshots
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // First deposit at ref 100
     client.deposit_revenue_with_snapshot(
@@ -102,7 +102,7 @@ fn snapshot_deposit_fails_when_ref_equals_last_ref() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Verify last_snapshot_ref is 100
     assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), 100);
@@ -116,7 +116,7 @@ fn snapshot_deposit_fails_when_ref_equals_last_ref() {
         &10_000,
         &2,
         &100, // Same as last_ref
-    );
+    , &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -129,7 +129,7 @@ fn snapshot_deposit_fails_when_ref_equals_last_ref() {
 fn snapshot_deposit_fails_when_ref_less_than_last_ref() {
     let (_env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // First deposit at ref 200
     client.deposit_revenue_with_snapshot(
@@ -140,7 +140,7 @@ fn snapshot_deposit_fails_when_ref_less_than_last_ref() {
         &10_000,
         &1,
         &200,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Second deposit with lower ref should fail
     let result = client.try_deposit_revenue_with_snapshot(
@@ -151,7 +151,7 @@ fn snapshot_deposit_fails_when_ref_less_than_last_ref() {
         &10_000,
         &2,
         &150, // Less than last_ref (200)
-    );
+    , &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -165,7 +165,7 @@ fn snapshot_deposit_fails_when_ref_less_than_last_ref() {
 fn snapshot_deposit_fails_with_zero_ref() {
     let (_env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Snapshot ref = 0 should fail (InvalidAmount per AmountValidationMatrix)
     let result = client.try_deposit_revenue_with_snapshot(
@@ -176,7 +176,7 @@ fn snapshot_deposit_fails_with_zero_ref() {
         &10_000,
         &1,
         &0, // Zero ref is invalid
-    );
+    , &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::InvalidAmount))));
@@ -190,15 +190,15 @@ fn snapshot_deposit_fails_with_zero_ref() {
 fn commit_snapshot_fails_when_ref_equals_last_ref() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let content_hash = random_content_hash(&env);
 
     // First commit at ref 50
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &50, &content_hash);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &50, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Second commit with same ref should fail
-    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &50, &content_hash);
+    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &50, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -211,15 +211,15 @@ fn commit_snapshot_fails_when_ref_equals_last_ref() {
 fn commit_snapshot_fails_when_ref_less_than_last_ref() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let content_hash = random_content_hash(&env);
 
     // First commit at ref 100
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Second commit with lower ref should fail
-    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &75, &content_hash);
+    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &75, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -232,7 +232,7 @@ fn commit_snapshot_fails_when_ref_less_than_last_ref() {
 fn apply_snapshot_shares_fails_for_non_existent_snapshot() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let holder = Address::generate(&env);
     let holders = soroban_sdk::vec![&env, (holder, 5_000u32)];
@@ -245,7 +245,7 @@ fn apply_snapshot_shares_fails_for_non_existent_snapshot() {
         &999,
         &0,
         &holders,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -270,7 +270,7 @@ fn deposit_with_snapshot_fails_when_snapshots_disabled() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -287,7 +287,7 @@ fn commit_snapshot_fails_when_snapshots_disabled() {
     // Snapshots disabled by default
     let content_hash = random_content_hash(&env);
 
-    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash);
+    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -311,7 +311,7 @@ fn apply_snapshot_shares_fails_when_snapshots_disabled() {
         &100,
         &0,
         &holders,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -322,7 +322,7 @@ fn snapshot_operations_fail_after_disabling() {
     let (env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
     // Enable snapshots
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Perform a successful snapshot deposit
     client.deposit_revenue_with_snapshot(
@@ -333,10 +333,10 @@ fn snapshot_operations_fail_after_disabling() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Disable snapshots
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &false);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &false, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Subsequent snapshot operations should fail
     let result = client.try_deposit_revenue_with_snapshot(
@@ -347,7 +347,7 @@ fn snapshot_operations_fail_after_disabling() {
         &10_000,
         &2,
         &101,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -422,7 +422,7 @@ fn report_revenue_override_fails_with_wrong_payout_asset() {
 fn deposit_revenue_with_snapshot_fails_with_wrong_payout_asset() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let wrong_asset = Address::generate(&env);
 
@@ -436,7 +436,7 @@ fn deposit_revenue_with_snapshot_fails_with_wrong_payout_asset() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     // Note: deposit_revenue_with_snapshot validates via do_deposit_revenue which checks PaymentTokenMismatch
@@ -459,7 +459,7 @@ fn deposit_revenue_with_snapshot_fails_with_wrong_payout_asset() {
 fn failed_snapshot_deposit_does_not_update_last_ref() {
     let (_env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // First successful deposit
     client.deposit_revenue_with_snapshot(
@@ -470,7 +470,7 @@ fn failed_snapshot_deposit_does_not_update_last_ref() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let last_ref_before = client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token);
     let period_count_before = client.get_period_count(&issuer, &symbol_short!("def"), &token);
@@ -484,7 +484,7 @@ fn failed_snapshot_deposit_does_not_update_last_ref() {
         &10_000,
         &2,
         &50, // Outdated
-    );
+    , &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Verify no state mutation
     assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), last_ref_before);
@@ -495,17 +495,17 @@ fn failed_snapshot_deposit_does_not_update_last_ref() {
 fn failed_commit_snapshot_does_not_update_last_ref() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let content_hash = random_content_hash(&env);
 
     // First successful commit
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let last_ref_before = client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token);
 
     // Failed commit (outdated ref)
-    let _ = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &75, &content_hash);
+    let _ = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &75, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Verify no state mutation
     assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), last_ref_before);
@@ -630,7 +630,7 @@ fn snapshot_deposit_fails_when_offering_frozen() {
     let admin = Address::generate(&_env);
     client.set_admin(&admin);
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Freeze the offering
     client.freeze_offering(&admin, &issuer, &symbol_short!("def"), &token);
@@ -644,7 +644,7 @@ fn snapshot_deposit_fails_when_offering_frozen() {
         &10_000,
         &1,
         &100,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert!(result.is_err());
     // Should fail with OfferingFrozen or similar
@@ -657,7 +657,7 @@ fn commit_snapshot_fails_when_contract_frozen() {
     let admin = Address::generate(&env);
     client.set_admin(&admin);
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Freeze the contract globally
     client.freeze();
@@ -665,7 +665,7 @@ fn commit_snapshot_fails_when_contract_frozen() {
     let content_hash = random_content_hash(&env);
 
     // commit_snapshot should fail
-    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash);
+    let result = client.try_commit_snapshot(&issuer, &symbol_short!("def"), &token, &100, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::ContractFrozen))));

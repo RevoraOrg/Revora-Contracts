@@ -83,7 +83,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &0);
 
     // Enable snapshot distribution for this offering.
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     (env, client, issuer, token)
 }
@@ -109,7 +109,7 @@ fn snapshot_replay_stress_out_of_order_sequence() {
     let ns = symbol_short!("def");
 
     // ── Step 1: ref 5 — first commit, must succeed ────────────────────────
-    let result_5a = client.try_commit_snapshot(&issuer, &ns, &token, &5, &hash(&env));
+    let result_5a = client.try_commit_snapshot(&issuer, &ns, &token, &5, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         result_5a.is_ok(),
         "ref 5 (first commit) must be accepted; got: {:?}",
@@ -122,7 +122,7 @@ fn snapshot_replay_stress_out_of_order_sequence() {
     );
 
     // ── Step 2: ref 3 — below last_ref (3 < 5), must be rejected ─────────
-    let result_3 = client.try_commit_snapshot(&issuer, &ns, &token, &3, &hash(&env));
+    let result_3 = client.try_commit_snapshot(&issuer, &ns, &token, &3, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(result_3, Err(Ok(RevoraError::OutdatedSnapshot))),
         "ref 3 (< last_ref 5) must return OutdatedSnapshot; got: {:?}",
@@ -136,7 +136,7 @@ fn snapshot_replay_stress_out_of_order_sequence() {
     );
 
     // ── Step 3: ref 5 — equal to last_ref (5 == 5), must be rejected ─────
-    let result_5b = client.try_commit_snapshot(&issuer, &ns, &token, &5, &hash(&env));
+    let result_5b = client.try_commit_snapshot(&issuer, &ns, &token, &5, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(result_5b, Err(Ok(RevoraError::OutdatedSnapshot))),
         "ref 5 (== last_ref 5) must return OutdatedSnapshot; got: {:?}",
@@ -149,7 +149,7 @@ fn snapshot_replay_stress_out_of_order_sequence() {
     );
 
     // ── Step 4: ref 4 — below last_ref (4 < 5), must be rejected ─────────
-    let result_4 = client.try_commit_snapshot(&issuer, &ns, &token, &4, &hash(&env));
+    let result_4 = client.try_commit_snapshot(&issuer, &ns, &token, &4, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(result_4, Err(Ok(RevoraError::OutdatedSnapshot))),
         "ref 4 (< last_ref 5) must return OutdatedSnapshot; got: {:?}",
@@ -162,7 +162,7 @@ fn snapshot_replay_stress_out_of_order_sequence() {
     );
 
     // ── Step 5: ref 6 — strictly greater (6 > 5), must succeed ───────────
-    let result_6 = client.try_commit_snapshot(&issuer, &ns, &token, &6, &hash(&env));
+    let result_6 = client.try_commit_snapshot(&issuer, &ns, &token, &6, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         result_6.is_ok(),
         "ref 6 (> last_ref 5) must be accepted; got: {:?}",
@@ -190,7 +190,7 @@ fn snapshot_ref_zero_is_rejected() {
     let (env, client, issuer, token) = setup();
     let ns = symbol_short!("def");
 
-    let result = client.try_commit_snapshot(&issuer, &ns, &token, &0, &hash(&env));
+    let result = client.try_commit_snapshot(&issuer, &ns, &token, &0, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(result, Err(Ok(RevoraError::OutdatedSnapshot))),
         "ref 0 must return OutdatedSnapshot (0 <= initial last_ref 0); got: {:?}",
@@ -220,7 +220,7 @@ fn snapshot_ref_u64_max_is_accepted_then_blocks_further_commits() {
     let ns = symbol_short!("def");
 
     // Commit at u64::MAX — must succeed.
-    let result_max = client.try_commit_snapshot(&issuer, &ns, &token, &u64::MAX, &hash(&env));
+    let result_max = client.try_commit_snapshot(&issuer, &ns, &token, &u64::MAX, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         result_max.is_ok(),
         "ref u64::MAX must be accepted; got: {:?}",
@@ -233,7 +233,7 @@ fn snapshot_ref_u64_max_is_accepted_then_blocks_further_commits() {
     );
 
     // Any subsequent commit (equal or lower) must be rejected.
-    let result_retry = client.try_commit_snapshot(&issuer, &ns, &token, &u64::MAX, &hash(&env));
+    let result_retry = client.try_commit_snapshot(&issuer, &ns, &token, &u64::MAX, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(result_retry, Err(Ok(RevoraError::OutdatedSnapshot))),
         "retry at u64::MAX must return OutdatedSnapshot; got: {:?}",
@@ -263,11 +263,11 @@ fn equal_ref_retry_always_returns_outdated_snapshot() {
     let ns = symbol_short!("def");
 
     // First commit at ref 42 — must succeed.
-    let first = client.try_commit_snapshot(&issuer, &ns, &token, &42, &hash(&env));
+    let first = client.try_commit_snapshot(&issuer, &ns, &token, &42, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(first.is_ok(), "first commit at ref 42 must succeed; got: {:?}", first.err());
 
     // Immediate retry at the same ref — must fail.
-    let retry = client.try_commit_snapshot(&issuer, &ns, &token, &42, &hash(&env));
+    let retry = client.try_commit_snapshot(&issuer, &ns, &token, &42, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(
         matches!(retry, Err(Ok(RevoraError::OutdatedSnapshot))),
         "retry at ref 42 must return OutdatedSnapshot; got: {:?}",
@@ -297,30 +297,30 @@ fn last_ref_never_decreases_across_mixed_sequence() {
     let ns = symbol_short!("def");
 
     // Accept ref 10.
-    assert!(client.try_commit_snapshot(&issuer, &ns, &token, &10, &hash(&env)).is_ok());
+    assert!(client.try_commit_snapshot(&issuer, &ns, &token, &10, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
     assert_eq!(client.get_last_snapshot_ref(&issuer, &ns, &token), 10);
 
     // Reject ref 7 (< 10).
     assert!(matches!(
-        client.try_commit_snapshot(&issuer, &ns, &token, &7, &hash(&env)),
+        client.try_commit_snapshot(&issuer, &ns, &token, &7, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])),
         Err(Ok(RevoraError::OutdatedSnapshot))
     ));
     assert_eq!(client.get_last_snapshot_ref(&issuer, &ns, &token), 10);
 
     // Reject ref 10 (== 10).
     assert!(matches!(
-        client.try_commit_snapshot(&issuer, &ns, &token, &10, &hash(&env)),
+        client.try_commit_snapshot(&issuer, &ns, &token, &10, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])),
         Err(Ok(RevoraError::OutdatedSnapshot))
     ));
     assert_eq!(client.get_last_snapshot_ref(&issuer, &ns, &token), 10);
 
     // Accept ref 20 (> 10).
-    assert!(client.try_commit_snapshot(&issuer, &ns, &token, &20, &hash(&env)).is_ok());
+    assert!(client.try_commit_snapshot(&issuer, &ns, &token, &20, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
     assert_eq!(client.get_last_snapshot_ref(&issuer, &ns, &token), 20);
 
     // Reject ref 15 (< 20).
     assert!(matches!(
-        client.try_commit_snapshot(&issuer, &ns, &token, &15, &hash(&env)),
+        client.try_commit_snapshot(&issuer, &ns, &token, &15, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])),
         Err(Ok(RevoraError::OutdatedSnapshot))
     ));
 
@@ -347,14 +347,14 @@ fn snapshot_replay_is_isolated_per_offering() {
     let token_b = Address::generate(&env);
     let payout_b = Address::generate(&env);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &5_000, &payout_b, &0, &symbol_short!(""), &0);
-    client.set_snapshot_config(&issuer, &ns, &token_b, &true);
+    client.set_snapshot_config(&issuer, &ns, &token_b, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Advance offering A to ref 100.
-    assert!(client.try_commit_snapshot(&issuer, &ns, &token_a, &100, &hash(&env)).is_ok());
+    assert!(client.try_commit_snapshot(&issuer, &ns, &token_a, &100, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
 
     // Replay stale refs on offering A.
-    let _ = client.try_commit_snapshot(&issuer, &ns, &token_a, &50, &hash(&env));
-    let _ = client.try_commit_snapshot(&issuer, &ns, &token_a, &100, &hash(&env));
+    let _ = client.try_commit_snapshot(&issuer, &ns, &token_a, &50, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    let _ = client.try_commit_snapshot(&issuer, &ns, &token_a, &100, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Offering B is still at 0 — untouched.
     assert_eq!(
@@ -371,6 +371,6 @@ fn snapshot_replay_is_isolated_per_offering() {
     );
 
     // Offering B can still accept its own first commit.
-    assert!(client.try_commit_snapshot(&issuer, &ns, &token_b, &1, &hash(&env)).is_ok());
+    assert!(client.try_commit_snapshot(&issuer, &ns, &token_b, &1, &hash(&env), &soroban_sdk::Vec::from_array(&env, [issuer.clone()])).is_ok());
     assert_eq!(client.get_last_snapshot_ref(&issuer, &ns, &token_b), 1);
 }

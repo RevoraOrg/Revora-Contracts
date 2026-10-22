@@ -89,6 +89,7 @@ impl Ctx {
             holder,
             &share_bps,
             &0u64,
+            &soroban_sdk::Vec::from_array(&self.env, [self.issuer.clone()]),
         );
     }
 

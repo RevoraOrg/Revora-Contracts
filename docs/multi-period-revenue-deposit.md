@@ -12,10 +12,11 @@
 The Multi-Period Revenue Deposit feature allows a privileged **admin** to deposit
 token revenue into the smart contract segmented across non-overlapping **periods**.
 Each period is defined by a ledger-based time window. After a period closes,
-registered **beneficiaries** may each claim their pro-rata share of that period's
-deposited revenue. Deposits are now gated by an admin-managed allowlist of
+registered **beneficiaries** may each claim their equal share of that period's
+deposited revenue. The beneficiary set and revenue are immutable after the
+period's end ledger. Deposits are gated by an admin-managed allowlist of
 authorized offering contract addresses so that only approved callers can fund a
-period.
+period while it remains open.
 
 ```
 Admin ──deposit──► Contract ──claim──► Beneficiary₁
@@ -29,9 +30,10 @@ Admin ──deposit──► Contract ──claim──► Beneficiary₁
 
 ### Period
 
-A period is a non-overlapping ledger range `[start_ledger, end_ledger]` with a fixed
-`revenue_amount` of tokens deposited at creation time. Multiple periods may co-exist
-as long as their ranges do not overlap.
+A period is a non-overlapping ledger range `[start_ledger, end_ledger]` with an
+initial `revenue_amount` of tokens deposited at creation time. Additional
+authorized deposits are accepted only through `end_ledger`. Multiple periods may
+co-exist as long as their ranges do not overlap.
 
 | Field             | Type   | Description                                      |
 |-------------------|--------|--------------------------------------------------|
@@ -43,9 +45,9 @@ as long as their ranges do not overlap.
 
 ### Beneficiary
 
-An `Address` registered by the admin for a specific period. Beneficiaries receive
-`floor(revenue_amount / beneficiary_count)` tokens when they call `claim`. Any
-remainder due to integer truncation remains locked in the contract (dust).
+An `Address` registered by the admin for a specific period. The first claim fixes
+the equal share and remainder. Each beneficiary receives the fixed share, and the
+final beneficiary to claim receives the remainder as well.
 
 ### Claim
 
@@ -96,30 +98,42 @@ Register a beneficiary for an existing period. Idempotent.
 
 **Requires:** admin auth.
 
-**Errors:** `Unauthorized`, `PeriodNotFound`
+**Errors:** `Unauthorized`, `PeriodNotFound`, `PeriodClosed`
 
 ---
 
 ### `remove_beneficiary(period_id, beneficiary) → Result<(), ContractError>`
 
-Deregister a beneficiary. Their unclaimed share remains in the contract.
+Deregister a beneficiary before the period closes. Removed beneficiaries cannot
+claim.
 
 **Requires:** admin auth.
 
-**Errors:** `Unauthorized`, `PeriodNotFound`, `NotBeneficiary`
+**Errors:** `Unauthorized`, `PeriodNotFound`, `NotBeneficiary`, `PeriodClosed`
+
+---
+
+### `deposit(caller, period_id, amount) → Result<(), ContractError>`
+
+Add revenue from an authorized offering while the period remains open. Deposits
+are rejected once the current ledger is greater than `end_ledger`.
+
+**Errors:** `UnauthorizedDepositor`, `PeriodNotFound`, `InvalidInput`,
+`PeriodClosed`, `Overflow`
 
 ---
 
 ### `claim(period_id, claimant) → Result<i128, ContractError>`
 
-Claim pro-rata share of `period_id` revenue.
+Claim an equal share of `period_id` revenue.
 
 **Requires:** claimant auth.
 
-**Returns:** token amount transferred.
+**Returns:** token amount transferred. The final unclaimed beneficiary receives
+any division remainder.
 
 **Errors:** `PeriodNotFound`, `PeriodNotEnded`, `NotBeneficiary`, `AlreadyClaimed`,
-`NoBeneficiaries`, `Overflow`
+`NoBeneficiaries`, `Overflow`, `InvariantViolation`
 
 ---
 
@@ -152,6 +166,9 @@ Claim pro-rata share of `period_id` revenue.
 | 9    | `DepositFailed`      | Token transfer from admin failed.                    |
 | 10   | `Overflow`           | Arithmetic overflow (should never occur).            |
 | 11   | `NoBeneficiaries`    | No beneficiaries registered for period.              |
+| 12   | `UnauthorizedDepositor` | Caller is not an authorized offering contract.    |
+| 13   | `PeriodClosed`          | Period ended; beneficiaries and revenue are frozen. |
+| 14   | `InvariantViolation`    | Claim would exceed the period's total revenue.      |
 
 ---
 
@@ -161,7 +178,7 @@ Claim pro-rata share of `period_id` revenue.
 
 - **Admin** is fully trusted. Compromise of the admin key allows:
   - Creating arbitrary periods (funds will be drawn from the admin's token balance).
-  - Adding/removing beneficiaries.
+  - Adding/removing beneficiaries before a period ends.
   - Admin key rotation is **not** implemented in this version; if needed, deploy a
     multisig admin contract as the `admin` address.
 
@@ -182,20 +199,16 @@ Overflow returns `ContractError::Overflow` rather than silently wrapping.
 
 ### Front-Running
 
-A beneficiary cannot influence the distribution of funds. The share calculation
-uses a snapshot of the beneficiary count at claim time. If an admin adds or removes
-a beneficiary after the period ends but before all claims are processed, the share
-sizes shift. Operators should freeze the beneficiary list before `end_ledger` in
-production deployments.
+Beneficiary membership and revenue cannot change after `end_ledger`. The first
+claim snapshots the equal share and remainder, and the final claimant receives
+the remainder, independent of claim order.
 
 ### Griefing / DoS
 
 - A malicious beneficiary cannot block others from claiming.
-- An admin cannot prevent a registered beneficiary from claiming after period end
-  (short of removing them, which is a privileged admin action).
-- Integer dust (from floor division) is permanently locked in the contract in this
-  version. A future `withdraw_dust` function callable by admin after all claims are
-  finalised would reclaim this.
+- Once the period ends, the beneficiary set cannot be changed by the admin.
+- A beneficiary who never claims leaves that beneficiary's fixed share in the
+  contract; there is no admin sweep in this version.
 
 ---
 
@@ -242,11 +255,9 @@ cargo test -p revora-contracts -- --nocapture
 
 ## Future Extensions
 
-- **`withdraw_dust(period_id)`** – admin reclaims integer remainder after all
-  beneficiaries have claimed.
+- **Unclaimed-share recovery** – admin recovery of shares for beneficiaries who
+  never claim, with an explicit policy and delay.
 - **Admin rotation** – `set_admin(new_admin)` guarded by current admin auth.
-- **Beneficiary freeze** – lock the beneficiary list at `end_ledger` to prevent
-  post-period mutations from affecting share calculations.
 - **Vesting schedule** – per-beneficiary configurable vesting multipliers.
 - **Off-chain event indexing** – emit Soroban contract events on every deposit,
   beneficiary change, and claim for external indexer consumption.

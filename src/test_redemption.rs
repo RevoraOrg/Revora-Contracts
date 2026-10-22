@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    symbol_short,
+    symbol_short, Symbol,
     testutils::{Address as _, Events, Ledger},
     token, Address, Env,
 };
@@ -37,7 +37,7 @@ fn setup_offering(
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     // Mint to issuer, then deposit revenue so contract has a balance
     token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &1_000_000);
@@ -48,7 +48,7 @@ fn setup_offering(
         &payment_token.address(),
         &500_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     (client, issuer, offering_token, payment_token.address(), holder, admin)
 }
@@ -312,6 +312,79 @@ fn request_redemption_no_share() {
 }
 
 #[test]
+fn request_redemption_offering_frozen() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.freeze_offering(&issuer, &symbol_short!("def"), &offering_token, &true);
+
+    let result = client.try_request_redemption(
+        &holder,
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &2_000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingFrozen)));
+}
+
+#[test]
+fn request_redemption_holder_frozen() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.emergency_freeze_holder(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1u32,
+        &true,
+    );
+
+    let result = client.try_request_redemption(
+        &holder,
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &2_000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::HolderFrozen)));
+}
+
+#[test]
+fn request_redemption_other_holder_unaffected_by_freeze() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+    let other = Address::generate(&env);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &other, &2_000, &1);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.emergency_freeze_holder(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1u32,
+        &true,
+    );
+
+    let result = client.try_request_redemption(
+        &other,
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &1_000,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
 fn request_redemption_duplicate() {
     let env = Env::default();
     let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
@@ -445,6 +518,97 @@ fn fulfill_redemption_outside_window() {
 }
 
 #[test]
+fn fulfill_redemption_offering_frozen() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+    client.freeze_offering(&issuer, &symbol_short!("def"), &offering_token, &true);
+
+    let result = client.try_fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &100_000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingFrozen)));
+}
+
+#[test]
+fn fulfill_redemption_holder_frozen() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+    client.emergency_freeze_holder(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1u32,
+        &true,
+    );
+
+    let result = client.try_fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &100_000,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::HolderFrozen)));
+}
+
+#[test]
+fn fulfill_redemption_after_clear_freeze_reason_succeeds() {
+    let env = Env::default();
+    let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
+
+    set_timestamp(&env, 1000);
+    client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);
+    client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
+    client.emergency_freeze_holder(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1u32,
+        &true,
+    );
+
+    let frozen = client.try_fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &100_000,
+    );
+    assert_eq!(frozen, Err(Ok(RevoraError::HolderFrozen)));
+
+    client.clear_freeze_reason(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &1u32,
+    );
+
+    let result = client.try_fulfill_redemption(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &100_000,
+    );
+    assert_eq!(result, Ok(Ok(100_000)));
+}
+
+#[test]
 fn fulfill_redemption_zero_share() {
     let env = Env::default();
     let (client, issuer, offering_token, _, holder, ..) = setup_offering(&env);
@@ -454,7 +618,7 @@ fn fulfill_redemption_zero_share() {
     client.request_redemption(&holder, &issuer, &symbol_short!("def"), &offering_token, &2_000);
 
     // Clear holder share before fulfill
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &0, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let result = client.try_fulfill_redemption(
         &issuer,
@@ -572,7 +736,7 @@ fn redemption_events_emitted() {
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     token::StellarAssetClient::new(&env, &payment_token.address()).mint(&issuer, &1_000_000);
     client.deposit_revenue(
         &issuer,
@@ -581,7 +745,7 @@ fn redemption_events_emitted() {
         &payment_token.address(),
         &500_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     set_timestamp(&env, 1000);
     client.set_redemption_window(&issuer, &symbol_short!("def"), &offering_token, &500, &2000);

@@ -76,6 +76,7 @@ fn commit_snapshot(
         &snapshot_ref,
         &0u32,
         &soroban_sdk::vec![&client.env],
+        &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]),
     );
     snapshot_ref
 }
@@ -226,7 +227,15 @@ fn vote_v3_carries_correct_weight_from_snapshot() {
     let voter = Address::generate(&env);
 
     // Set holder share and commit snapshot so the weight is pinned.
-    client.set_holder_share(&issuer, &ns, &token, &voter, &3000_u32, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &voter,
+        &3000_u32,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let snapshot_ref: u64 = 1;
     client.apply_snapshot_shares(
         &issuer,
@@ -235,6 +244,7 @@ fn vote_v3_carries_correct_weight_from_snapshot() {
         &snapshot_ref,
         &0u32,
         &soroban_sdk::vec![&env, (voter.clone(), 3000_u32)],
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     let proposal_id = client.create_gov_proposal(&issuer, &ns, &token, &symbol_short!("wprop"));
@@ -358,8 +368,24 @@ fn report_revenue_emits_v2_and_v3_indexed_events() {
 #[test]
 fn claim_emits_v2_and_v3_indexed_events() {
     let (env, client, issuer, ns, token, payout) = setup();
-    client.set_holder_share(&issuer, &ns, &token, &issuer, &10_000, &1);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &1_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &issuer,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout,
+        &1_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let before = env.events().all().len();
     let _payout = client.claim(&issuer, &issuer, &ns, &token, &10u32);

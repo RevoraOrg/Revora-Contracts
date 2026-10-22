@@ -75,7 +75,7 @@ fn setup_funded_offering() -> (Env, Address, Address, Address, Address) {
 fn setup_snapshot_offering() -> (Env, Address, Address, Address, Address) {
     let (env, contract_id, issuer, token, payment_token) = setup_funded_offering();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     (env, contract_id, issuer, token, payment_token)
 }
 
@@ -143,7 +143,7 @@ fn deposit_revenue_rejects_non_positive_amounts_without_mutating_period_state() 
             &payment_token,
             &invalid_amount,
             &1,
-        );
+         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
         assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
         assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
     }
@@ -163,7 +163,7 @@ fn deposit_revenue_with_snapshot_rejects_non_positive_amounts_without_state_chan
             &invalid_amount,
             &1,
             &1,
-        );
+         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
         assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
         assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
         assert_eq!(client.get_last_snapshot_ref(&issuer, &symbol_short!("def"), &token), 0);
@@ -183,7 +183,7 @@ fn deposit_revenue_with_snapshot_rejects_zero_snapshot_reference_without_state_c
         &100,
         &1,
         &0,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 1);
@@ -196,7 +196,7 @@ fn set_investment_constraints_rejects_negative_min_stake() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
     let result =
-        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &-1, &100);
+        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &-1, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
     assert!(client
@@ -210,7 +210,7 @@ fn set_investment_constraints_rejects_negative_max_stake() {
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
     let result =
-        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &-1);
+        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &-1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
     assert!(client
@@ -223,10 +223,10 @@ fn set_investment_constraints_rejects_invalid_range_without_overwriting_previous
     let (env, contract_id, issuer, token, _payout_asset) = setup_offering();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
-    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &500);
+    client.set_investment_constraints(&issuer, &symbol_short!("def"), &token, &100, &500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let result =
-        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &600, &500);
+        client.try_set_investment_constraints(&issuer, &symbol_short!("def"), &token, &600, &500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
     assert_eq!(
@@ -240,9 +240,9 @@ fn set_min_revenue_threshold_rejects_negative_transition_without_overwriting_pre
     let (env, contract_id, issuer, token, _payout_asset) = setup_offering();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &250);
+    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &250, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let result = client.try_set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &-1);
+    let result = client.try_set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &-1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
     assert_eq!(
