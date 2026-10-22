@@ -689,11 +689,27 @@ fn test_per_class_supply_cap_edge_cases() {
     client.set_max_total_supply_shares(&issuer, &namespace, &token, &1i128);
 
     // Issuance 1: Should pass, cap of exactly 1
-    client.set_holder_share(&issuer, &namespace, &token, &holder, &1, &1u64);
+    client.set_holder_share(
+        &issuer,
+        &namespace,
+        &token,
+        &holder,
+        &1,
+        &1u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Issuance 2: Should fail, cap exhausted (1 + 1 > 1)
     let holder2 = Address::generate(&env);
-    match client.try_set_holder_share(&issuer, &namespace, &token, &holder2, &1, &1u64) {
+    match client.try_set_holder_share(
+        &issuer,
+        &namespace,
+        &token,
+        &holder2,
+        &1,
+        &1u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    ) {
         Ok(_) => panic!("expected rejection of issuance beyond the supply cap"),
         Err(Ok(err)) => assert_eq!(err, crate::RevoraError::MaxTotalSupplySharesExceeded),
         Err(Err(host)) => panic!("host failure: {:?}", host),
@@ -807,6 +823,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &100,
             &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         let r_b = client.try_deposit_revenue(
             &issuer,
@@ -815,6 +832,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &100,
             &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
 
         assert!(r_a.is_ok(), "cap=0: small deposit must succeed");
@@ -834,6 +852,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &large_amount,
             &2,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         let r_b = client.try_deposit_revenue(
             &issuer,
@@ -842,6 +861,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &large_amount,
             &2,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
 
         assert!(
@@ -885,6 +905,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &overflow_amount,
             &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         let r_b = client.try_deposit_revenue(
             &issuer,
@@ -893,6 +914,7 @@ fn issue_610_differential_test_supply_cap_zero_vs_max_boundary() {
             &payment_token,
             &overflow_amount,
             &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
 
         assert!(r_a.is_ok(), "cap=0: overflow-amount issuance must succeed; no cap enforced");
@@ -1003,6 +1025,7 @@ fn issue_610_supply_cap_zero_issuance_always_succeeds() {
             &payment_token,
             &amount,
             &period_id,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         assert!(
             result.is_ok(),
@@ -1069,6 +1092,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
             &payment_token,
             &amount_1,
             &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         let r2 = client.try_deposit_revenue(
             &issuer,
@@ -1077,6 +1101,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
             &payment_token,
             &amount_2,
             &2,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
 
         assert!(r1.is_ok(), "cap=i128::MAX: first half deposit must succeed");
@@ -1101,6 +1126,7 @@ fn issue_610_supply_cap_max_enforces_boundary_at_i128_max() {
             &payment_token,
             &1,
             &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         assert!(r.is_err(), "cap=i128::MAX: deposit exceeding already-at-cap must fail");
     }
@@ -1298,6 +1324,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &payment_token,
             &(i128::MAX / 2),
             &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         let r2 = client.try_deposit_revenue(
             &issuer,
@@ -1306,6 +1333,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &payment_token,
             &(i128::MAX - i128::MAX / 2),
             &2,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         assert!(r1.is_ok() && r2.is_ok(), "setup: fixture B fill must succeed");
     }
@@ -1322,6 +1350,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &payment_token,
             &overage,
             &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         assert!(r_a.is_ok(), "cap=0: any deposit must succeed, no SupplyCapExceeded error");
 
@@ -1333,6 +1362,7 @@ fn issue_610_zero_vs_max_error_code_verification() {
             &payment_token,
             &overage,
             &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
         );
         assert!(r_b.is_err(), "cap=i128::MAX at capacity: deposit must fail");
 

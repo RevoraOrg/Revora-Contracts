@@ -124,14 +124,14 @@ proptest! {
         let holder_d = Address::generate(&env);
         let holder_e = Address::generate(&env);
 
-        client.set_holder_share(&issuer, &ns, &token, &holder_a, &3_000u32, &1);
-        client.set_holder_share(&issuer, &ns, &token, &holder_b, &2_500u32, &1);
-        client.set_holder_share(&issuer, &ns, &token, &holder_c, &1_500u32, &1);
-        client.set_holder_share(&issuer, &ns, &token, &holder_d, &1_000u32, &1);
-        client.set_holder_share(&issuer, &ns, &token, &holder_e, &2_000u32, &1);
+        client.set_holder_share(&issuer, &ns, &token, &holder_a, &3_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.set_holder_share(&issuer, &ns, &token, &holder_b, &2_500u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.set_holder_share(&issuer, &ns, &token, &holder_c, &1_500u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.set_holder_share(&issuer, &ns, &token, &holder_d, &1_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.set_holder_share(&issuer, &ns, &token, &holder_e, &2_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
         mint(&env, &payment_token, &issuer, 10_000_000);
-        client.deposit_revenue(&issuer, &ns, &token, &payment_token, &10_000_000i128, &1u64);
+        client.deposit_revenue(&issuer, &ns, &token, &payment_token, &10_000_000i128, &1u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
         let base_holders = std::vec![
             holder_a.clone(),
@@ -191,7 +191,15 @@ fn close_period_aborts_when_share_ledger_is_inconsistent() {
     let ns = symbol_short!("ns");
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &5_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let before_events = env.events().all().len();
     env.as_contract(&contract_id, || {
@@ -298,7 +306,15 @@ fn deposit_after_close_is_allowed() {
 
     // Deposit should still succeed.
     mint(&env, &payment_token, &issuer, 10_000);
-    let result = client.try_deposit_revenue(&issuer, &ns, &token, &payment_token, &1_000, &1);
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payment_token,
+        &1_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert!(result.is_ok(), "deposit_revenue must succeed even after close_period");
 }
 
@@ -310,11 +326,27 @@ fn claim_after_close_is_allowed() {
     let holder = Address::generate(&env);
 
     // Set holder share to 100%.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Deposit revenue for period 1.
     mint(&env, &payment_token, &issuer, 1_000);
-    client.deposit_revenue(&issuer, &ns, &token, &payment_token, &1_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payment_token,
+        &1_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Seal the period.
     client.close_period(&issuer, &ns, &token, &1);
@@ -397,7 +429,15 @@ fn measure_cpu_for_n_holders(n: u32) -> u64 {
 
     for _ in 0..n {
         let holder = Address::generate(&env);
-        client.set_holder_share(&issuer, &ns, &offering_token, &holder, &1, &1);
+        client.set_holder_share(
+            &issuer,
+            &ns,
+            &offering_token,
+            &holder,
+            &1,
+            &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        );
     }
 
     let before = env.budget().cpu_instruction_cost();

@@ -38,6 +38,23 @@ fn compute_snapshot_content_hash(env: &Env, holders: &[(Address, u32)]) -> Bytes
 fn finalize_snapshot_succeeds_when_hash_matches() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+    let holders = soroban_sdk::vec![&env, (holder1.clone(), 5_000u32), (holder2.clone(), 5_000u32)];
+    let content_hash =
+        compute_snapshot_content_hash(&env, &[(holder1.clone(), 5_000), (holder2.clone(), 5_000)]);
+
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+}
+
+#[test]
+fn apply_snapshot_shares_rejects_finalized_snapshot() {
+    let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
+
     client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
 
     let holder1 = Address::generate(&env);
@@ -49,24 +66,41 @@ fn finalize_snapshot_succeeds_when_hash_matches() {
     client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash);
     client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
     client.finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
+
+    let result = client.try_apply_snapshot_shares(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1,
+        &0,
+        &holders,
+    );
+    assert!(result.is_err());
+    assert!(matches!(
+        result.err(),
+        Some(Ok(RevoraError::SnapshotAlreadyFinalized))
+    ));
 }
 
 #[test]
 fn finalize_snapshot_fails_when_hash_mismatch() {
     let (env, client, issuer, token, _payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let holder = Address::generate(&env);
     let holders = soroban_sdk::vec![&env, (holder.clone(), 5_000u32)];
     let content_hash = BytesN::random(&env);
 
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash);
-    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let result = client.try_finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1);
+    let result = client.try_finalize_snapshot(&issuer, &symbol_short!("def"), &token, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotHashMismatch))));
+
+    let live_share = client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder);
+    assert_eq!(live_share, 0, "unverified snapshot data must not change live shares");
 }
 
 #[test]
@@ -110,7 +144,7 @@ fn verify_snapshot_proof_rejects_proofs_above_the_depth_limit() {
 fn deposit_revenue_with_snapshot_fails_when_finalization_required_and_unfinalized() {
     let (env, client, issuer, token, payout_asset, _contract_id) = setup_snapshot_test();
 
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let admin = Address::generate(&env);
     env.as_contract(&_contract_id, || {
@@ -122,8 +156,8 @@ fn deposit_revenue_with_snapshot_fails_when_finalization_required_and_unfinalize
     let holders = soroban_sdk::vec![&env, (holder.clone(), 5_000u32)];
     let content_hash = compute_snapshot_content_hash(&env, &[(holder.clone(), 5_000)]);
 
-    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash);
-    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders);
+    client.commit_snapshot(&issuer, &symbol_short!("def"), &token, &1, &content_hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &symbol_short!("def"), &token, &1, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -133,7 +167,7 @@ fn deposit_revenue_with_snapshot_fails_when_finalization_required_and_unfinalize
         &10_000,
         &1,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotFinalized))));
