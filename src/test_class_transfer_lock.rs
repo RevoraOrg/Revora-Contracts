@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! # Tests for class-restricted transfer locking (#522)
 //!
 //! Cross-class transfers (e.g. Class A → Class B) are blocked by default.
@@ -20,6 +21,7 @@
 //! | Multi-class holder → different class | `ClassTransferBlocked` |
 
 #![cfg(test)]
+#![cfg(test)]
 
 use soroban_sdk::{
     symbol_short,
@@ -28,7 +30,7 @@ use soroban_sdk::{
 };
 
 use crate::{
-    ClassConfig, DataKey2, OfferingId, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
+    ClassConfig, DataKey3, OfferingId, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
     ShareClass,
 };
 
