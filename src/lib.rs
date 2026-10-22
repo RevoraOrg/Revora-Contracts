@@ -7717,28 +7717,10 @@ impl RevoraRevenueShare {
             .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
             .unwrap_or(0);
 
-        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
-        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
-        if let Some(existing) = existing_cat {
-            if existing != category && to_share > 0 {
-                let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
-                env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
-
-                let new_count_key =
-                    DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
-                let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
-                if let Some(restrictions) =
-                    env.storage().persistent().get::<_, TransferRestrictions>(
-                        &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
-                    )
-                {
-                    if new_count >= restrictions.max_holders {
-                        return Err(RevoraError::CategoryCapReached);
-                    }
-                }
-            }
-        }
+        // Category cap (read-only): rejects when admitting `to` into `category`
+        // would exceed the configured per-category holder cap, including for
+        // first-time recipients.
+        Self::check_category_cap(&env, &offering_id, &to, &category, to_share)?;
 
         // ── Per-jurisdiction transfer cooldown check ──
         // Look up the `from` holder's jurisdiction and check whether a cooldown
@@ -7766,6 +7748,40 @@ impl RevoraRevenueShare {
             }
         }
 
+        Ok(())
+    }
+
+    /// Read-only category-cap check used by both the eligibility gate and the
+    /// dry-run estimator.  Returns `CategoryCapReached` when admitting `to`
+    /// into `category` (as a first-time recipient or a holder switching into
+    /// `category`) would exceed the configured `max_holders`.
+    fn check_category_cap(
+        env: &Env,
+        offering_id: &OfferingId,
+        to: &Address,
+        category: &Symbol,
+        to_share_before: u32,
+    ) -> Result<(), RevoraError> {
+        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
+        // A holder "enters" the category when they receive shares for the first
+        // time or switch into `category` from another category.
+        let to_enters = to_share_before == 0 || existing_cat.as_ref() != Some(category);
+        if !to_enters {
+            return Ok(());
+        }
+        let count_key =
+            DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if let Some(restrictions) =
+            env.storage().persistent().get::<_, TransferRestrictions>(
+                &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
+            )
+        {
+            if count >= restrictions.max_holders {
+                return Err(RevoraError::CategoryCapReached);
+            }
+        }
         Ok(())
     }
 
@@ -7867,27 +7883,10 @@ impl RevoraRevenueShare {
             .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
             .unwrap_or(0);
 
-        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
-        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
-        if let Some(existing) = existing_cat {
-            if existing != *category && to_share > 0 {
-                let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
-
-                let new_count_key =
-                    DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
-                let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
-                if let Some(restrictions) =
-                    env.storage().persistent().get::<_, TransferRestrictions>(
-                        &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
-                    )
-                {
-                    if new_count >= restrictions.max_holders {
-                        return Err(RevoraError::CategoryCapReached);
-                    }
-                }
-            }
-        }
+        // Category cap (read-only): rejects when admitting `to` into `category`
+        // would exceed the configured per-category holder cap, including for
+        // first-time recipients.
+        Self::check_category_cap(env, &offering_id, to, category, to_share)?;
 
         // ── Per-jurisdiction transfer cooldown check ──
         // Look up the `from` holder's jurisdiction and check whether a cooldown
@@ -7944,66 +7943,80 @@ impl RevoraRevenueShare {
             return Ok(());
         }
 
-        let from_share: u32 = env
+        let from_share_before: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::HolderShare(offering_id.clone(), from.clone()))
             .unwrap_or(0);
+        let from_share_after = from_share_before.saturating_sub(amount_bps);
 
-        let to_share: u32 = env
+        let to_share_before: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::HolderShare(offering_id.clone(), to.clone()))
             .unwrap_or(0);
+        let to_share_after = to_share_before.saturating_add(amount_bps);
 
-        let cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
-        let existing_cat: Option<Symbol> = env.storage().persistent().get(&cat_key);
-        if let Some(existing) = existing_cat {
-            if existing != category && to_share > 0 {
-                let old_count_key = DataKey2::CategoryHolderCount(offering_id.clone(), existing);
-                let old_count: u32 = env.storage().persistent().get(&old_count_key).unwrap_or(0);
-                env.storage().persistent().set(&old_count_key, &old_count.saturating_sub(1));
-
-                let new_count_key =
-                    DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
-                let new_count: u32 = env.storage().persistent().get(&new_count_key).unwrap_or(0);
-                if let Some(restrictions) =
-                    env.storage().persistent().get::<_, TransferRestrictions>(
-                        &DataKey2::TransferRestrictions(offering_id.clone(), category.clone()),
-                    )
-                {
-                    if new_count >= restrictions.max_holders {
-                        return Err(RevoraError::CategoryCapReached);
-                    }
+        // ── Category bookkeeping ──
+        // Admit `to` into `category` (first-time recipients included), releasing
+        // the previous category slot when switching categories.  Release the
+        // sender's category slot when their share drops to zero.
+        let to_cat_key = DataKey2::HolderCategory(offering_id.clone(), to.clone());
+        let to_existing_cat: Option<Symbol> = env.storage().persistent().get(&to_cat_key);
+        let to_enters = to_share_before == 0 || to_existing_cat.as_ref() != Some(&category);
+        if to_enters {
+            if let Some(old) = &to_existing_cat {
+                if old != &category {
+                    let old_count_key =
+                        DataKey2::CategoryHolderCount(offering_id.clone(), old.clone());
+                    let old_count: u32 =
+                        env.storage().persistent().get(&old_count_key).unwrap_or(0);
+                    env.storage()
+                        .persistent()
+                        .set(&old_count_key, &old_count.saturating_sub(1));
                 }
+            }
+            let new_count_key =
+                DataKey2::CategoryHolderCount(offering_id.clone(), category.clone());
+            let new_count: u32 =
+                env.storage().persistent().get(&new_count_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&new_count_key, &(new_count.saturating_add(1)));
+            env.storage().persistent().set(&to_cat_key, &category);
+        }
+
+        if from_share_after == 0 {
+            let from_cat_key =
+                DataKey2::HolderCategory(offering_id.clone(), from.clone());
+            let from_existing_cat: Option<Symbol> =
+                env.storage().persistent().get(&from_cat_key);
+            if let Some(from_cat) = from_existing_cat {
+                let from_count_key =
+                    DataKey2::CategoryHolderCount(offering_id.clone(), from_cat.clone());
+                let from_count: u32 =
+                    env.storage().persistent().get(&from_count_key).unwrap_or(0);
+                env.storage()
+                    .persistent()
+                    .set(&from_count_key, &from_count.saturating_sub(1));
             }
         }
 
-        // ── Per-jurisdiction transfer cooldown check ──
-        // Look up the `from` holder's jurisdiction and check whether a cooldown
-        // is configured for that jurisdiction.  If so, verify the required time
-        // has elapsed since the holder's last transfer.
-        let jurisdiction = Self::get_holder_jurisdiction_internal(&env, &offering_id, &from);
-        if let Some(jur) = jurisdiction {
-            if jur != EVENT_JUR_UNSET {
-                let cooldown_key =
-                    DataKey3::TransferCooldownConfig(offering_id.clone(), jur.clone());
-                if let Some(cooldown_secs) =
-                    env.storage().persistent().get::<DataKey3, u64>(&cooldown_key)
-                {
-                    if cooldown_secs > 0 {
-                        let last_xfer_key =
-                            DataKey3::HolderLastTransferTime(offering_id.clone(), from.clone());
-                        let last_xfer: u64 =
-                            env.storage().persistent().get(&last_xfer_key).unwrap_or(0);
-                        let now = env.ledger().timestamp();
-                        if now < last_xfer.saturating_add(cooldown_secs) {
-                            return Err(RevoraError::TransferCooldownActive);
-                        }
-                    }
-                }
-            }
-        }
+        // Apply share movement.
+        env.storage().persistent().set(
+            &DataKey::HolderShare(offering_id.clone(), from.clone()),
+            &from_share_after,
+        );
+        env.storage().persistent().set(
+            &DataKey::HolderShare(offering_id.clone(), to.clone()),
+            &to_share_after,
+        );
+
+        // ── Record last-transfer time for the per-jurisdiction cooldown ──
+        let now = env.ledger().timestamp();
+        let last_xfer_key =
+            DataKey3::HolderLastTransferTime(offering_id.clone(), from.clone());
+        env.storage().persistent().set(&last_xfer_key, &now);
 
         Ok(())
     }
