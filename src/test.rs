@@ -18,6 +18,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
+use proptest::prelude::*;
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
 
@@ -106,6 +107,90 @@ fn test_deposit_accepts_authorized_offering() {
     let period = client.get_period(&period_id);
     assert_eq!(period.revenue_amount, 15_000);
     assert_eq!(crate::test_utils::get_balance(&env, &token_id, &contract_id), 15_000);
+}
+
+#[test]
+fn test_period_rejects_changes_and_deposits_after_end() {
+    let (env, contract_id, token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let beneficiary = Address::generate(&env);
+    let offering = Address::generate(&env);
+    let period_id = client.create_period(&100u32, &200u32, &10_000i128);
+    client.add_beneficiary(&period_id, &beneficiary);
+    client.add_authorized_offering(&offering);
+    crate::test_utils::mint_tokens(&env, &token_id, &offering, 1_000_000);
+    env.ledger().set_sequence_number(201);
+
+    assert_eq!(
+        client.try_add_beneficiary(&period_id, &Address::generate(&env)),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(
+        client.try_remove_beneficiary(&period_id, &beneficiary),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(
+        client.try_deposit(&offering, &period_id, &1_000),
+        Err(Ok(ContractError::PeriodClosed))
+    );
+    assert_eq!(client.get_period(&period_id).revenue_amount, 10_000);
+}
+
+#[test]
+fn claims_distribute_the_full_revenue_including_remainder() {
+    let (env, contract_id, _token_id, _admin) = setup();
+    let client = RevenueDepositContractClient::new(&env, &contract_id);
+    let period_id = client.create_period(&100u32, &200u32, &301i128);
+    let beneficiaries = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    for beneficiary in &beneficiaries {
+        client.add_beneficiary(&period_id, beneficiary);
+    }
+    env.ledger().set_sequence_number(201);
+
+    let payouts: std::vec::Vec<i128> = beneficiaries
+        .iter()
+        .map(|beneficiary| client.claim(&period_id, beneficiary))
+        .collect();
+
+    assert_eq!(payouts.iter().sum::<i128>(), 301);
+    assert_eq!(payouts.iter().filter(|payout| **payout == 100).count(), 2);
+    assert_eq!(payouts.iter().filter(|payout| **payout == 101).count(), 1);
+    assert_eq!(client.get_period(&period_id).claimed_amount, 301);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn claims_conserve_revenue_for_random_order(revenue in 1i128..10_000, order in any::<[u8; 3]>()) {
+        let (env, contract_id, _token_id, _admin) = setup();
+        let client = RevenueDepositContractClient::new(&env, &contract_id);
+        let period_id = client.create_period(&100u32, &200u32, &revenue);
+        let beneficiaries = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+        for beneficiary in &beneficiaries {
+            client.add_beneficiary(&period_id, beneficiary);
+        }
+        env.ledger().set_sequence_number(201);
+
+        let mut claim_order = [(order[0], 0usize), (order[1], 1), (order[2], 2)];
+        claim_order.sort_by_key(|(rank, index)| (*rank, *index));
+        let mut total = 0i128;
+        for (_, index) in claim_order {
+            total += client.claim(&period_id, &beneficiaries[index]);
+            prop_assert!(total <= revenue);
+        }
+
+        prop_assert_eq!(total, revenue);
+        prop_assert_eq!(client.get_period(&period_id).claimed_amount, revenue);
+    }
 }
 
 #[test]
@@ -6447,6 +6532,99 @@ fn simulate_distribution_uses_rounding_mode() {
     assert_eq!(result.payouts.get(0).clone().unwrap().1, 33);
 }
 
+#[test]
+fn simulate_distribution_orders_by_share_then_address() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holders = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let shares = Vec::from_array(
+        &env,
+        [
+            (holders[0].clone(), 4_000u32),
+            (holders[1].clone(), 7_000u32),
+            (holders[2].clone(), 4_000u32),
+            (holders[3].clone(), 7_000u32),
+        ],
+    );
+
+    let result =
+        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    let xdr_lt = |a: &Address, b: &Address| {
+        let a_xdr = a.to_xdr(&env);
+        let b_xdr = b.to_xdr(&env);
+        for i in 0..a_xdr.len().min(b_xdr.len()) {
+            let a_byte: u32 = a_xdr.get(i).unwrap().into();
+            let b_byte: u32 = b_xdr.get(i).unwrap().into();
+            if a_byte != b_byte {
+                return a_byte < b_byte;
+            }
+        }
+        a_xdr.len() < b_xdr.len()
+    };
+    let expected = [
+        if xdr_lt(&holders[1], &holders[3]) { holders[1].clone() } else { holders[3].clone() },
+        if xdr_lt(&holders[1], &holders[3]) { holders[3].clone() } else { holders[1].clone() },
+        if xdr_lt(&holders[0], &holders[2]) { holders[0].clone() } else { holders[2].clone() },
+        if xdr_lt(&holders[0], &holders[2]) { holders[2].clone() } else { holders[0].clone() },
+    ];
+
+    assert_eq!(result.payouts.len(), 4);
+    for (i, holder) in expected.iter().enumerate() {
+        assert_eq!(result.payouts.get(i as u32).unwrap().0, holder.clone());
+    }
+}
+
+#[test]
+fn simulate_distribution_rejects_257_holders() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let mut shares = Vec::new(&env);
+    for _ in 0..257 {
+        shares.push_back((Address::generate(&env), 1u32));
+    }
+
+    let result = client.try_simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &shares,
+    );
+    assert!(matches!(result, Err(Ok(RevoraError::LimitReached))));
+}
+
+#[test]
+fn simulate_distribution_handles_maximum_holder_count() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let mut shares = Vec::new(&env);
+    for _ in 0..MAX_SIMULATION_HOLDERS {
+        shares.push_back((Address::generate(&env), 100u32));
+    }
+
+    let result =
+        client.simulate_distribution(&issuer, &symbol_short!("def"), &token, &100_000, &shares);
+    assert_eq!(result.payouts.len(), MAX_SIMULATION_HOLDERS);
+}
+
+#[test]
+fn simulate_distribution_rejects_duplicate_holders() {
+    let (env, client, issuer, token, _payment_token, _contract_id) = claim_setup();
+    let holder = Address::generate(&env);
+    let shares = Vec::from_array(&env, [(holder.clone(), 6_000u32), (holder, 4_000u32)]);
+
+    let result = client.try_simulate_distribution(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &100_000,
+        &shares,
+    );
+    assert!(matches!(result, Err(Ok(RevoraError::LimitReached))));
+}
+
 // ===========================================================================
 // Upgradeability guard and freeze (#32)
 // ===========================================================================
@@ -7979,7 +8157,7 @@ fn multisig_setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
     owners.push_back(owner3.clone());
 
     // 2-of-3 threshold with 86400s (1 day) duration
-    client.init_multisig(&caller, &owners, &2, &86400);
+    client.init_multisig(&caller, &owners, &2, &86400, &5100);
 
     (env, client, owner1, owner2, owner3, caller)
 }
@@ -8002,7 +8180,7 @@ fn multisig_init_twice_fails() {
 
     let mut owners2 = Vec::new(&env);
     owners2.push_back(owner1.clone());
-    let r = client.try_init_multisig(&caller, &owners2, &1, &86400);
+    let r = client.try_init_multisig(&caller, &owners2, &1, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8019,7 +8197,7 @@ fn multisig_init_zero_threshold_fails() {
 
     let mut owners = Vec::new(&env);
     owners.push_back(owner.clone());
-    let r = client.try_init_multisig(&caller, &owners, &0, &86400);
+    let r = client.try_init_multisig(&caller, &owners, &0, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8037,7 +8215,7 @@ fn multisig_init_threshold_exceeds_owners_fails() {
     let mut owners = Vec::new(&env);
     owners.push_back(owner.clone());
     // threshold=2 but only 1 owner
-    let r = client.try_init_multisig(&caller, &owners, &2, &86400);
+    let r = client.try_init_multisig(&caller, &owners, &2, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8050,7 +8228,7 @@ fn multisig_init_empty_owners_fails() {
     let issuer = caller.clone();
 
     let owners = Vec::new(&env);
-    let r = client.try_init_multisig(&caller, &owners, &1, &86400);
+    let r = client.try_init_multisig(&caller, &owners, &1, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8065,7 +8243,7 @@ fn multisig_init_zero_duration_fails() {
     let mut owners = Vec::new(&env);
     owners.push_back(Address::generate(&env));
     // duration=0 should fail
-    let r = client.try_init_multisig(&caller, &owners, &1, &0);
+    let r = client.try_init_multisig(&caller, &owners, &1, &0, &5100);
     assert!(r.is_err());
 }
 
@@ -8081,7 +8259,7 @@ fn multisig_init_duration_exceeds_max_fails() {
     owners.push_back(Address::generate(&env));
     // duration > 365 days (31,536,000 seconds) should fail
     let excessive_duration = 365 * 24 * 60 * 60 + 1; // 31,536,001 seconds
-    let r = client.try_init_multisig(&caller, &owners, &1, &excessive_duration);
+    let r = client.try_init_multisig(&caller, &owners, &1, &excessive_duration, &5100);
     assert!(r.is_err());
 }
 
@@ -8098,7 +8276,7 @@ fn multisig_init_valid_duration_succeeds() {
     owners.push_back(owner1.clone());
 
     // duration=86400 (1 day) should succeed
-    client.init_multisig(&caller, &owners, &1, &86400);
+    client.init_multisig(&caller, &owners, &1, &86400, &5100);
     assert_eq!(client.get_multisig_threshold(), Some(1));
 
     // Verify we can propose an action (which requires duration to be set)
@@ -8121,7 +8299,7 @@ fn multisig_init_max_owners_succeeds() {
     }
 
     // threshold=11 (majority), duration=86400
-    client.init_multisig(&caller, &owners, &11, &86400);
+    client.init_multisig(&caller, &owners, &11, &86400, &5100);
     assert_eq!(client.get_multisig_threshold(), Some(11));
     assert_eq!(client.get_multisig_owners().len(), 20);
 }
@@ -8140,7 +8318,7 @@ fn multisig_init_exceeds_max_owners_fails() {
         owners.push_back(Address::generate(&env));
     }
 
-    let r = client.try_init_multisig(&caller, &owners, &11, &86400);
+    let r = client.try_init_multisig(&caller, &owners, &11, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8161,7 +8339,7 @@ fn multisig_init_threshold_equals_owners_succeeds() {
     owners.push_back(owner2.clone());
     owners.push_back(owner3.clone());
 
-    client.init_multisig(&caller, &owners, &3, &86400);
+    client.init_multisig(&caller, &owners, &3, &86400, &5100);
     assert_eq!(client.get_multisig_threshold(), Some(3));
     assert_eq!(client.get_multisig_owners().len(), 3);
 }
@@ -8180,7 +8358,7 @@ fn multisig_init_threshold_one_succeeds() {
         owners.push_back(Address::generate(&env));
     }
 
-    client.init_multisig(&caller, &owners, &1, &86400);
+    client.init_multisig(&caller, &owners, &1, &86400, &5100);
     assert_eq!(client.get_multisig_threshold(), Some(1));
     assert_eq!(client.get_multisig_owners().len(), 5);
 }
@@ -8201,7 +8379,7 @@ fn multisig_init_duplicate_owners_fails() {
     owners.push_back(owner2.clone());
     owners.push_back(owner1.clone()); // duplicate
 
-    let r = client.try_init_multisig(&caller, &owners, &2, &86400);
+    let r = client.try_init_multisig(&caller, &owners, &2, &86400, &5100);
     assert!(r.is_err());
 }
 
@@ -8222,7 +8400,7 @@ fn multisig_init_then_propose_works() {
 
     // Initialize with 7-day duration
     let duration = 7 * 24 * 60 * 60; // 7 days
-    client.init_multisig(&caller, &owners, &2, &duration);
+    client.init_multisig(&caller, &owners, &2, &duration, &5100);
 
     // Verify initialization
     assert_eq!(client.get_multisig_threshold(), Some(2));
@@ -8465,7 +8643,7 @@ fn multisig_threshold_one_executes_with_proposer_only() {
     owners.push_back(owner1.clone());
     owners.push_back(owner2.clone());
 
-    client.init_multisig(&caller, &owners, &1, &86400);
+    client.init_multisig(&caller, &owners, &1, &86400, &5100);
 
     let proposal_id = client.propose_action(&owner1, &ProposalAction::Freeze);
     client.execute_action(&proposal_id);
@@ -10098,7 +10276,7 @@ proptest! {
         owners.push_back(owner2.clone());
         owners.push_back(owner3.clone());
 
-        client.init_multisig(&caller, &owners, &2);
+        client.init_multisig(&caller, &owners, &2, &86400, &5100);
 
         let p1 = client.propose_action(&owner1, &ProposalAction::Freeze);
         // Below threshold → fail
@@ -14380,6 +14558,61 @@ mod admin_rotation_history {
             cursor = next;
         }
         assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn history_past_limit_returns_surviving_window() {
+        // Regression test for #1337: with more than MAX_ADMIN_ROTATION_LOG entries,
+        // the old code computed rotation IDs beyond count and unwrapped a missing
+        // entry, trapping. With 105 rotations, the surviving window is IDs 6..=105.
+        let (env, client, _admin) = setup();
+        let mut last_admin = Address::generate(&env);
+        for _ in 0..(MAX_ADMIN_ROTATION_LOG + 5) {
+            let next = Address::generate(&env);
+            client.propose_admin_rotation(&next);
+            client.accept_admin_rotation(&next);
+            last_admin = next;
+        }
+
+        // Page 1: start=0, limit=20 → entries 6..=25 (20 entries)
+        let (entries, next) = client.get_admin_rotation_history_page(&0, &20);
+        assert_eq!(entries.len(), 20);
+        assert_eq!(next, Some(20));
+
+        // Exhaustively page through all surviving entries with limit=20.
+        let mut cursor: Option<u32> = Some(0);
+        let mut total = 0u32;
+        while let Some(start) = cursor {
+            let (entries, next) = client.get_admin_rotation_history_page(&start, &20);
+            total += entries.len() as u32;
+            cursor = next;
+        }
+        assert_eq!(total, MAX_ADMIN_ROTATION_LOG);
+        // Last page must return None.
+        let (last_page, last_next) = client.get_admin_rotation_history_page(&80, &20);
+        assert_eq!(last_page.len(), 20);
+        assert_eq!(last_next, None);
+    }
+
+    #[test]
+    fn history_count_under_limit_behaviour_unchanged() {
+        // With count <= MAX_ADMIN_ROTATION_LOG, pagination must behave exactly as
+        // before the fix (no eviction, IDs start at 1).
+        let (env, client, _admin) = setup();
+        for i in 0..50u32 {
+            let next = Address::generate(&env);
+            client.propose_admin_rotation(&next);
+            client.accept_admin_rotation(&next);
+        }
+
+        let (entries, next) = client.get_admin_rotation_history_page(&0, &50);
+        assert_eq!(entries.len(), 50);
+        assert_eq!(next, None);
+
+        // Offset page still works.
+        let (entries2, next2) = client.get_admin_rotation_history_page(&10, &10);
+        assert_eq!(entries2.len(), 10);
+        assert_eq!(next2, None);
     }
 }
 
