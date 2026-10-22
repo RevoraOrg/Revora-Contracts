@@ -16,12 +16,17 @@ This change introduces **offering-scoped freeze controls** in addition to the ex
 
 ## Authorization Model
 
-For `freeze_offering` and `unfreeze_offering`, caller must be one of:
+For `freeze_offering`, caller must be one of:
 
 - current offering issuer, or
 - contract admin
 
 If caller is neither, the call returns `RevoraError::NotAuthorized`.
+
+For `unfreeze_offering`, only the admin may clear admin-imposed or legacy freezes.
+The current issuer or admin may clear issuer-imposed freezes. Admin re-freezing
+upgrades an issuer hold, and an issuer can never downgrade an admin hold.
+See [Freeze authority](freeze-authority.md) for holder reasons, compatibility and events.
 
 If the target offering does not exist, calls return `RevoraError::OfferingNotFound`.
 
@@ -47,14 +52,14 @@ If the target offering does not exist, calls return `RevoraError::OfferingNotFou
 
 ### Storage
 
-- New key: `DataKey::FrozenOffering(OfferingId)` with value `bool`.
+- New key: `DataKey2::FrozenOffering(OfferingId)` with value `bool`.
 
 ### Events
 
 - `frz_off`: emitted on offering freeze.
 - `ufrz_off`: emitted on offering unfreeze.
 
-Both events publish `(caller, state)` in data and are topic-scoped by `(issuer, namespace, token)`.
+Both events publish `(caller, state, authority)` in data and are topic-scoped by `(issuer, namespace, token)`.
 
 ## Mutating Entry Points Protected by Offering Freeze
 

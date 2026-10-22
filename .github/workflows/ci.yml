@@ -17,3 +17,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo check --lib
+      # Compile the gated test-helper block (issue #1308) in a non-test build so
+      # it cannot rot behind `cfg(any(test, feature = "testutils"))`.
+      - run: cargo check --lib --features testutils
+
+  # Fail the build if the deployed contract exports a `test_*` helper. Issue
+  # #1308: test_insert_period / test_set_last_claimed_idx mutate accounting state
+  # without authorization, so they must not be reachable on-chain.
+  wasm-exports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Assert release wasm exports no test_* helpers
+        run: ./scripts/check_wasm_exports.sh
