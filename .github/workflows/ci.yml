@@ -17,3 +17,107 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo check --lib
+      # Compile the gated test-helper block (issue #1308) in a non-test build so
+      # it cannot rot behind `cfg(any(test, feature = "testutils"))`.
+      - run: cargo check --lib --features testutils
+
+  # Fail the build if the deployed contract exports a `test_*` helper. Issue
+  # #1308: test_insert_period / test_set_last_claimed_idx mutate accounting state
+  # without authorization, so they must not be reachable on-chain.
+  wasm-exports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Assert release wasm exports no test_* helpers
+        run: ./scripts/check_wasm_exports.sh
+
+  wasm-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release wasm (default features)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p revora-contracts -p revora-vesting -p revora-governance
+      - name: Build release wasm (testnet feature)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p revora-contracts --features testnet
+      - name: Optimize and report wasm sizes
+        run: |
+          set -e
+          LIMIT=131072
+          REPORT="wasm-size-report.txt"
+          EXEMPT_CONTRACTS="revora_contracts"
+          echo "Contract size limit: ${LIMIT} bytes (128 KiB)" | tee "$REPORT"
+          echo "" | tee -a "$REPORT"
+
+          for features in "default" "testnet"; do
+            if [ "$features" = "default" ]; then
+              FEATURE_ARGS=""
+            else
+              FEATURE_ARGS="--features testnet"
+            fi
+            echo "=== Building with features: $features ===" | tee -a "$REPORT"
+            WASM_DIR="target/wasm32-unknown-unknown/release"
+            for wasm in "$WASM_DIR"/*.wasm; do
+              [ -f "$wasm" ] || continue
+              name=$(basename "$wasm")
+              raw_size=$(stat -c %s "$wasm")
+              # Try wasm-opt if available, otherwise report raw size
+              opt_size="$raw_size"
+              opt_note="raw"
+              if command -v wasm-opt >/dev/null 2>&1; then
+                wasm-opt -Oz "$wasm" -o "${wasm}.opt" 2>/dev/null && {
+                  opt_size=$(stat -c %s "${wasm}.opt")
+                  opt_note="wasm-opt -Oz"
+                  rm -f "${wasm}.opt"
+                }
+              fi
+              exempt="no"
+              for ec in $EXEMPT_CONTRACTS; do
+                if [ "$name" = "${ec}.wasm" ]; then
+                  exempt="yes"
+                  break
+                fi
+              done
+              status="OK"
+              if [ "$opt_size" -gt "$LIMIT" ] && [ "$exempt" = "no" ]; then
+                status="FAIL"
+              fi
+              echo "$features | $name | raw=${raw_size} | ${opt_note}=${opt_size} | limit=${LIMIT} | exempt=$exempt | $status" | tee -a "$REPORT"
+              if [ "$status" = "FAIL" ]; then
+                echo "::error::${name} (${features}) exceeds size limit: ${opt_size} > ${LIMIT} bytes"
+              fi
+            done
+          done
+
+          echo "" | tee -a "$REPORT"
+          echo "Known oversize exemption: revora_contracts (main contract, ~412 KB) tracked until split issues land." | tee -a "$REPORT"
+
+      - name: Fail on size gate violations
+        run: |
+          if grep -q "| FAIL |" wasm-size-report.txt; then
+            echo "::error::One or more contracts exceed the wasm size limit. See wasm-size-report.txt"
+            exit 1
+          fi
+
+      - name: Upload wasm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm
+          path: |
+            target/wasm32-unknown-unknown/release/*.wasm
+          if-no-files-found: ignore
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size-report
+          path: wasm-size-report.txt

@@ -29,7 +29,7 @@ fn setup_offering() -> (Env, RevoraRevenueShareClient<'static>, Address, Address
 
 fn setup_offering_with_threshold(threshold: u32) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
     let (env, client, issuer, token, payout_asset) = setup_offering();
-    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &threshold);
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &threshold, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     (env, client, issuer, token, payout_asset)
 }
 
@@ -38,11 +38,11 @@ fn claim_uses_historical_share_for_unclaimed_periods() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
     assert_eq!(payout, 75_000);
@@ -53,9 +53,9 @@ fn zeroing_share_does_not_burn_already_accrued_claims() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
     assert_eq!(payout, 50_000);
@@ -66,10 +66,10 @@ fn get_claimable_uses_historical_share_schedule() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &4_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     assert_eq!(client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder), 50_000);
 }
@@ -80,13 +80,13 @@ fn delay_barrier_preserves_pre_change_accrual() {
     let holder = Address::generate(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     env.ledger().with_mut(|li| li.timestamp = 1_050);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     env.ledger().with_mut(|li| li.timestamp = 1_100);
     assert_eq!(client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0), 50_000);
@@ -106,8 +106,8 @@ fn checkpoint_compression_folds_schedule_when_threshold_exceeded() {
     // We need more than CHECKPOINT_THRESHOLD_SMALL transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 1_000 + (i as u32 * 100);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     }
 
     // get_claimable should still return correct total after compression
@@ -124,8 +124,8 @@ fn checkpoint_compression_is_lossless_for_claimable_computation() {
     let mut expected_total = 0_i128;
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 1_000 + (i as u32 * 100);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
         expected_total += 10_000 * (share as i128) / 10_000;
     }
 
@@ -141,8 +141,8 @@ fn checkpoint_compression_lossless_multiple_claims_before_and_after_fold() {
     // Create enough share transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = if i <= CHECKPOINT_THRESHOLD_SMALL { 3_000 } else { 7_000 };
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     }
 
     // Claim all periods; the total should equal sum of (revenue * share / 10000) for each period
@@ -158,8 +158,8 @@ fn checkpoint_threshold_exactly_reached_then_claim() {
 
     // Create exactly threshold share transitions
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500), &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &5_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 500), &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &5_000, &i, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     }
 
     // Now claim all periods
@@ -176,8 +176,8 @@ fn checkpoint_claim_between_two_folds() {
     // Create enough transitions to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
         let share = 2_000 + (i as u32 * 200);
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &share, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     }
 
     // Claim a few periods first
@@ -198,15 +198,15 @@ fn checkpoint_set_and_get_threshold() {
     assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 1_000);
 
     // Set a custom threshold
-    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &500);
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &500, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 500);
 
     // Set to 0 to disable compression
-    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &0, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 0);
 
     // Re-enable with a new value
-    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &2000);
+    client.set_checkpoint_threshold(&issuer, &symbol_short!("def"), &token, &2000, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     assert_eq!(client.get_checkpoint_threshold(&issuer, &symbol_short!("def"), &token), 2000);
 }
 
@@ -217,8 +217,8 @@ fn checkpoint_compression_preserves_claimable_after_partial_claim_then_compressi
 
     // Create many share changes to trigger compression
     for i in 1..=CHECKPOINT_THRESHOLD_SMALL + 2 {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300), &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 300), &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     }
 
     // Claim some periods before the anchor boundary is crossed
@@ -244,8 +244,8 @@ fn checkpoint_compression_with_zero_threshold_disables_compression() {
 
     // Even with many share changes, no compression should happen
     for i in 1..=10 {
-        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100), &1);
-        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i);
+        client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &(1_000 + i as u32 * 100), &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &10_000, &i, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     }
 
     let claimable = client.get_claimable(&issuer, &symbol_short!("def"), &token, &holder);
@@ -270,8 +270,8 @@ fn accrued_unclaimed_returns_zero_for_blacklisted_holder() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     client.blacklist_add(&issuer, &symbol_short!("def"), &token, &holder);
 
@@ -286,8 +286,8 @@ fn accrued_unclaimed_matches_claimable_for_single_period() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let accrued = client.get_holder_accrued_unclaimed(
         &issuer, &symbol_short!("def"), &token, &holder,
@@ -302,10 +302,10 @@ fn accrued_unclaimed_matches_claimable_after_share_change() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let accrued = client.get_holder_accrued_unclaimed(
         &issuer, &symbol_short!("def"), &token, &holder,
@@ -320,7 +320,7 @@ fn accrued_unclaimed_returns_zero_for_holder_with_no_share() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let accrued = client.get_holder_accrued_unclaimed(
         &issuer, &symbol_short!("def"), &token, &holder,
@@ -333,9 +333,9 @@ fn accrued_unclaimed_respects_partial_claim() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Claim only first period
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &1);
@@ -357,8 +357,8 @@ fn accrued_unclaimed_after_full_claim_returns_zero() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     client.claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
 
@@ -373,9 +373,9 @@ fn accrued_unclaimed_zero_share_does_not_erase_past_accrual() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &0, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     let accrued = client.get_holder_accrued_unclaimed(
         &issuer, &symbol_short!("def"), &token, &holder,
@@ -388,11 +388,11 @@ fn accrued_unclaimed_matches_claimable_after_partial_claim_with_share_change() {
     let (_env, client, issuer, token, payout_asset) = setup_offering();
     let holder = Address::generate(&_env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &2_500, &1, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &2, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &100_000, &3, &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
 
     // Claim first two periods
     let payout = client.claim(&holder, &issuer, &symbol_short!("def"), &token, &2);

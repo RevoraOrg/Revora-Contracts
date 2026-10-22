@@ -290,7 +290,7 @@ fn rejected_fee_exceeds_holder_share_leaves_state_unchanged() {
     let holder = Address::generate(&c.env);
 
     // Aggregate holder share = 7_000; any fee above 3_000 exceeds the 10_000 budget.
-    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000, &1);
+    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000, &1, &soroban_sdk::Vec::from_array(&c.env, [c.issuer.clone()]));
     let before = persistent_len(&c);
     let res = c.client.try_set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &3_001, &treasury);
     assert_eq!(res, Err(Ok(RevoraError::FeeExceedsHolderShare)));

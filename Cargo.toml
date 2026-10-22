@@ -7,6 +7,19 @@ edition = "2021"
 # Issue #465: Kani bounded verification harness (not enabled in default CI).
 kani = []
 
+# Issue #1356: Testnet-only tooling entrypoints (faucet, indexer fixture, simulation).
+# Off by default — production/release builds exclude these to reduce wasm size and
+# narrow the mainnet attack surface. Enable with `--features testnet`.
+testnet = []
+
+# Issue #1308: exposes the test-only state-mutation helpers
+# (`test_insert_period`, `test_set_last_claimed_idx`) so a non-`cfg(test)` build
+# (e.g. an integration test) can seed accounting state. These helpers mutate a
+# holder's claim cursor and period revenue without authorization or token
+# transfer, so this feature must never be enabled for a deployed build — the
+# release wasm export check (`scripts/check_wasm_exports.sh`) enforces that.
+testutils = []
+
 # `kani` is a cfg set by the Kani verifier (not a Cargo feature), so declare it as a
 # known cfg to keep `unexpected_cfgs` quiet under `clippy --all-features -D warnings`.
 [package.metadata.kani]
@@ -20,14 +33,19 @@ soroban-sdk = { version = "21.0.0", features = ["alloc"] }
 
 [dev-dependencies]
 derive_arbitrary = "=1.3.2"
+ed25519-dalek = "=2.2.0"
 proptest = "1.6.0"
 serde_json = "1.0"
 soroban-sdk = { version = "21.0.0", features = ["testutils", "alloc"] }
+revora-vesting = { path = "contracts/vesting" }
 
 [profile.release]
 opt-level = "z"
 overflow-checks = true
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [workspace]
-members = ["indexer"]
+members = ["indexer", "contracts/governance", "contracts/vesting"]
 

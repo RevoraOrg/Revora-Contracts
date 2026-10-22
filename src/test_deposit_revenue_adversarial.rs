@@ -71,6 +71,7 @@ fn test_deposit_revenue_valid_call_succeeds() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, ());
 
@@ -99,6 +100,7 @@ fn test_deposit_revenue_contract_frozen_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::ContractFrozen)));
 
@@ -123,6 +125,7 @@ fn test_deposit_revenue_contract_paused_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::ContractPaused)));
 
@@ -143,6 +146,7 @@ fn test_deposit_revenue_unregistered_offering_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::OfferingNotFound)));
 
@@ -163,6 +167,7 @@ fn test_deposit_revenue_wrong_issuer_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [wrong_issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::OfferingNotFound)));
 
@@ -182,6 +187,7 @@ fn test_deposit_revenue_wrong_namespace_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::OfferingNotFound)));
 
@@ -196,7 +202,15 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
     let (other_payment_token, _other_admin) = create_payment_token(&env);
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &100_000,
+            &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -206,6 +220,7 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
         &other_payment_token,
         &50_000,
         &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::PaymentTokenMismatch)));
 
@@ -219,8 +234,15 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
 fn test_deposit_revenue_zero_amount_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
-    let res =
-        client.try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &0, &1);
+    let res = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payment_token,
+        &0,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(res, Err(Ok(RevoraError::InvalidAmount)));
 
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 0);
@@ -239,6 +261,7 @@ fn test_deposit_revenue_negative_amount_rejected() {
         &payment_token,
         &-100,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res_sub, Err(Ok(RevoraError::InvalidAmount)));
 
@@ -249,6 +272,7 @@ fn test_deposit_revenue_negative_amount_rejected() {
         &payment_token,
         &i128::MIN,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res_min, Err(Ok(RevoraError::InvalidAmount)));
 
@@ -268,6 +292,7 @@ fn test_deposit_revenue_zero_period_id_rejected() {
         &payment_token,
         &100_000,
         &0,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::InvalidPeriodId)));
 
@@ -281,7 +306,15 @@ fn test_deposit_revenue_duplicate_period_id_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &100_000,
+            &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -291,6 +324,7 @@ fn test_deposit_revenue_duplicate_period_id_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 
@@ -304,7 +338,15 @@ fn test_deposit_revenue_gap_period_id_rejected() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &100_000, &1)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &100_000,
+            &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     let res = client.try_deposit_revenue(
@@ -314,6 +356,7 @@ fn test_deposit_revenue_gap_period_id_rejected() {
         &payment_token,
         &100_000,
         &3,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert_eq!(res, Err(Ok(RevoraError::InvalidPeriodId)));
 
@@ -352,6 +395,7 @@ fn test_deposit_revenue_insufficient_balance_rejected() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert!(res.is_err(), "deposit must fail when issuer has insufficient balance");
 
@@ -365,15 +409,39 @@ fn test_deposit_revenue_multi_period_sequential_success() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &10_000, &1)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &10_000,
+            &1,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &20_000, &2)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &20_000,
+            &2,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     client
-        .deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &30_000, &3)
+        .deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &token,
+            &payment_token,
+            &30_000,
+            &3,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        )
         .unwrap();
 
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 3);

@@ -61,7 +61,7 @@
 
 #![cfg(test)]
 
-use crate::{DataKey2, PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{PendingTransfer, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger},
@@ -106,19 +106,6 @@ fn setup() -> Tenant {
         &0u32,
     );
 
-    // Seed the global issuer/namespace registries so `accept_issuer_transfer` /
-    // `reject_issuer_transfer` (which scan via `find_pending_transfer_for_new_issuer`)
-    // can resolve the pending transfer. `register_offering` on master does not
-    // populate these indices; this mirrors `issue_370_*` test setup in src/lib.rs.
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey2::IssuerCount, &1_u32);
-        env.storage().persistent().set(&DataKey2::IssuerItem(0), &issuer);
-        env.storage().persistent().set(&DataKey2::IssuerRegistered(issuer.clone()), &true);
-        env.storage().persistent().set(&DataKey2::NamespaceCount(issuer.clone()), &1_u32);
-        env.storage().persistent().set(&DataKey2::NamespaceItem(issuer.clone(), 0), &NS);
-        env.storage().persistent().set(&DataKey2::NamespaceRegistered(issuer.clone(), NS), &true);
-    });
-
     Tenant { env, client, issuer, token }
 }
 
@@ -135,7 +122,13 @@ fn pending_returns_proposed_new_issuer() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
 
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     assert_eq!(pending(&t), Some(new_issuer));
 }
@@ -144,7 +137,13 @@ fn pending_returns_proposed_new_issuer() {
 fn pending_is_read_only_and_idempotent() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     // Repeated reads return the same value...
     assert_eq!(pending(&t), Some(new_issuer.clone()));
@@ -162,7 +161,13 @@ fn pending_details_projection_matches_pending_issuer() {
     let new_issuer = Address::generate(&t.env);
     let before = t.env.ledger().timestamp();
 
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     let details: PendingTransfer =
         t.client.get_pending_transfer_details(&t.issuer, &NS, &t.token).unwrap();
@@ -181,7 +186,13 @@ fn pending_details_projection_matches_pending_issuer() {
 fn pending_unknown_ids_return_none_and_leave_state_unchanged() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     // Unknown issuer — read-only miss must not disturb the real record.
     let stranger = Address::generate(&t.env);
@@ -241,7 +252,13 @@ fn pending_is_isolated_per_offering_identity() {
     }
 
     let new_a = Address::generate(&env);
-    client.propose_issuer_transfer(&issuer_a, &NS, &token_a, &new_a);
+    client.propose_issuer_transfer(
+        &issuer_a,
+        &NS,
+        &token_a,
+        &new_a,
+        &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]),
+    );
 
     // Tenant B must not see tenant A's pending transfer.
     assert_eq!(client.get_pending_issuer_transfer(&issuer_a, &NS, &token_a), Some(new_a.clone()));
@@ -263,7 +280,13 @@ fn pending_is_isolated_per_offering_identity() {
         &0u32,
     );
     let new_alt = Address::generate(&env);
-    client.propose_issuer_transfer(&issuer_a, &symbol_short!("alt"), &token_a, &new_alt);
+    client.propose_issuer_transfer(
+        &issuer_a,
+        &symbol_short!("alt"),
+        &token_a,
+        &new_alt,
+        &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]),
+    );
 
     assert_eq!(client.get_pending_issuer_transfer(&issuer_a, &NS, &token_a), Some(new_a));
     assert_eq!(
@@ -280,13 +303,30 @@ fn pending_reflects_replace_then_none_after_cancel() {
     let first = Address::generate(&t.env);
     let second = Address::generate(&t.env);
 
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &first);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &first,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), Some(first));
 
-    t.client.replace_issuer_transfer(&t.issuer, &NS, &t.token, &second);
+    t.client.replace_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &second,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), Some(second));
 
-    t.client.cancel_issuer_transfer(&t.issuer, &NS, &t.token);
+    t.client.cancel_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), None);
 }
 
@@ -294,10 +334,16 @@ fn pending_reflects_replace_then_none_after_cancel() {
 fn pending_clears_after_accept() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    t.client.accept_issuer_transfer(&new_issuer, &NS, &t.token);
+    t.client.accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 
     // And the offering now lives under the new issuer — no pending anywhere.
@@ -308,10 +354,16 @@ fn pending_clears_after_accept() {
 fn pending_clears_after_reject() {
     let t = setup();
     let new_issuer = Address::generate(&t.env);
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    t.client.reject_issuer_transfer(&new_issuer, &NS, &t.token);
+    t.client.reject_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token);
     assert_eq!(pending(&t), None);
 }
 
@@ -322,7 +374,13 @@ fn failed_replace_without_pending_leaves_state_unchanged() {
     let t = setup();
     let err = t
         .client
-        .try_replace_issuer_transfer(&t.issuer, &NS, &t.token, &Address::generate(&t.env))
+        .try_replace_issuer_transfer(
+            &t.issuer,
+            &NS,
+            &t.token,
+            &Address::generate(&t.env),
+            &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+        )
         .unwrap_err();
     assert_eq!(err, Ok(RevoraError::NoTransferPending));
     assert_eq!(pending(&t), None);
@@ -331,7 +389,15 @@ fn failed_replace_without_pending_leaves_state_unchanged() {
 #[test]
 fn failed_cancel_without_pending_leaves_state_unchanged() {
     let t = setup();
-    let err = t.client.try_cancel_issuer_transfer(&t.issuer, &NS, &t.token).unwrap_err();
+    let err = t
+        .client
+        .try_cancel_issuer_transfer(
+            &t.issuer,
+            &NS,
+            &t.token,
+            &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+        )
+        .unwrap_err();
     assert_eq!(err, Ok(RevoraError::NoTransferPending));
     assert_eq!(pending(&t), None);
 }
@@ -340,7 +406,7 @@ fn failed_cancel_without_pending_leaves_state_unchanged() {
 fn failed_accept_without_pending_leaves_state_unchanged() {
     let t = setup();
     let stranger = Address::generate(&t.env);
-    let err = t.client.try_accept_issuer_transfer(&stranger, &NS, &t.token).unwrap_err();
+    let err = t.client.try_accept_issuer_transfer(&t.issuer, &stranger, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::NoTransferPending));
     assert_eq!(pending(&t), None);
 }
@@ -351,10 +417,25 @@ fn failed_double_proposal_keeps_original_value() {
     let first = Address::generate(&t.env);
     let second = Address::generate(&t.env);
 
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &first);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &first,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), Some(first.clone()));
 
-    let err = t.client.try_propose_issuer_transfer(&t.issuer, &NS, &t.token, &second).unwrap_err();
+    let err = t
+        .client
+        .try_propose_issuer_transfer(
+            &t.issuer,
+            &NS,
+            &t.token,
+            &second,
+            &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+        )
+        .unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferPending));
 
     // The rejected second proposal must not overwrite the observed value.
@@ -374,7 +455,13 @@ fn failed_proposal_for_unknown_offering_leaves_no_state() {
     // must still see nothing for both the fake id and the real one.
     let err = t
         .client
-        .try_propose_issuer_transfer(&stranger, &NS, &other_token, &Address::generate(&t.env))
+        .try_propose_issuer_transfer(
+            &stranger,
+            &NS,
+            &other_token,
+            &Address::generate(&t.env),
+            &soroban_sdk::Vec::from_array(&t.env, [stranger.clone()]),
+        )
         .unwrap_err();
     assert_eq!(err, Ok(RevoraError::OfferingNotFound));
     assert_eq!(t.client.get_pending_issuer_transfer(&stranger, &NS, &other_token), None);
@@ -390,7 +477,14 @@ fn expired_pending_stays_readable_until_cleared() {
     let t0 = t.env.ledger().timestamp();
 
     // Custom expiry: proposal with expiry_secs = 3600 (1h).
-    t.client.propose_transfer_with_expiry(&t.issuer, &NS, &t.token, &new_issuer, &3_600u64);
+    t.client.propose_transfer_with_expiry(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &3_600u64,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     let details: PendingTransfer =
         t.client.get_pending_transfer_details(&t.issuer, &NS, &t.token).unwrap();
@@ -403,14 +497,20 @@ fn expired_pending_stays_readable_until_cleared() {
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
     // Accept is what enforces the deadline.
-    let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
+    let err =
+        t.client.try_accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
 
     // The failed accept must not have cleared the pending record.
     assert_eq!(pending(&t), Some(new_issuer));
 
     // Cancel (issuer-side) clears it deterministically.
-    t.client.cancel_issuer_transfer(&t.issuer, &NS, &t.token);
+    t.client.cancel_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
     assert_eq!(pending(&t), None);
 }
 
@@ -420,13 +520,20 @@ fn expired_default_window_read_stable_and_accept_rejected() {
     let new_issuer = Address::generate(&t.env);
     let t0 = t.env.ledger().timestamp();
 
-    t.client.propose_issuer_transfer(&t.issuer, &NS, &t.token, &new_issuer);
+    t.client.propose_issuer_transfer(
+        &t.issuer,
+        &NS,
+        &t.token,
+        &new_issuer,
+        &soroban_sdk::Vec::from_array(&t.env, [t.issuer.clone()]),
+    );
 
     // Jump well past the 7-day default window.
     t.env.ledger().with_mut(|l| l.timestamp = t0 + 8 * 24 * 60 * 60);
     assert_eq!(pending(&t), Some(new_issuer.clone()));
 
-    let err = t.client.try_accept_issuer_transfer(&new_issuer, &NS, &t.token).unwrap_err();
+    let err =
+        t.client.try_accept_issuer_transfer(&t.issuer, &new_issuer, &NS, &t.token).unwrap_err();
     assert_eq!(err, Ok(RevoraError::IssuerTransferExpired));
     assert_eq!(pending(&t), Some(new_issuer));
 }

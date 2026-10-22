@@ -1,14 +1,20 @@
-//! # Token Vesting Core — `vesting.rs`
+//! # Revora Vesting Contract
 //!
-//! Token vesting schedules and deterministic fixed-point vesting curves.
+//! Standalone token-vesting contract extracted from the main
+//! [`revora-contracts`](crate) cdylib so that vesting state and logic live in
+//! their own security domain (their own wasm and contract address) instead of
+//! being compiled into the revenue-share contract alongside `RevoraRevenueShare`.
 //!
-//! Schedule writes include a curve. Legacy schedules that predate the curve
-//! field are converted to `Linear` by the migration helper below.
+//! This crate compiles to its own `cdylib` and exposes only the vesting
+//! entry points (`vesting_register`, `vesting_claim`, `accelerate_vesting`, …).
 
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    Vec,
+};
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -69,7 +75,7 @@ pub struct VestingSchedule {
     pub cliff_secs: u64,
 }
 
-/// Errors produced by the vesting module.
+/// Errors produced by the vesting contract.
 #[contracterror]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
@@ -96,6 +102,8 @@ pub enum VestingError {
     InvalidCurveParameters = 109,
     /// Vesting cliff period has not been reached yet.
     VestingCliffNotReached = 110,
+    /// A token transfer for escrow or a claim failed.
+    TokenTransferFailed = 111,
 }
 
 /// Shared schema version for vesting events.
@@ -106,6 +114,7 @@ const EVENT_VESTING_CREATED: Symbol = symbol_short!("vest_crt");
 const EVENT_VESTING_CLAIMED: Symbol = symbol_short!("vest_clm");
 const EVENT_VESTING_ACCEL: Symbol = symbol_short!("vest_accl");
 
+/// The vesting contract.
 #[contract]
 pub struct VestingContract;
 
@@ -161,6 +170,14 @@ impl VestingContract {
         let key = VestingKey::Schedule(beneficiary.clone());
         if env.storage().persistent().has(&key) {
             return Err(VestingError::ScheduleAlreadyExists);
+        }
+
+        let contract_address = env.current_contract_address();
+        if token::Client::new(&env, &token)
+            .try_transfer(&issuer, &contract_address, &total_amount)
+            .is_err()
+        {
+            return Err(VestingError::TokenTransferFailed);
         }
 
         let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
@@ -258,6 +275,14 @@ impl VestingContract {
         }
 
         let new_claimed = already_claimed.saturating_add(claimable);
+        let contract_address = env.current_contract_address();
+        if token::Client::new(&env, &schedule.token)
+            .try_transfer(&contract_address, &beneficiary, &claimable)
+            .is_err()
+        {
+            return Err(VestingError::TokenTransferFailed);
+        }
+
         env.storage().persistent().set(&claimed_key, &new_claimed);
 
         env.events().publish((EVENT_VESTING_CLAIMED, beneficiary), claimable);
@@ -275,7 +300,7 @@ impl VestingContract {
         let schedule: VestingSchedule =
             env.storage().persistent().get(&VestingKey::Schedule(beneficiary))?;
         let now = env.ledger().timestamp();
-        Some(compute_vested(&schedule, now))
+        Some(compute_vested_amount(&schedule, now))
     }
 
     /// Return the currently claimable amount for `beneficiary`.
@@ -323,13 +348,32 @@ impl VestingContract {
             return 0;
         }
 
-        let vested = compute_vested(&schedule, at_ts);
+        let vested = compute_vested_amount(&schedule, at_ts);
         let bps = (vested.saturating_mul(10000) / schedule.total_amount) as u32;
 
         if bps > 10000 {
             10000
         } else {
             bps
+        }
+    }
+
+    /// Return whether `holder` has no vesting schedule or is fully vested.
+    ///
+    /// Used by external contracts (e.g. the revenue-share contract) to decide
+    /// whether a holder may convert/transfer without an unvested schedule
+    /// blocking the operation. Returns `true` when there is no schedule on
+    /// record or when the vested amount has reached `total_amount`.
+    pub fn is_fully_vested(env: Env, holder: Address) -> bool {
+        let schedule: Option<VestingSchedule> =
+            env.storage().persistent().get(&VestingKey::Schedule(holder.clone()));
+        match schedule {
+            None => true,
+            Some(schedule) => {
+                let now = env.ledger().timestamp();
+                let vested = compute_vested_amount(&schedule, now);
+                vested >= schedule.total_amount
+            }
         }
     }
 }
@@ -567,7 +611,7 @@ fn fixed_pow(mut value: i128, exponent: u32) -> Result<i128, VestingError> {
 }
 
 /// Helper: compute total vested tokens at a given timestamp.
-pub fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
+pub fn compute_vested_amount(schedule: &VestingSchedule, now: u64) -> i128 {
     if now < schedule.start_ts.saturating_add(schedule.cliff_secs) {
         return 0;
     }
@@ -622,7 +666,7 @@ pub fn compute_vested(schedule: &VestingSchedule, now: u64) -> i128 {
 
 /// Helper: compute claimable tokens given prior claimed amount.
 pub fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now: u64) -> i128 {
-    let vested = compute_vested(schedule, now);
+    let vested = compute_vested_amount(schedule, now);
     let claimable = vested.saturating_sub(already_claimed);
     if claimable < 0 {
         0
@@ -631,11 +675,17 @@ pub fn compute_claimable(schedule: &VestingSchedule, already_claimed: i128, now:
     }
 }
 
-use soroban_sdk::contracterror;
-
 #[cfg(test)]
 mod tests {
-    use super::{evaluate_curve, VestingCurve, VestingError};
+    use super::{
+        compute_vested_amount, evaluate_curve, VestingContract, VestingContractClient,
+        VestingCurve, VestingError, VestingOfferingId,
+    };
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Ledger as _},
+        Address, Env, IntoVal,
+    };
 
     const SCALE: i128 = 1_000_000_000_000_000_000;
 
@@ -692,5 +742,265 @@ mod tests {
             evaluate_curve(&VestingCurve::Exponential(0, 0), 1, 10, 100),
             Err(VestingError::InvalidCurveParameters)
         );
+    }
+
+    #[test]
+    fn test_accelerate_vesting_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let total_amount = 1000;
+        let cliff_ts = 100;
+        let start_ts = 200;
+        let end_ts = 1200;
+
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &total_amount,
+            &cliff_ts,
+            &start_ts,
+            &end_ts,
+            &VestingCurve::Linear,
+        );
+
+        let trigger_id = symbol_short!("ipo");
+
+        // Accelerate by 20% (2000 bps)
+        client.accelerate_vesting(&beneficiary, &trigger_id, &2000u32);
+
+        // Test that claimable amount correctly reflects the accelerated amount before start
+        env.ledger().with_mut(|l| l.timestamp = 150); // After cliff, before start
+        let claimable = client.get_claimable_amount(&beneficiary).unwrap();
+        assert_eq!(claimable, 200); // 20% of 1000 = 200
+    }
+
+    #[test]
+    fn test_accelerate_vesting_idempotent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &100,
+            &200,
+            &1200,
+            &VestingCurve::Linear,
+            &0,
+        );
+
+        let trigger_id = symbol_short!("acq");
+        client.accelerate_vesting(&beneficiary, &trigger_id, &5000u32);
+
+        // Replay should fail with AlreadyAccelerated (107)
+        let err = client.try_accelerate_vesting(&beneficiary, &trigger_id, &5000u32).unwrap_err();
+        assert_eq!(err.unwrap().unwrap(), VestingError::AlreadyAccelerated as u32);
+    }
+
+    #[test]
+    fn test_accelerate_vesting_invalid_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &100,
+            &200,
+            &1200,
+            &VestingCurve::Linear,
+            &0,
+        );
+
+        let trigger_id = symbol_short!("ipo");
+
+        // Acceleration > 10000 should fail with InvalidAccelerationBps (108)
+        let err = client.try_accelerate_vesting(&beneficiary, &trigger_id, &10001u32).unwrap_err();
+        assert_eq!(err.unwrap().unwrap(), VestingError::InvalidAccelerationBps as u32);
+    }
+
+    #[test]
+    fn test_vested_progress_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+        let offering_id = VestingOfferingId { issuer: issuer.clone(), token: token.clone() };
+
+        // Register 1000 tokens, cliff at 100, start at 100, end at 1100
+        // Total duration = 1000. So 1 token per 1 tick.
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &100,
+            &100,
+            &1100,
+            &VestingCurve::Linear,
+            &0,
+        );
+
+        // Test at cliff - 1 (ts: 99). Vested = 0. BPS = 0
+        let progress_before_cliff = client.vested_progress_at(&offering_id, &beneficiary, &99);
+        assert_eq!(progress_before_cliff, 0);
+
+        // Test at cliff (ts: 100). Vested = 0 (since it just started). BPS = 0
+        let progress_at_cliff = client.vested_progress_at(&offering_id, &beneficiary, &100);
+        assert_eq!(progress_at_cliff, 0);
+
+        // Test at midway (ts: 600). Duration is 1000. Elapsed = 500. Vested = 500. BPS = 5000 (50%)
+        let progress_midway = client.vested_progress_at(&offering_id, &beneficiary, &600);
+        assert_eq!(progress_midway, 5000);
+
+        // Test at end + 1 (ts: 1101). Vested = 1000. BPS = 10000 (100%)
+        let progress_after_end = client.vested_progress_at(&offering_id, &beneficiary, &1101);
+        assert_eq!(progress_after_end, 10000);
+    }
+
+    #[test]
+    fn test_cliff_secs_gate() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Total 1000, start 100, end 1100. Cliff secs = 50.
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &100,  // cliff_ts
+            &100,  // start_ts
+            &1100, // end_ts
+            &VestingCurve::Linear,
+            &50, // cliff_secs
+        );
+
+        // At ts 149 (before start + cliff_secs)
+        env.ledger().with_mut(|l| l.timestamp = 149);
+        let claimable_err = client.try_vesting_claim(&beneficiary).unwrap_err();
+        assert_eq!(claimable_err.unwrap().unwrap(), VestingError::VestingCliffNotReached as u32);
+
+        let progress = client.vested_progress_at(
+            &VestingOfferingId { issuer: issuer.clone(), token: token.clone() },
+            &beneficiary,
+            &149,
+        );
+        assert_eq!(progress, 0);
+
+        let vested_amt = client.get_vested_amount(&beneficiary).unwrap();
+        assert_eq!(vested_amt, 0);
+
+        // At ts 150 (exactly start + cliff_secs)
+        env.ledger().with_mut(|l| l.timestamp = 150);
+        let progress_at_cliff = client.vested_progress_at(
+            &VestingOfferingId { issuer: issuer.clone(), token: token.clone() },
+            &beneficiary,
+            &150,
+        );
+        // Vested should be 50 tokens (since 1000 duration, 1 token per sec, 50 secs elapsed).
+        // BPS = 50 / 1000 = 5% = 500
+        assert_eq!(progress_at_cliff, 500);
+
+        let vested_amt_at_cliff = client.get_vested_amount(&beneficiary).unwrap();
+        assert_eq!(vested_amt_at_cliff, 50);
+    }
+
+    #[test]
+    fn test_is_fully_vested_no_schedule_is_true() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let beneficiary = Address::generate(&env);
+        assert!(client.is_fully_vested(&beneficiary));
+    }
+
+    #[test]
+    fn test_is_fully_vested_unvested_is_false() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // start 1000, end 2000; query at t=500 -> nothing vested.
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &1000,
+            &1000,
+            &2000,
+            &VestingCurve::Linear,
+            &0,
+        );
+        assert!(!client.is_fully_vested(&beneficiary));
+    }
+
+    #[test]
+    fn test_is_fully_vested_fully_vested_is_true() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VestingContract);
+        let client = VestingContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // start 100, end 200; query at t=300 -> fully vested.
+        client.vesting_register(
+            &issuer,
+            &beneficiary,
+            &token,
+            &1000,
+            &100,
+            &100,
+            &200,
+            &VestingCurve::Linear,
+            &0,
+        );
+        env.ledger().with_mut(|l| l.timestamp = 300);
+        assert!(client.is_fully_vested(&beneficiary));
     }
 }

@@ -62,18 +62,42 @@ fn test_multi_token_offering_independence() {
 
     // Deposit tokenX to A
     let amountA = 1000;
-    client.deposit_revenue(&issuer, &namespace, &tokenA, &payTokenX, &amountA, &1);
+    client.deposit_revenue(
+        &issuer,
+        &namespace,
+        &tokenA,
+        &payTokenX,
+        &amountA,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Deposit tokenY to B
     let amountB = 2000;
-    client.deposit_revenue(&issuer, &namespace, &tokenB, &payTokenY, &amountB, &1);
+    client.deposit_revenue(
+        &issuer,
+        &namespace,
+        &tokenB,
+        &payTokenY,
+        &amountB,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Assert get_payment_token returns correct for each
     assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenA), Some(payTokenX.clone()));
     assert_eq!(client.get_payment_token(&issuer, &namespace, &tokenB), Some(payTokenY.clone()));
 
     // Assert cross-deposit fails (tokenY into A)
-    let res = client.try_deposit_revenue(&issuer, &namespace, &tokenA, &payTokenY, &amountB, &2);
+    let res = client.try_deposit_revenue(
+        &issuer,
+        &namespace,
+        &tokenA,
+        &payTokenY,
+        &amountB,
+        &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     match res {
         Ok(_) => panic!("cross-token deposit must be rejected"),
         Err(Ok(err)) => assert_eq!(err, RevoraError::PaymentTokenMismatch),

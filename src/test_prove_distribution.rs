@@ -49,8 +49,8 @@ fn prove_distribution_normal_case() {
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -60,7 +60,7 @@ fn prove_distribution_normal_case() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder_a.clone());
@@ -117,8 +117,8 @@ fn prove_distribution_digest_is_deterministic() {
 
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -128,7 +128,7 @@ fn prove_distribution_digest_is_deterministic() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder_a.clone());
@@ -177,8 +177,8 @@ fn prove_distribution_sorting_makes_order_invariant() {
     let holder_a = Address::generate(&env);
     let holder_b = Address::generate(&env);
     // Different BPS so they have a clear sort order regardless of address bytes.
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_b, &2_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -188,7 +188,7 @@ fn prove_distribution_sorting_makes_order_invariant() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders_ab = Vec::new(&env);
     holders_ab.push_back(holder_a.clone());
@@ -235,8 +235,8 @@ fn prove_distribution_identical_bps_tie_break_by_address() {
     // by XDR address bytes ascending regardless of generation order.
     let holder_x = Address::generate(&env);
     let holder_y = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_x, &5_000u32, &1);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_y, &5_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_x, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_y, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -246,7 +246,7 @@ fn prove_distribution_identical_bps_tie_break_by_address() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Input order: [y, x].
     let mut holders_yx = Vec::new(&env);
@@ -317,7 +317,7 @@ fn prove_distribution_empty_holders() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let holders: Vec<Address> = Vec::new(&env);
     let (entries, digest) = client.prove_distribution_for_period(
@@ -356,7 +356,7 @@ fn prove_distribution_unknown_period_id_returns_zero_payouts() {
         &0);
 
     let holder_a = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder_a, &3_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 10_000_000);
     client.deposit_revenue(
@@ -366,7 +366,7 @@ fn prove_distribution_unknown_period_id_returns_zero_payouts() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder_a.clone());
@@ -416,7 +416,7 @@ fn prove_distribution_zero_share_bps_yields_zero_payout() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let no_share_holder = Address::generate(&env);
     // no set_holder_share call → defaults to 0
@@ -461,10 +461,10 @@ fn prove_distribution_usdc_6_decimals_normalizes_correctly() {
         &0);
 
     // Configure 6-decimal payment token (USDC-style)
-    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6u32);
+    client.set_payment_token_decimals(&issuer, &symbol_short!("def"), &token, &6u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Deposit 1_000_000 raw units (= 1.000000 USDC at 6 decimals)
     mint(&env, &payment_token, &issuer, 1_000_000);
@@ -475,7 +475,7 @@ fn prove_distribution_usdc_6_decimals_normalizes_correctly() {
         &payment_token,
         &1_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder.clone());
@@ -517,14 +517,14 @@ fn prove_distribution_respects_round_half_up_mode() {
         &0i128,
         &symbol_short!(""),
         &0);
-    client.set_rounding_mode(&issuer, &symbol_short!("def"), &token, &RoundingMode::RoundHalfUp);
+    client.set_rounding_mode(&issuer, &symbol_short!("def"), &token, &RoundingMode::RoundHalfUp, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let holder = Address::generate(&env);
     // amount=3, bps=5000 → 1.5 → truncation=1, half-up=2
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 3);
-    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &3i128, &1u64);
+    client.deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &3i128, &1u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder.clone());
@@ -572,7 +572,7 @@ fn prove_distribution_caps_at_max_chunk_periods() {
         &payment_token,
         &1_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Build 201 holders (one over the cap)
     let mut holders = Vec::new(&env);
@@ -615,7 +615,7 @@ fn prove_distribution_entry_fields_match() {
         &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 1_000);
     client.deposit_revenue(
@@ -625,7 +625,7 @@ fn prove_distribution_entry_fields_match() {
         &payment_token,
         &1_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder.clone());
@@ -668,7 +668,7 @@ fn prove_distribution_different_periods_produce_different_digests() {
         &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     mint(&env, &payment_token, &issuer, 20_000_000);
     client.deposit_revenue(
@@ -678,7 +678,7 @@ fn prove_distribution_different_periods_produce_different_digests() {
         &payment_token,
         &10_000_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     client.deposit_revenue(
         &issuer,
         &symbol_short!("def"),
@@ -686,7 +686,7 @@ fn prove_distribution_different_periods_produce_different_digests() {
         &payment_token,
         &10_000_000i128,
         &2u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let mut holders = Vec::new(&env);
     holders.push_back(holder.clone());

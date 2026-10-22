@@ -141,6 +141,7 @@ fn setup_with_holder(
         &holder,
         &10_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     (env, client, issuer, offering_token, payment_token, holder)
@@ -156,7 +157,15 @@ fn deposit_period(
     period_id: u64,
     amount: i128,
 ) {
-    client.deposit_revenue(issuer, &symbol_short!("ns"), token, payment_token, &amount, &period_id);
+    client.deposit_revenue(
+        issuer,
+        &symbol_short!("ns"),
+        token,
+        payment_token,
+        &amount,
+        &period_id,
+        &soroban_sdk::Vec::from_array(env, [issuer.clone()]),
+    );
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -888,6 +897,7 @@ fn deposit_revenue_ignores_report_and_claim_windows() {
         &payment_token,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     assert!(r.is_ok(), "deposit_revenue must not be gated by report/claim windows, got {r:?}");
 }
@@ -907,7 +917,13 @@ fn claim_window_open_but_delay_not_elapsed_returns_delay_error() {
     deposit_period(&env, &client, &issuer, &token, &payment_token, 1, 100_000);
 
     // Set 500s delay and a claim window that is open at T=1200
-    client.set_claim_delay(&issuer, &symbol_short!("ns"), &token, &500);
+    client.set_claim_delay(
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &500,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_100, &2_000);
 
     // T=1200: window is open, but delay requires T >= 1000+500=1500
@@ -924,7 +940,13 @@ fn claim_window_open_and_delay_elapsed_succeeds() {
     set_time(&env, 1_000);
     deposit_period(&env, &client, &issuer, &token, &payment_token, 1, 100_000);
 
-    client.set_claim_delay(&issuer, &symbol_short!("ns"), &token, &500);
+    client.set_claim_delay(
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &500,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &1_100, &3_000);
 
     // T=1500: window open AND delay elapsed (1000+500=1500)
@@ -941,7 +963,13 @@ fn claim_window_closed_even_if_delay_elapsed() {
     set_time(&env, 1_000);
     deposit_period(&env, &client, &issuer, &token, &payment_token, 1, 100_000);
 
-    client.set_claim_delay(&issuer, &symbol_short!("ns"), &token, &100);
+    client.set_claim_delay(
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &100,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     // Window is in the past: [500, 900]
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token, &500, &900);
 
@@ -1066,6 +1094,7 @@ fn claim_window_is_scoped_per_offering() {
         &holder,
         &10_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
         &issuer,
@@ -1074,11 +1103,28 @@ fn claim_window_is_scoped_per_offering() {
         &holder,
         &10_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     set_time(&env, 500);
-    client.deposit_revenue(&issuer, &symbol_short!("ns"), &token_a, &payment_token, &100_000, &1);
-    client.deposit_revenue(&issuer, &symbol_short!("ns"), &token_b, &payment_token, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("ns"),
+        &token_a,
+        &payment_token,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("ns"),
+        &token_b,
+        &payment_token,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Close A's claim window; leave B's unset
     client.set_claim_window(&issuer, &symbol_short!("ns"), &token_a, &5_000, &6_000);
