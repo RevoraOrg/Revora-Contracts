@@ -266,7 +266,7 @@ fn pending_periods_page_and_claimable_chunk_consistent() {
     }
 
     // Set holder share
-    let r = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1000u32);
+    let r = client.try_set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(r.is_ok());
 
     // get_pending_periods full
@@ -573,7 +573,7 @@ fn get_claimable_chunk_table_driven_invariants() {
             &token,
             &holder,
             &tc.holder_share_bps,
-        &1);
+        &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
         // Insert periods
         for p in 1..=tc.period_count {
@@ -618,7 +618,7 @@ fn get_claimable_chunk_table_driven_invariants() {
                 &symbol_short!("def"),
                 &token,
                 &tc.delay_secs,
-            );
+             &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
         }
 
         // Set claim window if needed
@@ -673,7 +673,7 @@ fn get_claimable_chunk_cursor_idempotency_repeated_queries() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Insert 10 periods
     for p in 1..=10u64 {
@@ -748,7 +748,7 @@ fn get_claimable_chunk_sum_matches_full_claimable() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Insert 10 periods
     for p in 1..=10u64 {
@@ -814,10 +814,10 @@ fn get_claimable_chunk_respects_delay_barrier_parity_with_claim() {
         &0);
     mint_tokens(&env, &payment_token, &issuer, &100_000i128);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &10_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Set delay
-    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100);
+    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &100, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Insert period 1 at timestamp 1000
     env.ledger().with_mut(|li| li.timestamp = 1000);

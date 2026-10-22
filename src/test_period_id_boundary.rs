@@ -109,7 +109,7 @@ fn deposit_revenue_gap_period_rejected() {
             &payment_token,
             &1_000,
             &1,
-        )
+         &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]))
         .unwrap();
 
     // Try to deposit period 3 (gap)
@@ -120,7 +120,7 @@ fn deposit_revenue_gap_period_rejected() {
         &payment_token,
         &1_000,
         &3,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
@@ -167,7 +167,7 @@ fn deposit_revenue_zero_period_id_rejected() {
         &payment_token,
         &1_000,
         &0u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 
     // No period should have been recorded
@@ -247,7 +247,7 @@ fn deposit_revenue_period_id_one_accepted() {
         &payment_token,
         &1_000,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(result.is_ok());
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 1);
 }
@@ -264,7 +264,7 @@ fn deposit_revenue_period_id_max_rejected() {
         &payment_token,
         &1_000,
         &u64::MAX,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 0);
 }
@@ -284,7 +284,7 @@ fn deposit_revenue_duplicate_period_rejected() {
             &payment_token,
             &1_000,
             &42u64,
-        )
+         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
         .unwrap();
 
     let result = client.try_deposit_revenue(
@@ -294,7 +294,7 @@ fn deposit_revenue_duplicate_period_rejected() {
         &payment_token,
         &1_000,
         &42u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 
     // Period count must remain 1
@@ -316,7 +316,7 @@ fn deposit_revenue_duplicate_next_period_rejected() {
             &payment_token,
             &1_000,
             &1,
-        )
+         &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]))
         .unwrap();
 
     // Try to deposit period 1 again
@@ -327,7 +327,7 @@ fn deposit_revenue_duplicate_next_period_rejected() {
         &payment_token,
         &1_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 }
 
@@ -426,7 +426,7 @@ fn zero_amount_rejected_by_deposit_revenue() {
         &payment_token,
         &0,
         &3u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(r, Err(Ok(RevoraError::InvalidAmount)));
 }
 
@@ -471,7 +471,7 @@ fn deposit_revenue_wrong_issuer_rejected() {
         &payment_token,
         &1_000,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
     assert!(r.is_err());
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 0);
 }
@@ -519,7 +519,7 @@ fn period_id_isolated_across_offerings() {
 
     // Deposit period 5 for offering A
     client
-        .deposit_revenue(&issuer_a, &symbol_short!("def"), &token_a, &payment_token, &1_000, &5u64)
+        .deposit_revenue(&issuer_a, &symbol_short!("def"), &token_a, &payment_token, &1_000, &5u64, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]))
         .unwrap();
 
     // Offering B period 5 must still be available (not yet deposited)
@@ -527,7 +527,7 @@ fn period_id_isolated_across_offerings() {
 
     // Deposit period 5 for offering B independently
     client
-        .deposit_revenue(&issuer_b, &symbol_short!("def"), &token_b, &payment_token, &2_000, &5u64)
+        .deposit_revenue(&issuer_b, &symbol_short!("def"), &token_b, &payment_token, &2_000, &5u64, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]))
         .unwrap();
 
     assert_eq!(client.get_period_count(&issuer_a, &symbol_short!("def"), &token_a), 1);
@@ -615,7 +615,7 @@ fn frozen_contract_rejects_deposit_revenue() {
         &payment_token,
         &1_000,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(r, Err(Ok(RevoraError::ContractFrozen)));
 }
 
@@ -635,7 +635,7 @@ fn sequential_period_ids_stored_in_order() {
                 &payment_token,
                 &1_000,
                 &p,
-            )
+             &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
             .unwrap();
     }
 
@@ -656,7 +656,7 @@ fn out_of_order_period_ids_rejected() {
             &payment_token,
             &500,
             &1u64,
-        )
+         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
         .unwrap();
 
     // period 3 fails (gap)
@@ -667,7 +667,7 @@ fn out_of_order_period_ids_rejected() {
         &payment_token,
         &500,
         &3u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(res, Err(Ok(RevoraError::InvalidPeriodId)));
 
     // period 1 fails (non-increasing)
@@ -678,6 +678,6 @@ fn out_of_order_period_ids_rejected() {
         &payment_token,
         &500,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(res2, Err(Ok(RevoraError::InvalidPeriodId)));
 }

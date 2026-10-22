@@ -118,7 +118,7 @@ fn setup_with_holder(
         &offering_token,
         &holder,
         &10_000,
-    &1);
+    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     (env, client, issuer, offering_token, payment_token, holder)
 }
@@ -133,7 +133,7 @@ fn deposit_period(
     period_id: u64,
     amount: i128,
 ) {
-    client.deposit_revenue(issuer, &symbol_short!("ns"), token, payment_token, &amount, &period_id);
+    client.deposit_revenue(issuer, &symbol_short!("ns"), token, payment_token, &amount, &period_id, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────────

@@ -231,8 +231,24 @@ fn event_indexed_v2_claim_topic_and_data_shape() {
     );
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &5_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    ); // 50%
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 
@@ -280,9 +296,33 @@ fn event_indexed_v2_claim_period_id_always_zero() {
     );
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &5_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout,
+        &200_000,
+        &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
 

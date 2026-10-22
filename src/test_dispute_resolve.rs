@@ -67,7 +67,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
         &offering_token,
         &holder,
         &10_000,
-    &1);
+    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     (env, client, cid, admin, issuer, offering_token, payment_token, holder)
 }
@@ -419,7 +419,7 @@ fn multiple_disputes_can_be_resolved_independently() {
         &token,
         &holder2,
         &5_000,
-    &1);
+    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Create dispute 1
     client.emergency_freeze_holder(
