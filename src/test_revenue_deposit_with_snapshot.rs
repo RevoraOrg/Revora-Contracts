@@ -1,3 +1,4 @@
+
 //! Adversarial coverage for `deposit_revenue_with_snapshot` (issue #1133).
 //!
 //! `deposit_revenue_with_snapshot` folds snapshot-reference validation, issuer
@@ -19,6 +20,7 @@
 //! | snapshots never enabled                     | `SnapshotNotEnabled`, no state      |
 //! | snapshots disabled after a deposit          | `SnapshotNotEnabled`, ref kept      |
 //! | caller is not the offering issuer           | `SnapshotNotEnabled`, no state      |
+//! | offering frozen                             | `OfferingFrozen`, no state change   |
 
 #![cfg(test)]
 
@@ -65,7 +67,13 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
 #[test]
 fn deposit_with_snapshot_records_the_reference() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     client.deposit_revenue_with_snapshot(
         &issuer,
@@ -75,6 +83,7 @@ fn deposit_with_snapshot_records_the_reference() {
         &1_000,
         &1,
         &7,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(client.get_snapshot_config(&issuer, &namespace(), &token));
@@ -84,7 +93,13 @@ fn deposit_with_snapshot_records_the_reference() {
 #[test]
 fn deposit_with_snapshot_advances_across_increasing_references() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     client.deposit_revenue_with_snapshot(
         &issuer,
@@ -94,6 +109,7 @@ fn deposit_with_snapshot_advances_across_increasing_references() {
         &1_000,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
     client.deposit_revenue_with_snapshot(
         &issuer,
@@ -103,6 +119,7 @@ fn deposit_with_snapshot_advances_across_increasing_references() {
         &2_000,
         &2,
         &2,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert_eq!(client.get_last_snapshot_ref(&issuer, &namespace(), &token), 2);
@@ -111,7 +128,13 @@ fn deposit_with_snapshot_advances_across_increasing_references() {
 #[test]
 fn deposit_with_snapshot_rejects_zero_reference_without_state_change() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -121,6 +144,7 @@ fn deposit_with_snapshot_rejects_zero_reference_without_state_change() {
         &1_000,
         &1,
         &0,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::InvalidAmount))));
@@ -130,7 +154,13 @@ fn deposit_with_snapshot_rejects_zero_reference_without_state_change() {
 #[test]
 fn deposit_with_snapshot_rejects_replayed_reference() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
     client.deposit_revenue_with_snapshot(
         &issuer,
         &namespace(),
@@ -139,6 +169,7 @@ fn deposit_with_snapshot_rejects_replayed_reference() {
         &1_000,
         &1,
         &5,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     let result = client.try_deposit_revenue_with_snapshot(
@@ -149,6 +180,7 @@ fn deposit_with_snapshot_rejects_replayed_reference() {
         &1_000,
         &2,
         &5,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -163,6 +195,7 @@ fn deposit_with_snapshot_rejects_replayed_reference() {
         &1_000,
         &2,
         &6,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
     assert_eq!(client.get_last_snapshot_ref(&issuer, &namespace(), &token), 6);
 }
@@ -170,7 +203,13 @@ fn deposit_with_snapshot_rejects_replayed_reference() {
 #[test]
 fn deposit_with_snapshot_rejects_decreasing_reference() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
     client.deposit_revenue_with_snapshot(
         &issuer,
         &namespace(),
@@ -179,6 +218,7 @@ fn deposit_with_snapshot_rejects_decreasing_reference() {
         &1_000,
         &1,
         &9,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     let result = client.try_deposit_revenue_with_snapshot(
@@ -189,6 +229,7 @@ fn deposit_with_snapshot_rejects_decreasing_reference() {
         &1_000,
         &2,
         &4,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::OutdatedSnapshot))));
@@ -198,7 +239,13 @@ fn deposit_with_snapshot_rejects_decreasing_reference() {
 #[test]
 fn deposit_with_snapshot_rejects_duplicate_period() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
     client.deposit_revenue_with_snapshot(
         &issuer,
         &namespace(),
@@ -207,6 +254,7 @@ fn deposit_with_snapshot_rejects_duplicate_period() {
         &1_000,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     let result = client.try_deposit_revenue_with_snapshot(
@@ -217,6 +265,7 @@ fn deposit_with_snapshot_rejects_duplicate_period() {
         &1_000,
         &1,
         &2,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::PeriodAlreadyDeposited))));
@@ -226,7 +275,13 @@ fn deposit_with_snapshot_rejects_duplicate_period() {
 #[test]
 fn deposit_with_snapshot_rejects_zero_period_id() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -236,6 +291,7 @@ fn deposit_with_snapshot_rejects_zero_period_id() {
         &1_000,
         &0,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::InvalidPeriodId))));
@@ -245,7 +301,13 @@ fn deposit_with_snapshot_rejects_zero_period_id() {
 #[test]
 fn deposit_with_snapshot_rejects_non_positive_amounts() {
     let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     let zero = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -255,6 +317,7 @@ fn deposit_with_snapshot_rejects_non_positive_amounts() {
         &0,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
     assert!(matches!(zero.err(), Some(Ok(RevoraError::InvalidAmount))));
 
@@ -266,6 +329,7 @@ fn deposit_with_snapshot_rejects_non_positive_amounts() {
         &-1,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
     assert!(matches!(negative.err(), Some(Ok(RevoraError::InvalidAmount))));
 
@@ -284,6 +348,7 @@ fn deposit_with_snapshot_rejects_when_snapshots_are_disabled() {
         &1_000,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -291,10 +356,12 @@ fn deposit_with_snapshot_rejects_when_snapshots_are_disabled() {
 }
 
 #[test]
-fn deposit_with_snapshot_rejects_after_snapshots_are_disabled() {
+fn deposit_with_snapshot_rejects_when_offering_is_frozen() {
     let (_env, client, issuer, token, payment_token) = setup();
     client.set_snapshot_config(&issuer, &namespace(), &token, &true);
-    client.deposit_revenue_with_snapshot(
+    client.freeze_offering(&issuer, &namespace(), &token);
+
+    let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
         &namespace(),
         &token,
@@ -303,7 +370,38 @@ fn deposit_with_snapshot_rejects_after_snapshots_are_disabled() {
         &1,
         &1,
     );
-    client.set_snapshot_config(&issuer, &namespace(), &token, &false);
+
+    assert!(matches!(result.err(), Some(Ok(RevoraError::OfferingFrozen))));
+    assert_eq!(client.get_last_snapshot_ref(&issuer, &namespace(), &token), 0);
+}
+
+#[test]
+fn deposit_with_snapshot_rejects_after_snapshots_are_disabled() {
+    let (_env, client, issuer, token, payment_token) = setup();
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
+    client.deposit_revenue_with_snapshot(
+        &issuer,
+        &namespace(),
+        &token,
+        &payment_token,
+        &1_000,
+        &1,
+        &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &false,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -313,6 +411,7 @@ fn deposit_with_snapshot_rejects_after_snapshots_are_disabled() {
         &1_000,
         &2,
         &2,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotNotEnabled))));
@@ -322,7 +421,13 @@ fn deposit_with_snapshot_rejects_after_snapshots_are_disabled() {
 #[test]
 fn deposit_with_snapshot_rejects_non_issuer_caller() {
     let (env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &namespace(),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let stranger = Address::generate(&env);
 
     let result = client.try_deposit_revenue_with_snapshot(
@@ -333,6 +438,7 @@ fn deposit_with_snapshot_rejects_non_issuer_caller() {
         &1_000,
         &1,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [stranger.clone()]),
     );
 
     // The snapshot config is keyed by the calling issuer, so a non-issuer never

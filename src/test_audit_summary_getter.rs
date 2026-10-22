@@ -311,7 +311,13 @@ fn below_threshold_reports_never_disturb_the_summary() {
     let (env, contract_id, issuer, token, payout) = setup(false);
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let ns = default_ns();
-    client.set_min_revenue_threshold(&issuer, &ns, &token, &1_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &ns,
+        &token,
+        &1_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // No summary exists yet, and a below-threshold report must not create one.
     client.report_revenue(&issuer, &ns, &token, &payout, &999, &1, &false);
@@ -323,7 +329,13 @@ fn below_threshold_reports_never_disturb_the_summary() {
     assert_eq!(read(&client, &issuer, &ns, &token), Some((1_000, 1)));
 
     // Raise the threshold, then reject period 2: the summary must not move.
-    client.set_min_revenue_threshold(&issuer, &ns, &token, &5_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &ns,
+        &token,
+        &5_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.report_revenue(&issuer, &ns, &token, &payout, &4_999, &2, &false);
     assert_eq!(read(&client, &issuer, &ns, &token), Some((1_000, 1)));
     assert_eq!(client.get_revenue_by_period(&issuer, &ns, &token, &2), 0);
@@ -455,7 +467,14 @@ fn unauthorized_callers_cannot_mutate_the_summary_while_reads_stay_open() {
         Err(Ok(RevoraError::NotAuthorized))
     );
     assert_eq!(
-        client.try_set_min_revenue_threshold(&attacker, &issuer, &ns, &token, &0),
+        client.try_set_min_revenue_threshold(
+            &attacker,
+            &issuer,
+            &ns,
+            &token,
+            &0,
+            &soroban_sdk::Vec::from_array(&env, [attacker.clone()])
+        ),
         Err(Ok(RevoraError::OfferingNotFound))
     );
     assert_eq!(

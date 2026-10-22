@@ -13,6 +13,7 @@ Top-level overview: [../README.md](../README.md). Each file below is a per-featu
 - [freeze-reason-v1-event.md](freeze-reason-v1-event.md)
 - [freeze-scope-clarification.md](freeze-scope-clarification.md)
 - [issuer-only-blacklist-governance.md](issuer-only-blacklist-governance.md)
+- [issuer-quorum-auth.md](issuer-quorum-auth.md)
 - [issuer-transfer-expiry.md](issuer-transfer-expiry.md)
 - [multisig-duplicate-approval-guards.md](multisig-duplicate-approval-guards.md)
 - [multisig-initialization-validation.md](multisig-initialization-validation.md)

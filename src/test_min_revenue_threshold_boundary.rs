@@ -79,7 +79,13 @@ fn threshold_zero_accepts_any_amount() {
 fn amount_one_below_threshold_emits_rev_below_and_skips_audit() {
     let (env, contract_id, issuer, token, payout) = setup();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let before = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout, &999, &1, &false);
@@ -104,7 +110,13 @@ fn amount_one_below_threshold_emits_rev_below_and_skips_audit() {
 fn amount_equal_to_threshold_is_accepted() {
     let (env, contract_id, issuer, token, payout) = setup();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let before = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout, &1_000, &1, &false);
@@ -122,7 +134,13 @@ fn amount_equal_to_threshold_is_accepted() {
 fn amount_one_above_threshold_is_accepted() {
     let (env, contract_id, issuer, token, payout) = setup();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout, &1_001, &1, &false);
     let s = client.get_audit_summary(&issuer, &symbol_short!("def"), &token).unwrap();
     assert_eq!(s.report_count, 1);
@@ -135,11 +153,23 @@ fn amount_one_above_threshold_is_accepted() {
 fn reset_threshold_to_zero_allows_previously_skipped_period() {
     let (env, contract_id, issuer, token, payout) = setup();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout, &500, &1, &false); // skipped
     assert!(client.get_audit_summary(&issuer, &symbol_short!("def"), &token).is_none());
 
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &0,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let before = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout, &500, &1, &false);
 
@@ -164,7 +194,13 @@ fn override_existing_below_threshold_bypasses_check() {
     );
 
     // Raise threshold above the correction amount.
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &5_000);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &5_000,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let before = env.events().all().len();
     // Override with amount below threshold — must succeed.
@@ -187,8 +223,20 @@ fn get_min_revenue_threshold_reflects_set_value() {
     let (env, contract_id, issuer, token, _) = setup();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
     assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 0);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &7_500);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &7_500,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 7_500);
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &0,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 0);
 }

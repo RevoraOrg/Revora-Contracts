@@ -317,7 +317,7 @@ fn set_holder_share_emits_sh_set2_v2_event() {
     let holder = Address::generate(&env);
 
     let before = env.events().all().len();
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let events = env.events().all();
     let new_events = events.slice(before as u32..);
@@ -571,7 +571,7 @@ fn fixture_tax_lot_v1_data_tuple_shape() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])); // 50%
 
     // Track cost basis so we get a return_of_capital component.
     let offering_id = crate::OfferingId {
@@ -581,7 +581,7 @@ fn fixture_tax_lot_v1_data_tuple_shape() {
     };
     crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 100_000);
 
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
@@ -631,7 +631,7 @@ fn fixture_tax_lot_v1_capital_gains_when_basis_exhausted() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1); // 100%
+    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])); // 100%
 
     let offering_id = crate::OfferingId {
         issuer: issuer.clone(),
@@ -641,7 +641,7 @@ fn fixture_tax_lot_v1_capital_gains_when_basis_exhausted() {
     // Track small cost basis so payout exceeds it → capital_gains > 0.
     crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000);
 
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
     client.claim(&holder, &issuer, &ns, &token, &10);
@@ -689,7 +689,7 @@ fn fixture_tax_lot_v1_zero_payout_emits_no_event() {
     let holder = Address::generate(&env);
     // No share set → share_bps = 0 → claim returns NoPendingClaims before any payout.
 
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
     let result = client.try_claim(&holder, &issuer, &ns, &token, &10);
@@ -730,7 +730,7 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &10_000, &payout, &0, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])); // 50%
 
     let offering_id = crate::OfferingId {
         issuer: issuer.clone(),
@@ -741,9 +741,9 @@ fn fixture_tax_lot_v1_burst_emits_n_events() {
     crate::tax_bucket::track_cost_basis(&env, &offering_id, &holder, 1_000_000);
 
     // Deposit revenue for 3 periods.
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &300_000, &3);
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &200_000, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &300_000, &3, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
 

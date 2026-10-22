@@ -304,7 +304,7 @@ fn get_offering_count_updates_appropriately_on_accepted_issuer_transfer() {
 
     // Propose and accept transfer of token1 to issuer_new
     client.propose_issuer_transfer(&issuer_old, &namespace, &token1, &issuer_new);
-    client.accept_issuer_transfer(&issuer_new, &namespace, &token1);
+    client.accept_issuer_transfer(&issuer_old, &issuer_new, &namespace, &token1);
 
     // In Revora's design, accepting an issuer transfer appends to the new issuer's offering index
     assert_eq!(client.get_offering_count(&issuer_new, &namespace), 1);
