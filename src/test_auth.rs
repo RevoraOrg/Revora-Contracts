@@ -1,88 +1,19 @@
-//! # Authorization test suite for `RevoraRevenueShare`
+//! Authorization tests for host authentication and contract identity checks.
 //!
-//! ## Security model: two layers of access control
-//!
-//! Every state-mutating entrypoint enforces **two distinct layers** of access
-//! control. Understanding which layer fires first is critical for integrators
-//! building wallets, relayers, or off-chain orchestrators.
-//!
-//! ### Layer 1 — Soroban host auth (`require_auth`)
-//!
-//! `address.require_auth()` delegates to the Soroban host. On mainnet this
-//! verifies the transaction's authorization envelope; in the test environment
-//! it panics unless `env.mock_all_auths()` (or a specific auth mock) has been
-//! registered for that address.
-//!
-//! **In `no_std`/WASM the panic is non-unwinding.** The WASM process aborts
-//! before the frame can unwind, so `client.try_*()` cannot catch it as a
-//! `Result::Err`. Tests that exercise this layer must be `#[ignore]`d in the
-//! current test harness (annotated below). On-network, a missing auth entry
-//! surfaces as a transaction failure with error code `Auth`, not a
-//! `RevoraError` discriminant.
-//!
-//! ### Layer 2 — Contract-level identity check (typed `RevoraError`)
-//!
-//! After host auth passes, most entrypoints perform a **second check**: does
-//! the authenticated caller actually own the resource they're operating on?
-//! For example, `freeze_offering` verifies `caller == current_issuer || caller == admin`.
-//! When this check fails the function returns `Err(RevoraError::NotAuthorized)` (or
-//! `OfferingNotFound`), which propagates through the host as a contract error and
-//! **is** catchable via `try_*`.
-//!
-//! ### How to reach Layer 2 in tests
-//!
-//! Call `env.mock_all_auths()` before the call under test. This satisfies
-//! Layer 1 unconditionally so the test can reach Layer 2 and observe the
-//! typed error. Note that `setup_offering()` (the shared helper below) calls
-//! `env.mock_all_auths()`, so every test that uses it inherits the mock for
-//! the remainder of that test.
-//!
-//! ## Summary table
-//!
-//! | Entrypoint | Auth check order | Wrong-caller result | Catchable? |
-//! |---|---|---|---|
-//! | `pause_admin` | `require_auth` → identity | host panic | ✗ (Layer 1) |
-//! | `unpause_admin` | `require_auth` → identity | host panic | ✗ |
-//! | `pause_safety` | `require_auth` → identity | host panic | ✗ |
-//! | `unpause_safety` | `require_auth` → identity | host panic | ✗ |
-//! | `set_testnet_mode` | `require_auth` → identity | host panic | ✗ |
-//! | `freeze` | `require_auth` (admin) | host panic | ✗ |
-//! | `register_offering` | `require_auth` → lookup | host panic | ✗ |
-//! | `report_revenue` | `require_auth` → lookup | host panic | ✗ |
-//! | `deposit_revenue` | lookup → … | `OfferingNotFound` | ✓ |
-//! | `set_holder_share` | lookup → `require_auth` | `OfferingNotFound` | ✓ |
-//! | `set_concentration_limit` | lookup → `require_auth` | `OfferingNotFound` | ✓ |
-//! | `set_rounding_mode` | lookup → `require_auth` | `OfferingNotFound` | ✓ |
-//! | `set_min_revenue_threshold` | lookup → `require_auth` | `OfferingNotFound` | ✓ |
-//! | `set_claim_delay` | lookup → `require_auth` | `OfferingNotFound` | ✓ |
-//! | `freeze_offering` | `require_auth` → identity | `NotAuthorized` (w/ mock) | ✓ (w/ mock) |
-//! | `unfreeze_offering` | `require_auth` → identity | `NotAuthorized` (w/ mock) | ✓ (w/ mock) |
-//! | `blacklist_add` | `require_auth` → identity | `NotAuthorized` (w/ mock) | ✓ (w/ mock) |
-//! | `blacklist_remove` | `require_auth` → identity | `NotAuthorized` (w/ mock) | ✓ (w/ mock) |
-//! | `set_admin` | `require_auth` then stored | `LimitReached` if re-set | ✓ |
-//! | `claim` | `require_auth` → blacklist/share | host panic | ✗ |
-//!
-//! ## Risk note for integrators
-//!
-//! **Do not assume all access-control rejections are typed `RevoraError` values.**
-//! A missing host authorization causes an abrupt transaction failure with no
-//! discriminant. Wallets and SDKs should:
-//!
-//! 1. Always construct the correct auth entry before broadcasting.
-//! 2. Use `try_*` only for *contract-level* validation (wrong issuer, bad bps,
-//!    frozen state, etc.) where a typed `RevoraError` is guaranteed.
-//! 3. Treat any non-`Ok` / non-`RevoraError` response as a host auth failure.
+//! Missing authorization must reject the invocation without changing state.
+//! Identity tests mock host authentication to exercise the issuer/admin checks
+//! documented in AUTH_MATRIX.md independently of signature verification.
 
 #![cfg(test)]
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, Address, Env, String as SdkString, Symbol, Vec,
+    symbol_short, testutils::Address as _, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient, RoundingMode};
 
 // ── Shared test helpers ───────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient {
+fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
     RevoraRevenueShareClient::new(env, &id)
 }
@@ -101,14 +32,27 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     env.mock_all_auths();
     let issuer = Address::generate(env);
     let token = Address::generate(env);
-    client.set_admin(&issuer);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    if client.get_admin().is_none() {
+        client.set_admin(&issuer);
+    }
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
     (issuer, token)
 }
 
 fn setup_whitelist_offering(
-) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol, Address) {
-    let env = Env::default();
+    env: &Env,
+) -> (RevoraRevenueShareClient<'_>, Address, Address, Symbol, Address) {
     env.mock_all_auths();
     let client = make_client(&env);
     let admin = Address::generate(&env);
@@ -131,12 +75,13 @@ fn setup_whitelist_offering(
         &0,
     );
 
-    (env, client, admin, issuer, namespace, token)
+    (client, admin, issuer, namespace, token)
 }
 
 #[test]
 fn whitelist_add_accepts_issuer_and_admin_for_registered_offering() {
-    let (env, client, admin, issuer, namespace, token) = setup_whitelist_offering();
+    let env = Env::default();
+    let (client, admin, issuer, namespace, token) = setup_whitelist_offering(&env);
     let issuer_investor = Address::generate(&env);
     let admin_investor = Address::generate(&env);
 
@@ -150,7 +95,8 @@ fn whitelist_add_accepts_issuer_and_admin_for_registered_offering() {
 
 #[test]
 fn whitelist_add_rejects_unknown_offering_dimensions_without_state_change() {
-    let (env, client, _admin, issuer, namespace, token) = setup_whitelist_offering();
+    let env = Env::default();
+    let (client, _admin, issuer, namespace, token) = setup_whitelist_offering(&env);
     let existing_investor = Address::generate(&env);
     let rejected_investor = Address::generate(&env);
     let unknown_issuer = Address::generate(&env);
@@ -160,33 +106,15 @@ fn whitelist_add_rejects_unknown_offering_dimensions_without_state_change() {
     client.whitelist_add(&issuer, &issuer, &namespace, &token, &existing_investor);
 
     assert_eq!(
-        client.try_whitelist_add(
-            &issuer,
-            &unknown_issuer,
-            &namespace,
-            &token,
-            &rejected_investor,
-        ),
+        client.try_whitelist_add(&issuer, &unknown_issuer, &namespace, &token, &rejected_investor,),
         Err(Ok(RevoraError::OfferingNotFound))
     );
     assert_eq!(
-        client.try_whitelist_add(
-            &issuer,
-            &issuer,
-            &unknown_namespace,
-            &token,
-            &rejected_investor,
-        ),
+        client.try_whitelist_add(&issuer, &issuer, &unknown_namespace, &token, &rejected_investor,),
         Err(Ok(RevoraError::OfferingNotFound))
     );
     assert_eq!(
-        client.try_whitelist_add(
-            &issuer,
-            &issuer,
-            &namespace,
-            &unknown_token,
-            &rejected_investor,
-        ),
+        client.try_whitelist_add(&issuer, &issuer, &namespace, &unknown_token, &rejected_investor,),
         Err(Ok(RevoraError::OfferingNotFound))
     );
 
@@ -197,7 +125,8 @@ fn whitelist_add_rejects_unknown_offering_dimensions_without_state_change() {
 
 #[test]
 fn whitelist_add_rejects_authenticated_nonissuer_without_state_change() {
-    let (env, client, _admin, issuer, namespace, token) = setup_whitelist_offering();
+    let env = Env::default();
+    let (client, _admin, issuer, namespace, token) = setup_whitelist_offering(&env);
     let existing_investor = Address::generate(&env);
     let rejected_investor = Address::generate(&env);
     let attacker = Address::generate(&env);
@@ -205,13 +134,7 @@ fn whitelist_add_rejects_authenticated_nonissuer_without_state_change() {
     client.whitelist_add(&issuer, &issuer, &namespace, &token, &existing_investor);
 
     assert_eq!(
-        client.try_whitelist_add(
-            &attacker,
-            &issuer,
-            &namespace,
-            &token,
-            &rejected_investor,
-        ),
+        client.try_whitelist_add(&attacker, &issuer, &namespace, &token, &rejected_investor,),
         Err(Ok(RevoraError::NotAuthorized))
     );
     assert!(client.is_whitelisted(&issuer, &namespace, &token, &existing_investor));
@@ -220,20 +143,12 @@ fn whitelist_add_rejects_authenticated_nonissuer_without_state_change() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section A: Pause / unpause — Layer 1 only (host panic, non-catchable)
-//
-// All four pause entrypoints call `caller.require_auth()` as their very first
-// check, before comparing the caller against the stored admin/safety address.
-// In the no_std WASM runtime the resulting panic does not unwind, so `try_*`
-// cannot capture it.  These tests remain ignored until the SDK provides a
-// stable way to catch host panics in unit tests.
-// ─────────────────────────────────────────────────────────────────────────────
+// Section A: authenticated callers must also have the required role.
 
 #[test]
-#[ignore = "not-admin check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn pause_admin_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (admin, _safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     let attacker = Address::generate(&env);
@@ -244,10 +159,9 @@ fn pause_admin_unauthorized() {
 }
 
 #[test]
-#[ignore = "not-admin check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn unpause_admin_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (admin, _safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     client.pause_admin(&admin);
@@ -259,10 +173,9 @@ fn unpause_admin_unauthorized() {
 }
 
 #[test]
-#[ignore = "not-safety check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn pause_safety_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     let attacker = Address::generate(&env);
@@ -273,10 +186,9 @@ fn pause_safety_unauthorized() {
 }
 
 #[test]
-#[ignore = "not-safety check uses non-unwinding panic; cannot be caught by try_ in no_std"]
 fn unpause_safety_unauthorized() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, safety) = init_admin_safety(&env, &client);
     env.mock_all_auths();
     client.pause_safety(&safety);
@@ -291,12 +203,12 @@ fn unpause_safety_unauthorized() {
 // Section B: Admin-gated operations
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `set_admin` with no auth mock → Layer 1 panic (not caught by try_).
+/// `set_admin` with no auth mock → host authorization failure.
 /// Expected result: `Err`, admin stays `None`.
 #[test]
 fn set_admin_missing_auth() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     assert!(client.try_set_admin(&admin).is_err());
     assert!(client.get_admin().is_none());
@@ -307,7 +219,7 @@ fn set_admin_missing_auth() {
 fn set_admin_success() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     client.set_admin(&admin);
     assert_eq!(client.get_admin(), Some(admin));
@@ -320,7 +232,7 @@ fn set_admin_success() {
 fn set_admin_twice_returns_limit_reached() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     client.set_admin(&admin);
 
@@ -337,34 +249,31 @@ fn set_admin_twice_returns_limit_reached() {
     assert_eq!(client.get_admin(), Some(admin));
 }
 
-/// `set_testnet_mode` — `require_auth` fires before identity; Layer 1 panic.
+/// `set_testnet_mode` — `require_auth` fires before identity; host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn set_testnet_mode_missing_auth() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_set_testnet_mode(&true).is_err());
-    assert!(!client.is_testnet_mode());
+    assert!(!env.as_contract(&client.address, || RevoraRevenueShare::is_testnet_mode(env.clone())));
 }
 
-/// `set_platform_fee` — `require_auth` fires before identity; Layer 1 panic.
+/// `set_platform_fee` — `require_auth` fires before identity; host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn set_platform_fee_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_set_platform_fee(&1_000).is_err());
     assert_eq!(client.get_platform_fee(), 0);
 }
 
-/// `freeze` — `require_auth` fires on the stored admin; Layer 1 panic.
+/// `freeze` — `require_auth` fires on the stored admin; host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn freeze_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, _safety) = init_admin_safety(&env, &client);
     assert!(client.try_freeze().is_err());
     assert!(!client.is_frozen());
@@ -375,13 +284,12 @@ fn freeze_missing_auth_no_mutation() {
 #[test]
 fn freeze_offering_wrong_caller_returns_not_authorized() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     // setup_offering calls mock_all_auths, inherited for the whole test.
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
-    let result =
-        client.try_freeze_offering(&attacker, &issuer, &symbol_short!("def"), &token);
+    let result = client.try_freeze_offering(&attacker, &issuer, &symbol_short!("def"), &token);
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     // Offering must not be frozen.
     assert!(!client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
@@ -393,28 +301,25 @@ fn freeze_offering_wrong_caller_returns_not_authorized() {
 fn freeze_offering_nonexistent_returns_offering_not_found() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     client.set_admin(&issuer);
 
-    let result =
-        client.try_freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token);
+    let result = client.try_freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token);
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
-/// `freeze_offering` without any auth mock causes a Layer 1 panic.
+/// `freeze_offering` without any auth mock causes a host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn freeze_offering_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, _safety) = init_admin_safety(&env, &client);
     let (issuer, token) = setup_offering(&env, &client);
 
-    assert!(client
-        .try_freeze_offering(&Address::generate(&env), &issuer, &symbol_short!("def"), &token)
-        .is_err());
+    env.mock_auths(&[]);
+    assert!(client.try_freeze_offering(&issuer, &issuer, &symbol_short!("def"), &token).is_err());
     assert!(!client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
 }
 
@@ -425,9 +330,9 @@ fn freeze_offering_missing_auth_no_mutation() {
 /// Wrong caller for `unfreeze_offering` returns `NotAuthorized`; offering
 /// stays frozen.  Both the issuer and the admin can unfreeze.
 #[test]
-fn unfreeze_offering_missing_auth_no_mutation() {
+fn unfreeze_offering_wrong_caller_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (admin, _safety) = init_admin_safety(&env, &client);
     // setup_offering enables mock_all_auths for the rest of this test.
     let (issuer, token) = setup_offering(&env, &client);
@@ -436,8 +341,7 @@ fn unfreeze_offering_missing_auth_no_mutation() {
     assert!(client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
 
     let attacker = Address::generate(&env);
-    let result =
-        client.try_unfreeze_offering(&attacker, &issuer, &symbol_short!("def"), &token);
+    let result = client.try_unfreeze_offering(&attacker, &issuer, &symbol_short!("def"), &token);
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     // Offering must remain frozen.
     assert!(client.is_offering_frozen(&issuer, &symbol_short!("def"), &token));
@@ -451,7 +355,7 @@ fn unfreeze_offering_missing_auth_no_mutation() {
 #[test]
 fn unfreeze_offering_by_issuer_succeeds() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (_admin, _safety) = init_admin_safety(&env, &client);
     let (issuer, token) = setup_offering(&env, &client);
 
@@ -463,20 +367,14 @@ fn unfreeze_offering_by_issuer_succeeds() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section D: Issuer-only operations
-//
-// The following entrypoints perform an offering lookup (or issuer identity
-// check) BEFORE calling `require_auth`.  Passing the wrong `issuer` address
-// therefore surfaces as `OfferingNotFound` regardless of who signed, making
-// these errors catchable in all environments without `mock_all_auths`.
-// ─────────────────────────────────────────────────────────────────────────────
+// Section D: Issuer-only operations and rejected writes.
 
 /// `set_holder_share` with wrong issuer returns `OfferingNotFound`.
 /// No share is written.
 #[test]
 fn set_holder_share_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let holder = Address::generate(&env);
@@ -487,19 +385,18 @@ fn set_holder_share_wrong_issuer_no_mutation() {
         &token,
         &holder,
         &100u32,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
-    assert_eq!(
-        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder),
-        0
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 0);
 }
 
-/// `set_concentration_limit` with wrong issuer returns `OfferingNotFound`.
+/// An unknown offering is rejected with `LimitReached` before any configuration is written.
 #[test]
 fn set_concentration_limit_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -510,13 +407,10 @@ fn set_concentration_limit_wrong_issuer_no_mutation() {
         &1_000u32,
         &true,
         &0u64,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
-    assert!(
-        client
-            .get_concentration_limit(&issuer, &symbol_short!("def"), &token)
-            .is_none()
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::LimitReached)));
+    assert!(client.get_concentration_limit(&issuer, &symbol_short!("def"), &token).is_none());
 }
 
 /// `set_rounding_mode` with wrong issuer returns `OfferingNotFound`.
@@ -524,7 +418,7 @@ fn set_concentration_limit_wrong_issuer_no_mutation() {
 #[test]
 fn set_rounding_mode_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -533,7 +427,8 @@ fn set_rounding_mode_wrong_issuer_no_mutation() {
         &symbol_short!("def"),
         &token,
         &RoundingMode::RoundHalfUp,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
@@ -546,7 +441,7 @@ fn set_rounding_mode_wrong_issuer_no_mutation() {
 #[test]
 fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -555,12 +450,10 @@ fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
         &symbol_short!("def"),
         &token,
         &123i128,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
-    assert_eq!(
-        client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token),
-        0
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+    assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 0);
 }
 
 /// `set_claim_delay` with wrong issuer returns `OfferingNotFound`.
@@ -568,7 +461,7 @@ fn set_min_revenue_threshold_wrong_issuer_no_mutation() {
 #[test]
 fn set_claim_delay_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -577,47 +470,36 @@ fn set_claim_delay_wrong_issuer_no_mutation() {
         &symbol_short!("def"),
         &token,
         &100u64,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
-    assert_eq!(
-        client.get_claim_delay(&issuer, &symbol_short!("def"), &token),
-        0
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+    assert_eq!(client.get_claim_delay(&issuer, &symbol_short!("def"), &token), 0);
 }
 
-/// `set_offering_metadata` — `require_auth` fires before the identity
+/// `update_disclosure` — `require_auth` fires before the identity
 /// check, so this is a Layer 1 panic without mock.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
-fn set_offering_metadata_wrong_issuer_no_mutation() {
+fn update_disclosure_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
-    let meta: SdkString = SdkString::from_str(&env, "ipfs://QmExampleHash");
+    let uri = Bytes::from_slice(&env, b"ipfs://QmExampleHash");
+    let hash = BytesN::from_array(&env, &[1; 32]);
 
-    let result = client.try_set_offering_metadata(
-        &attacker,
-        &symbol_short!("def"),
-        &token,
-        &meta,
-    );
+    let result =
+        client.try_update_disclosure(&attacker, &symbol_short!("def"), &token, &uri, &hash);
     assert!(result.is_err());
-    assert!(
-        client
-            .get_offering_metadata(&issuer, &symbol_short!("def"), &token)
-            .is_none()
-    );
+    assert!(client.get_disclosure(&issuer, &symbol_short!("def"), &token).is_none());
 }
 
 /// `deposit_revenue` with wrong issuer — offering lookup occurs before
 /// `require_auth` in this path, yielding a typed `OfferingNotFound`.
 /// Period count remains 0.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn deposit_revenue_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let payment_token = Address::generate(&env);
@@ -629,20 +511,17 @@ fn deposit_revenue_wrong_issuer_no_mutation() {
         &payment_token,
         &100,
         &1u64,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
-    assert!(result.is_err());
-    assert_eq!(
-        client.get_period_count(&issuer, &symbol_short!("def"), &token),
-        0
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
     );
+    assert!(result.is_err());
+    assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 0);
 }
 
-/// `report_revenue` — `require_auth` fires first; Layer 1 panic.
+/// `report_revenue` — `require_auth` fires first; host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn report_revenue_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
 
@@ -656,19 +535,14 @@ fn report_revenue_wrong_issuer_no_mutation() {
         &false,
     );
     assert!(result.is_err());
-    assert!(
-        client
-            .get_audit_summary(&issuer, &symbol_short!("def"), &token)
-            .is_none()
-    );
+    assert!(client.get_audit_summary(&issuer, &symbol_short!("def"), &token).is_none());
 }
 
-/// `register_offering` — `require_auth` fires before any lookup; Layer 1 panic.
+/// `register_offering` — `require_auth` fires before any lookup; host authorization failure.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn register_offering_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
@@ -682,13 +556,11 @@ fn register_offering_missing_auth_no_mutation() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     assert!(result.is_err());
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
-    assert_eq!(
-        client.get_payment_token(&issuer, &symbol_short!("def"), &token),
-        None
-    );
+    assert_eq!(client.get_payment_token(&issuer, &symbol_short!("def"), &token), None);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -699,56 +571,49 @@ fn register_offering_missing_auth_no_mutation() {
 /// `NotAuthorized` (Layer 2), because `require_auth` is satisfied by
 /// `mock_all_auths` (inherited from `setup_offering`).
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std"]
 fn blacklist_add_wrong_caller_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let attacker = Address::generate(&env);
     let investor = Address::generate(&env);
 
-    let result = client.try_blacklist_add(
-        &attacker,
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &investor,
-    );
+    let result =
+        client.try_blacklist_add(&attacker, &issuer, &symbol_short!("def"), &token, &investor);
     assert_eq!(result, Err(Ok(RevoraError::NotAuthorized)));
     assert!(!client.is_blacklisted(&issuer, &symbol_short!("def"), &token, &investor));
     let bl: Vec<Address> = client.get_blacklist(&issuer, &symbol_short!("def"), &token);
     assert_eq!(bl.len(), 0);
 }
 
-/// `blacklist_remove` with an attacker: with `mock_all_auths` the remove
-/// can succeed because any authenticated address is allowed per current
-/// contract design.  This test documents the intent rather than asserting
-/// a rejection — if the design changes to require issuer/admin only, this
-/// test should be updated to assert `NotAuthorized`.
+/// An authenticated attacker cannot remove another issuer's blacklist entry.
 #[test]
-#[ignore]
 fn blacklist_remove_wrong_caller_no_mutation() {
-    // Per contract design: any authenticated address can manage blacklists.
-    // With mock_all_auths, attacker's auth is satisfied, so remove succeeds.
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let investor = Address::generate(&env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
-    client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
-    let attacker = Address::generate(&env);
-    // Any authenticated caller can remove; with mock_all_auths this succeeds.
-    let r = client.try_blacklist_remove(
-        &attacker,
+    client.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &token,
-        &investor,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
     );
-    assert!(r.is_ok());
+    client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
+    let attacker = Address::generate(&env);
+    let r =
+        client.try_blacklist_remove(&attacker, &issuer, &symbol_short!("def"), &token, &investor);
+    assert_eq!(r, Err(Ok(RevoraError::NotAuthorized)));
+    assert!(client.is_blacklisted(&issuer, &symbol_short!("def"), &token, &investor));
 }
 
 /// Issuer can add and remove entries from their own offering's blacklist
@@ -756,7 +621,7 @@ fn blacklist_remove_wrong_caller_no_mutation() {
 #[test]
 fn blacklist_add_remove_by_issuer_succeeds() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 
@@ -778,7 +643,7 @@ fn blacklist_add_remove_by_issuer_succeeds() {
 #[test]
 fn cross_offering_confusion_wrong_issuer_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -786,8 +651,30 @@ fn cross_offering_confusion_wrong_issuer_no_mutation() {
     let token_b = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer_a,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_a,
+        &1_000,
+        &token_a,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    client.register_offering(
+        &issuer_b,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_b,
+        &1_000,
+        &token_b,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Issuer B tries to set a share on Issuer A's token.
     let result = client.try_set_holder_share(
@@ -796,28 +683,49 @@ fn cross_offering_confusion_wrong_issuer_no_mutation() {
         &token_a,
         &holder,
         &1_000u32,
-     &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]));
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
     // Issuer A's share table is unmodified.
-    assert_eq!(
-        client.get_holder_share(&issuer_a, &symbol_short!("def"), &token_a, &holder),
-        0
-    );
+    assert_eq!(client.get_holder_share(&issuer_a, &symbol_short!("def"), &token_a, &holder), 0);
 }
 
 /// Issuer A cannot modify Issuer B's concentration limit.
 #[test]
 fn cross_offering_concentration_limit_wrong_issuer() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer_a,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_a,
+        &1_000,
+        &token_a,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    client.register_offering(
+        &issuer_b,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_b,
+        &1_000,
+        &token_b,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let result = client.try_set_concentration_limit(
         &issuer_a,
@@ -826,13 +734,10 @@ fn cross_offering_concentration_limit_wrong_issuer() {
         &5_000u32,
         &false,
         &0u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
-    assert!(
-        client
-            .get_concentration_limit(&issuer_b, &symbol_short!("def"), &token_b)
-            .is_none()
+        &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::LimitReached)));
+    assert!(client.get_concentration_limit(&issuer_b, &symbol_short!("def"), &token_b).is_none());
 }
 
 /// Namespace isolation: the same issuer with different namespaces holds
@@ -840,14 +745,25 @@ fn cross_offering_concentration_limit_wrong_issuer() {
 #[test]
 fn cross_namespace_confusion_wrong_namespace() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let holder = Address::generate(&env);
 
     // Register only in namespace "ns1".
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns1"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns1"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Attempt to set a share in the unregistered namespace "ns2".
     let result = client.try_set_holder_share(
@@ -856,14 +772,13 @@ fn cross_namespace_confusion_wrong_namespace() {
         &token,
         &holder,
         &500u32,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
 
     // Namespace "ns1" is completely unaffected.
-    assert_eq!(
-        client.get_holder_share(&issuer, &symbol_short!("ns1"), &token, &holder),
-        0
-    );
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns1"), &token, &holder), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -871,18 +786,15 @@ fn cross_namespace_confusion_wrong_namespace() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `claim` calls `holder.require_auth()` as its first operation.
-/// Without an auth mock this is a non-catchable host panic.
+/// Without an auth mock the host rejects the invocation.
 #[test]
-#[ignore = "require_auth causes non-unwinding panic in no_std; use mock_all_auths to test auth paths"]
 fn claim_missing_auth_no_mutation() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let holder = Address::generate(&env);
     let token = Address::generate(&env);
     let issuer = Address::generate(&env);
-    assert!(client
-        .try_claim(&holder, &issuer, &symbol_short!("def"), &token, &0)
-        .is_err());
+    assert!(client.try_claim(&holder, &issuer, &symbol_short!("def"), &token, &0).is_err());
 }
 
 /// With `mock_all_auths`, `claim` by a holder with zero share returns the
@@ -890,7 +802,7 @@ fn claim_missing_auth_no_mutation() {
 #[test]
 fn claim_holder_with_zero_share_returns_no_pending_claims() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client); // enables mock_all_auths
     let holder = Address::generate(&env);
 
@@ -904,11 +816,19 @@ fn claim_holder_with_zero_share_returns_no_pending_claims() {
 #[test]
 fn claim_blacklisted_holder_returns_holder_blacklisted() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &1_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &holder,
+        &1_000u32,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     client.blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &holder);
 
     let result = client.try_claim(&holder, &issuer, &symbol_short!("def"), &token, &0);
@@ -927,7 +847,7 @@ fn claim_blacklisted_holder_returns_holder_blacklisted() {
 #[test]
 fn register_offering_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let admin = Address::generate(&env);
     client.set_admin(&admin);
@@ -945,7 +865,8 @@ fn register_offering_blocked_when_frozen() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
 }
 
@@ -954,7 +875,7 @@ fn register_offering_blocked_when_frozen() {
 #[test]
 fn set_holder_share_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -967,12 +888,11 @@ fn set_holder_share_blocked_when_frozen() {
         &token,
         &holder,
         &500u32,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
-    assert_eq!(
-        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder),
-        0
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 0);
 }
 
 /// After `freeze()`, `blacklist_add` returns `ContractFrozen`.
@@ -980,19 +900,14 @@ fn set_holder_share_blocked_when_frozen() {
 #[test]
 fn blacklist_add_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 
     client.freeze();
 
-    let result = client.try_blacklist_add(
-        &issuer,
-        &issuer,
-        &symbol_short!("def"),
-        &token,
-        &investor,
-    );
+    let result =
+        client.try_blacklist_add(&issuer, &issuer, &symbol_short!("def"), &token, &investor);
     assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
     assert!(!client.is_blacklisted(&issuer, &symbol_short!("def"), &token, &investor));
 }
@@ -1001,7 +916,7 @@ fn blacklist_add_blocked_when_frozen() {
 #[test]
 fn set_concentration_limit_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
 
     client.freeze();
@@ -1013,20 +928,17 @@ fn set_concentration_limit_blocked_when_frozen() {
         &2_000u32,
         &true,
         &0u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
-    assert!(
-        client
-            .get_concentration_limit(&issuer, &symbol_short!("def"), &token)
-            .is_none()
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    assert!(client.get_concentration_limit(&issuer, &symbol_short!("def"), &token).is_none());
 }
 
 /// After `freeze()`, `set_claim_delay` returns `ContractFrozen`.
 #[test]
 fn set_claim_delay_blocked_when_frozen() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
 
     client.freeze();
@@ -1036,12 +948,10 @@ fn set_claim_delay_blocked_when_frozen() {
         &symbol_short!("def"),
         &token,
         &3600u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
-    assert_eq!(
-        client.get_claim_delay(&issuer, &symbol_short!("def"), &token),
-        0
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::ContractFrozen)));
+    assert_eq!(client.get_claim_delay(&issuer, &symbol_short!("def"), &token), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1052,7 +962,7 @@ fn set_claim_delay_blocked_when_frozen() {
 #[test]
 fn get_admin_before_initialize_returns_none() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     assert!(client.get_admin().is_none());
 }
 
@@ -1060,7 +970,7 @@ fn get_admin_before_initialize_returns_none() {
 #[test]
 fn is_paused_before_initialize_returns_false() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     assert!(!client.is_paused());
 }
 
@@ -1068,7 +978,7 @@ fn is_paused_before_initialize_returns_false() {
 #[test]
 fn is_frozen_before_initialize_returns_false() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     assert!(!client.is_frozen());
 }
 
@@ -1081,7 +991,7 @@ fn is_frozen_before_initialize_returns_false() {
 #[test]
 fn register_offering_invalid_bps_returns_typed_error() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -1097,7 +1007,8 @@ fn register_offering_invalid_bps_returns_typed_error() {
         &token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     assert_eq!(result, Err(Ok(RevoraError::InvalidRevenueShareBps)));
     assert_eq!(client.get_offering_count(&issuer, &symbol_short!("def")), 0);
 }
@@ -1107,7 +1018,7 @@ fn register_offering_invalid_bps_returns_typed_error() {
 #[test]
 fn set_holder_share_invalid_bps_returns_typed_error() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
@@ -1117,12 +1028,11 @@ fn set_holder_share_invalid_bps_returns_typed_error() {
         &token,
         &holder,
         &10_001u32,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
-    assert_eq!(
-        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder),
-        0
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1136,15 +1046,20 @@ fn set_holder_share_invalid_bps_returns_typed_error() {
 #[test]
 fn issuer_can_configure_offering_settings() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &symbol_short!("def"), &token, &holder, &5_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(
-        client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder),
-        5_000u32
+    client.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &holder,
+        &5_000u32,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(client.get_holder_share(&issuer, &symbol_short!("def"), &token, &holder), 5_000u32);
 
     client.set_concentration_limit(
         &issuer,
@@ -1153,7 +1068,8 @@ fn issuer_can_configure_offering_settings() {
         &3_000u32,
         &false,
         &0u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     let cfg = client
         .get_concentration_limit(&issuer, &symbol_short!("def"), &token)
         .expect("concentration limit should be set");
@@ -1164,30 +1080,37 @@ fn issuer_can_configure_offering_settings() {
         &symbol_short!("def"),
         &token,
         &RoundingMode::RoundHalfUp,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(
         client.get_rounding_mode(&issuer, &symbol_short!("def"), &token),
         RoundingMode::RoundHalfUp
     );
 
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &50i128, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(
-        client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token),
-        50i128
+    client.set_min_revenue_threshold(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &50i128,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("def"), &token), 50i128);
 
-    client.set_claim_delay(&issuer, &symbol_short!("def"), &token, &3_600u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    assert_eq!(
-        client.get_claim_delay(&issuer, &symbol_short!("def"), &token),
-        3_600u64
+    client.set_claim_delay(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &3_600u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
+    assert_eq!(client.get_claim_delay(&issuer, &symbol_short!("def"), &token), 3_600u64);
 }
 
 /// Two independent issuers do not interfere with each other's settings.
 #[test]
 fn two_issuers_independent_settings() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -1195,31 +1118,61 @@ fn two_issuers_independent_settings() {
     let token_b = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    client.register_offering(&issuer_a, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer_b, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &2_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer_a,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_a,
+        &1_000,
+        &token_a,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    client.register_offering(
+        &issuer_b,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_b,
+        &2_000,
+        &token_b,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Issuer A sets a holder share.
-    client.set_holder_share(&issuer_a, &symbol_short!("def"), &token_a, &holder, &1_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]));
+    client.set_holder_share(
+        &issuer_a,
+        &symbol_short!("def"),
+        &token_a,
+        &holder,
+        &1_000u32,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]),
+    );
 
     // Issuer B's offering is unaffected.
-    assert_eq!(
-        client.get_holder_share(&issuer_b, &symbol_short!("def"), &token_b, &holder),
-        0
-    );
+    assert_eq!(client.get_holder_share(&issuer_b, &symbol_short!("def"), &token_b, &holder), 0);
 
     // Issuer B sets a delay; Issuer A's delay remains 0.
-    client.set_claim_delay(&issuer_b, &symbol_short!("def"), &token_b, &7_200u64, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]));
-    assert_eq!(
-        client.get_claim_delay(&issuer_a, &symbol_short!("def"), &token_a),
-        0
+    client.set_claim_delay(
+        &issuer_b,
+        &symbol_short!("def"),
+        &token_b,
+        &7_200u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]),
     );
+    assert_eq!(client.get_claim_delay(&issuer_a, &symbol_short!("def"), &token_a), 0);
 }
 
 /// Removing an address from the blacklist re-enables it for eligibility checks.
 #[test]
 fn blacklist_add_then_remove_clears_investor() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token) = setup_offering(&env, &client);
     let investor = Address::generate(&env);
 

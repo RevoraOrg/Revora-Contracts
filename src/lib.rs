@@ -429,6 +429,8 @@ pub mod kani_harness;
 #[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
+mod test_auth;
+#[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_compute_share_invariants;
@@ -442,9 +444,13 @@ mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
+mod test_freeze_matrix;
+#[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pause_tiers;
 #[cfg(test)]
 mod test_pending_issuer_transfer;
 #[cfg(test)]
