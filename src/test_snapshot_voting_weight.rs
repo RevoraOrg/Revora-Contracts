@@ -20,7 +20,7 @@
 use crate::{GovProposalEntry, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, BytesN as _, Events as _},
+    testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     xdr::ToXdr,
     Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal, Vec,
 };
@@ -49,7 +49,13 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &symbol_short!(""),
         &0,
     );
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &true,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     (env, client, issuer, token)
 }
@@ -76,7 +82,14 @@ fn commit_and_apply(
         sdk_holders.push_back((addr.clone(), *bps));
     }
 
-    client.commit_snapshot(issuer, &symbol_short!("def"), token, &snapshot_ref, &content_hash);
+    client.commit_snapshot(
+        issuer,
+        &symbol_short!("def"),
+        token,
+        &snapshot_ref,
+        &content_hash,
+        &soroban_sdk::Vec::from_array(env, [issuer.clone()]),
+    );
     client.apply_snapshot_shares(
         issuer,
         &symbol_short!("def"),
@@ -84,6 +97,7 @@ fn commit_and_apply(
         &snapshot_ref,
         &0,
         &sdk_holders,
+        &soroban_sdk::Vec::from_array(env, [issuer.clone()]),
     );
 }
 
@@ -100,8 +114,14 @@ fn create_proposal_and_cast_votes_succeeds() {
     commit_and_apply(&env, &client, &issuer, &token, 1, &holders);
 
     // Create proposal — pins snapshot_id = 1.
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
     assert_eq!(proposal_id, 0);
 
     // Holder A votes yes — expects weight = 3_000.
@@ -121,6 +141,8 @@ fn create_proposal_and_cast_votes_succeeds() {
     assert_eq!(proposal.no_weight, 2_000);
     assert_eq!(proposal.snapshot_id, 1);
     assert!(proposal.open);
+    assert_eq!(proposal.quorum_bps, 1_000);
+    assert!(!proposal.passed);
 }
 
 /// `get_gov_proposal_count` increments correctly for multiple proposals.
@@ -132,9 +154,23 @@ fn proposal_count_increments() {
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
     assert_eq!(client.get_gov_proposal_count(&issuer, &symbol_short!("def"), &token), 0);
-    client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
     assert_eq!(client.get_gov_proposal_count(&issuer, &symbol_short!("def"), &token), 1);
-    client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop2"));
+    client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop2"),
+        &1_000u32,
+        &86_400u64,
+    );
     assert_eq!(client.get_gov_proposal_count(&issuer, &symbol_short!("def"), &token), 2);
 }
 
@@ -147,8 +183,14 @@ fn proposal_pins_snapshot_at_creation_not_later() {
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 1_000)]);
 
     // Create proposal — snapshot_id should be 1.
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     // Now commit a newer snapshot with a higher weight for the same holder.
     commit_and_apply(&env, &client, &issuer, &token, 2, &[(holder.clone(), 9_000)]);
@@ -171,16 +213,20 @@ fn weight_pin_event_emitted_on_vote() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 4_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
     client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
 
     // Verify that a `wt_pin` event was emitted with the right data.
     let events = env.events().all();
     let wt_pin_sym = symbol_short!("wt_pin");
     let found = events.iter().any(|e| {
-        // The event tuple is (contract_address, topics, data); topics is a
-        // Vec<Val> whose first element is the event name symbol.
         let topics = e.1;
         if let Some(first) = topics.get(0) {
             let sym: Result<Symbol, _> = first.try_into_val(&env);
@@ -200,7 +246,14 @@ fn gov_new_event_emitted_on_proposal_creation() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     let events = env.events().all();
     let gov_new_sym = symbol_short!("gov_new");
@@ -224,8 +277,14 @@ fn gov_vote_event_emitted_on_cast_vote() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
     client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
 
     let events = env.events().all();
@@ -244,9 +303,7 @@ fn gov_vote_event_emitted_on_cast_vote() {
 
 // ── Late-buy / anti-manipulation edge cases ────────────────────────────────────
 
-/// A holder who buys shares AFTER proposal creation has weight = 0 for that proposal.
-///
-/// This is the core security guarantee of issue #557: late buyers cannot swing votes.
+/// A holder who buys shares AFTER proposal creation has weight = 0 and is rejected with NoVotingWeight.
 #[test]
 fn late_buyer_has_zero_voting_weight() {
     let (env, client, issuer, token) = setup();
@@ -256,8 +313,14 @@ fn late_buyer_has_zero_voting_weight() {
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder_a.clone(), 5_000)]);
 
     // Create proposal — pinned to snapshot 1.
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     // Snapshot 2 is committed AFTER the proposal.  holder_b gets 5_000 bps here.
     let holder_b = Address::generate(&env);
@@ -270,14 +333,20 @@ fn late_buyer_has_zero_voting_weight() {
         &[(holder_a.clone(), 5_000), (holder_b.clone(), 5_000)],
     );
 
-    // holder_b was not in snapshot 1 → weight must be 0.
-    let weight_b =
-        client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder_b, &true);
-    assert_eq!(weight_b, 0, "late buyer must have zero voting weight for this proposal");
+    // holder_b was not in snapshot 1 → weight is 0 → Err(NoVotingWeight).
+    let result = client.try_cast_vote(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &proposal_id,
+        &holder_b,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(RevoraError::NoVotingWeight)));
 
     let proposal: GovProposalEntry =
         client.get_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id).unwrap();
-    // yes_weight must remain 0 since the late buyer's weight is 0.
+    // yes_weight must remain 0 since late buyer was rejected.
     assert_eq!(proposal.yes_weight, 0);
 }
 
@@ -291,8 +360,14 @@ fn share_increase_after_proposal_creation_does_not_inflate_weight() {
     // Snapshot 1: holder has 1_000 bps.
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 1_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     // Snapshot 2: holder's share grows to 9_000 bps after proposal creation.
     commit_and_apply(&env, &client, &issuer, &token, 2, &[(holder.clone(), 9_000)]);
@@ -314,6 +389,8 @@ fn create_proposal_fails_when_no_snapshot_exists() {
         &symbol_short!("def"),
         &token,
         &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
     );
     assert!(
         matches!(result, Err(Ok(RevoraError::LimitReached))),
@@ -345,8 +422,14 @@ fn double_vote_rejected() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     // First vote succeeds.
     client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
@@ -368,13 +451,22 @@ fn cast_vote_fails_on_closed_proposal() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
+
+    // Advance ledger time past ends_at so close/finalize is valid.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
 
     // Issuer closes the proposal.
     client.close_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id);
 
-    // Attempting to vote on a closed proposal must fail.
+    // Attempting to vote on a closed proposal must fail with LimitReached.
     let result =
         client.try_cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
     assert!(
@@ -391,8 +483,17 @@ fn close_already_closed_proposal_returns_error() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
+
+    // Advance past deadline.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
     client.close_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id);
 
     let result =
@@ -420,14 +521,28 @@ fn multiple_proposals_are_independent() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
 
-    let proposal_0 =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("p0"));
-    let proposal_1 =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("p1"));
+    let proposal_0 = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("p0"),
+        &1_000u32,
+        &86_400u64,
+    );
+    let proposal_1 = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("p1"),
+        &1_000u32,
+        &172_800u64,
+    );
 
+    // Advance past proposal 0's deadline (86_400) but before proposal 1's deadline (172_800)
+    env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
     client.close_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_0);
 
-    // proposal_1 is still open; holder can vote on it.
+    // proposal_1 is still open and not expired; holder can vote on it.
     let weight =
         client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_1, &holder, &true);
     assert_eq!(weight, 5_000);
@@ -451,11 +566,183 @@ fn snapshot_holder_share_key_written_by_apply_snapshot_shares() {
     let holder = Address::generate(&env);
     commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 7_500)]);
 
-    let proposal_id =
-        client.create_gov_proposal(&issuer, &symbol_short!("def"), &token, &symbol_short!("prop1"));
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &86_400u64,
+    );
 
     // The weight retrieved via cast_vote should equal the share set in the snapshot.
     let weight =
         client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
     assert_eq!(weight, 7_500);
+}
+
+// ── Acceptance tests for issue #1347 ──────────────────────────────────────────
+
+/// 1. Vote after deadline returns ProposalExpired error.
+#[test]
+fn vote_after_deadline_returns_proposal_expired() {
+    let (env, client, issuer, token) = setup();
+
+    let holder = Address::generate(&env);
+    commit_and_apply(&env, &client, &issuer, &token, 1, &[(holder.clone(), 5_000)]);
+
+    let voting_window = 10_000u64;
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &voting_window,
+    );
+
+    // Advance time past deadline.
+    env.ledger().set_timestamp(env.ledger().timestamp() + voting_window + 1);
+
+    let result =
+        client.try_cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder, &true);
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::ProposalExpired)),
+        "vote after deadline must fail with ProposalExpired"
+    );
+}
+
+/// 2. Finalize before deadline fails; finalize after deadline succeeds, records outcome, and emits gov_fin event.
+#[test]
+fn finalize_lifecycle_and_event() {
+    let (env, client, issuer, token) = setup();
+
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+    commit_and_apply(
+        &env,
+        &client,
+        &issuer,
+        &token,
+        1,
+        &[(holder_a.clone(), 6_000), (holder_b.clone(), 2_000)],
+    );
+
+    let voting_window = 5_000u64;
+    let quorum_bps = 5_000u32;
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &quorum_bps,
+        &voting_window,
+    );
+
+    // Cast votes: Yes 6000, No 2000. Total votes = 8000 >= 5000 quorum.
+    client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder_a, &true);
+    client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &holder_b, &false);
+
+    // Finalize before deadline must fail with ClaimDelayNotElapsed.
+    let early_finalize =
+        client.try_finalize_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id);
+    assert_eq!(
+        early_finalize,
+        Err(Ok(RevoraError::ClaimDelayNotElapsed)),
+        "finalizing before voting window ends must fail with ClaimDelayNotElapsed"
+    );
+
+    // Advance past deadline.
+    env.ledger().set_timestamp(env.ledger().timestamp() + voting_window);
+
+    // Anyone can finalize.
+    let passed = client.finalize_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id);
+    assert!(passed, "proposal should pass since yes >= no and total >= quorum");
+
+    // Check stored state.
+    let prop =
+        client.get_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id).unwrap();
+    assert!(!prop.open, "proposal must be closed");
+    assert!(prop.passed, "proposal passed must be true");
+
+    // Verify gov_fin event emission.
+    let events = env.events().all();
+    let gov_fin_sym = symbol_short!("gov_fin");
+    let found = events.iter().any(|e| {
+        let topics = e.1;
+        if let Some(first) = topics.get(0) {
+            let sym: Result<Symbol, _> = first.try_into_val(&env);
+            sym.map(|s| s == gov_fin_sym).unwrap_or(false)
+        } else {
+            false
+        }
+    });
+    assert!(found, "gov_fin event should be emitted on finalize_gov_proposal");
+}
+
+/// 3. Zero-weight voter is rejected with NoVotingWeight.
+#[test]
+fn zero_weight_voter_rejected_with_no_voting_weight() {
+    let (env, client, issuer, token) = setup();
+
+    let voter_with_share = Address::generate(&env);
+    let zero_weight_voter = Address::generate(&env);
+    commit_and_apply(&env, &client, &issuer, &token, 1, &[(voter_with_share.clone(), 5_000)]);
+
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &1_000u32,
+        &10_000u64,
+    );
+
+    let result = client.try_cast_vote(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &proposal_id,
+        &zero_weight_voter,
+        &true,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(RevoraError::NoVotingWeight)),
+        "zero-weight voter must be rejected with NoVotingWeight"
+    );
+}
+
+/// 4. Quorum not met -> passed == false.
+#[test]
+fn quorum_not_met_results_in_passed_false() {
+    let (env, client, issuer, token) = setup();
+
+    let voter = Address::generate(&env);
+    commit_and_apply(&env, &client, &issuer, &token, 1, &[(voter.clone(), 2_000)]);
+
+    // Quorum is 5_000 bps, but voter only has 2_000 bps.
+    let voting_window = 10_000u64;
+    let proposal_id = client.create_gov_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &symbol_short!("prop1"),
+        &5_000u32,
+        &voting_window,
+    );
+
+    client.cast_vote(&issuer, &symbol_short!("def"), &token, &proposal_id, &voter, &true);
+
+    // Advance past deadline.
+    env.ledger().set_timestamp(env.ledger().timestamp() + voting_window + 1);
+
+    let passed = client.finalize_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id);
+    assert!(!passed, "proposal must not pass when quorum is not met");
+
+    let prop =
+        client.get_gov_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id).unwrap();
+    assert!(!prop.open);
+    assert!(!prop.passed, "stored outcome passed must be false");
 }

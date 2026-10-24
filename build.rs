@@ -17,5 +17,5 @@ fn main() {
     println!("cargo:rerun-if-changed=tools/storage_layout_schema.rs");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/revenue_deposit_contract.rs");
-    println!("cargo:rerun-if-changed=src/vesting.rs");
+    println!("cargo:rerun-if-changed=contracts/vesting/src/lib.rs");
 }

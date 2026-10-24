@@ -38,10 +38,10 @@ fn sum_equal_to_10000_is_accepted() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
 
-    let res1 = client.try_set_holder_share(&issuer, &ns, &token, &holder1, &6_000, &1);
+    let res1 = client.try_set_holder_share(&issuer, &ns, &token, &holder1, &6_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(res1.is_ok(), "First set should succeed");
 
-    let res2 = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &4_000, &1);
+    let res2 = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &4_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(res2.is_ok(), "Second set bringing sum to exactly 10000 should succeed");
 }
 
@@ -51,9 +51,9 @@ fn sum_exceeding_10000_is_rejected() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &6_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &6_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let res2 = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &4_001, &1);
+    let res2 = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &4_001, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(
         res2,
         Err(Ok(RevoraError::InvalidShareBps)),
@@ -67,17 +67,17 @@ fn removing_holder_frees_up_bps_capacity() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &8_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &8_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Try to set holder2 to 3000, should fail because 8000 + 3000 > 10000
-    let res = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &3_000, &1);
+    let res = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &3_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(res, Err(Ok(RevoraError::InvalidShareBps)));
 
     // Reduce holder1 to 5000
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &5_000, &2);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &5_000, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Now holder2 can take 5000
-    let res_ok = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &5_000, &2);
+    let res_ok = client.try_set_holder_share(&issuer, &ns, &token, &holder2, &5_000, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(res_ok.is_ok(), "Should succeed after freeing up capacity");
 }
 
@@ -86,7 +86,7 @@ fn single_holder_exceeding_10000_is_rejected() {
     let (env, client, _, issuer, ns, token) = setup();
     let holder = Address::generate(&env);
 
-    let res = client.try_set_holder_share(&issuer, &ns, &token, &holder, &10_001, &1);
+    let res = client.try_set_holder_share(&issuer, &ns, &token, &holder, &10_001, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(
         res,
         Err(Ok(RevoraError::InvalidShareBps)),

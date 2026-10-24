@@ -81,7 +81,7 @@ mod reconciliation_bug_condition {
             &payment_token,
             &100_000i128,
             &1u64,
-        );
+         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
         // Scan env.events().all() for EVENT_INDEXED_V2 ("ev_idx2") with event_type = "rv_dep"
         let all_events = env.events().all();
@@ -134,7 +134,7 @@ mod reconciliation_bug_condition {
             &token,
             &holder,
             &2_500u32, // 25%
-        );
+        , &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
         // Scan env.events().all() for EVENT_INDEXED_V2 ("ev_idx2") with event_type = "sh_set"
         let all_events = env.events().all();

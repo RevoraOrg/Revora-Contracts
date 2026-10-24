@@ -128,7 +128,15 @@ fn rebalance_shares(
     let old_bps = current_bps[changed_idx];
     current_bps[changed_idx] = new_bps;
     *nonce += 1;
-    client.set_holder_share(issuer, ns, token, &holders[changed_idx], &new_bps, nonce);
+    client.set_holder_share(
+        issuer,
+        ns,
+        token,
+        &holders[changed_idx],
+        &new_bps,
+        nonce,
+        &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]),
+    );
 
     let delta = (new_bps as i64) - (old_bps as i64);
 
@@ -146,7 +154,15 @@ fn rebalance_shares(
         if adjusted >= 0 && adjusted <= 10_000i64 {
             current_bps[j] = adjusted as u32;
             *nonce += 1;
-            client.set_holder_share(issuer, ns, token, &holders[j], &(adjusted as u32), nonce);
+            client.set_holder_share(
+                issuer,
+                ns,
+                token,
+                &holders[j],
+                &(adjusted as u32),
+                nonce,
+                &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]),
+            );
             return;
         }
     }
@@ -163,14 +179,30 @@ fn rebalance_shares(
             let take = other_share.min(remainder);
             current_bps[j] = (other_share - take) as u32;
             *nonce += 1;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], nonce);
+            client.set_holder_share(
+                issuer,
+                ns,
+                token,
+                &holders[j],
+                &current_bps[j],
+                nonce,
+                &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]),
+            );
             remainder -= take;
         } else {
             // Need to increase others; add up to `-delta`.
             let give = (10_000i64 - other_share).min(-remainder);
             current_bps[j] = (other_share + give) as u32;
             *nonce += 1;
-            client.set_holder_share(issuer, ns, token, &holders[j], &current_bps[j], nonce);
+            client.set_holder_share(
+                issuer,
+                ns,
+                token,
+                &holders[j],
+                &current_bps[j],
+                nonce,
+                &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]),
+            );
             remainder += give;
         }
     }
@@ -223,7 +255,15 @@ fn edge_no_share_holder_sequence() {
     let ns = symbol_short!("def");
 
     // Deposit revenue with no holder having a share.
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // No one has a share → nothing is accrued.
     let no_holder = Address::generate(&env);
@@ -247,10 +287,26 @@ fn edge_single_holder_full_drain() {
     let holder = Address::generate(&env);
 
     // Single holder gets 100% share.
-    client.set_holder_share(&issuer, &ns, &token, &holder, &10_000, &1);
+    client.set_holder_share(
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Deposit.
-    client.deposit_revenue(&issuer, &ns, &token, &payout_asset, &100_000, &1);
+    client.deposit_revenue(
+        &issuer,
+        &ns,
+        &token,
+        &payout_asset,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Pre-claim invariant.
     let pre_accrued = client.get_holder_accrued_unclaimed(&issuer, &ns, &token, &holder);
@@ -297,7 +353,7 @@ proptest! {
         let mut share_nonce: u64 = 0;
         for (i, holder) in holders.iter().enumerate() {
             share_nonce += 1;
-            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i], &share_nonce);
+            client.set_holder_share(&issuer, &ns, &token, holder, &current_bps[i], &share_nonce, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
         }
 
         // ── Running state ────────────────────────────────────────────────
@@ -332,7 +388,7 @@ proptest! {
                     env.ledger().with_mut(|li| li.timestamp = li.timestamp.saturating_add(1));
                     client.deposit_revenue(
                         &issuer, &ns, &token, &payout_asset, &amount, &next_period_id,
-                    );
+                     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
                     total_deposited = total_deposited.saturating_add(amount);
                     next_period_id += 1;
 

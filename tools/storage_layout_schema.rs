@@ -6,7 +6,7 @@ use std::path::Path;
 pub const STORAGE_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// Must stay in sync with `STORAGE_LAYOUT_VERSION` in `src/lib.rs` (asserted by
 /// `tests/storage_layout_json.rs`).
-pub const STORAGE_LAYOUT_VERSION: u32 = 5;
+pub const STORAGE_LAYOUT_VERSION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageLayoutEntry {
@@ -55,6 +55,9 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::AuditSummary(OfferingId)", "AuditSummary", "offering"),
     ("DataKey::RoundingMode(OfferingId)", "RoundingMode", "offering"),
     ("DataKey::RevenueReports(OfferingId)", "Map<u64, RevenueReport>", "offering"),
+    ("DataKey::RevenueReport(OfferingId, u64)", "(i128, u64)", "offering+period"),
+    ("DataKey::ReportPeriodCount(OfferingId)", "u32", "offering"),
+    ("DataKey::ReportPeriodEntry(OfferingId, u32)", "u64", "offering+index"),
     ("DataKey::RevenueIndex(OfferingId, u64)", "i128", "offering+period"),
     ("DataKey::PeriodRevenue(OfferingId, u64)", "i128", "offering+period"),
     ("DataKey::PeriodEntry(OfferingId, u32)", "u64", "offering+index"),
@@ -69,6 +72,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::PeriodDepositTime(OfferingId, u64)", "u64", "offering+period"),
     ("DataKey::Admin", "Address", "contract"),
     ("DataKey::Frozen", "bool", "contract"),
+    ("DataKey::VestingContract", "Address", "contract"),
     ("DataKey::PendingAdmin", "PendingAdminRotation", "contract"),
     ("DataKey::SnapshotConfig(OfferingId)", "bool", "offering"),
     ("DataKey::LastSnapshotRef(OfferingId)", "u64", "offering"),
@@ -91,6 +95,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey::PlatformFeePerAsset(Address)", "u32", "asset"),
     ("DataKey::SnapshotFinalizationRequired", "bool", "contract"),
     ("DataKey::LastSnapshotCommitRef(OfferingId)", "u64", "offering"),
+    ("DataKey::GovernanceContract", "Address", "contract"),
     ("DataKey2::SnapshotFinalized(OfferingId, u64)", "bool", "offering+snapshot"),
     ("DataKey2::SupplyCap(OfferingId)", "i128", "offering"),
     ("DataKey2::DepositedRevenue(OfferingId)", "i128", "offering"),
@@ -100,6 +105,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::LastDepositedPeriodId(OfferingId)", "u64", "offering"),
     ("DataKey2::PaymentTokenDecimals(OfferingId)", "u32", "offering"),
     ("DataKey2::FrozenOffering(OfferingId)", "bool", "offering"),
+    ("FreezeDataKey::OfferingAuthority(OfferingId)", "FreezeAuthority", "offering"),
+    ("FreezeDataKey::HolderAuthority(OfferingId, Address, FreezeReason)", "FreezeAuthority", "offering+holder+reason"),
     ("DataKey2::IssuerCount", "u32", "contract"),
     ("DataKey2::IssuerItem(u32)", "Address", "issuer+index"),
     ("DataKey2::IssuerRegistered(Address)", "bool", "issuer"),
@@ -207,6 +214,8 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey3::ProcessedAttestationHash(BytesN<32>)", "bool", "attestation"),
     ("DataKey3::EmitV2Compat", "bool", "contract"),
     ("DataKey3::RemainingBasis(OfferingId, Address)", "i128", "offering+holder"),
+    // ── Issuer-transfer identity keys ──
+    ("DataKey3::CanonicalIssuer(OfferingId)", "Address", "offering"),
     ("DataKey::OfferingRoyaltyBps(OfferingId, Address)", "u32", "offering+asset"),
     ("DataKey::SnapshotHolderShare(OfferingId, u64, Address)", "u32", "offering+snapshot+holder"),
     ("MigrationDataKey::MigrationResumeCursor(Address)", "MigrationCursor", "issuer"),
@@ -224,7 +233,9 @@ const REVENUE_DEPOSIT_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("r
     ("DataKey::PeriodIds", "Vec<u32>", "contract"),
     ("DataKey::Period(u32)", "Period", "period"),
     ("DataKey::Beneficiaries(u32)", "Vec<Address>", "period"),
-    ("DataKey::Claimed(u32, Address)", "bool", "period+holder")
+    ("DataKey::Claimed(u32, Address)", "bool", "period+holder"),
+    ("DataKey::SharePerBeneficiary(u32)", "i128", "period"),
+    ("DataKey::Remainder(u32)", "i128", "period")
 ]);
 
 const VESTING_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("vesting_contract", [
@@ -307,9 +318,10 @@ fn collect_source_keys(repo_root: &Path) -> Result<BTreeSet<String>, String> {
         ("src/lib.rs", "DataKey"),
         ("src/lib.rs", "DataKey2"),
         ("src/lib.rs", "DataKey3"),
+        ("src/lib.rs", "FreezeDataKey"),
         ("src/lib.rs", "MigrationDataKey"),
         ("src/revenue_deposit_contract.rs", "DataKey"),
-        ("src/vesting.rs", "VestingKey"),
+        ("contracts/vesting/src/lib.rs", "VestingKey"),
     ];
 
     let mut keys = BTreeSet::new();

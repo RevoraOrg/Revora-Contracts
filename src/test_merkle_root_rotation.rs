@@ -43,7 +43,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address) {
         &symbol_short!(""),
         &0,
     );
-    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true);
+    client.set_snapshot_config(&issuer, &symbol_short!("def"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     (env, client, issuer, token)
 }
 
@@ -82,18 +82,18 @@ fn root_and_content_hash_rotate_after_new_snapshot() {
     let hash_a = flat_content_hash(&env, &[(h1.clone(), 4_000), (h2.clone(), 6_000)]);
     let root_a = merkle_root_for(&env, &[(h1.clone(), 4_000), (h2.clone(), 6_000)]);
 
-    client.commit_snapshot(&issuer, &ns, &token, &1, &hash_a);
-    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders_a);
-    client.finalize_snapshot(&issuer, &ns, &token, &1);
+    client.commit_snapshot(&issuer, &ns, &token, &1, &hash_a, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders_a, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &ns, &token, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let h3 = Address::generate(&env);
     let holders_b = soroban_sdk::vec![&env, (h1.clone(), 1_000u32), (h3.clone(), 9_000u32)];
     let hash_b = flat_content_hash(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
     let root_b = merkle_root_for(&env, &[(h1.clone(), 1_000), (h3.clone(), 9_000)]);
 
-    client.commit_snapshot(&issuer, &ns, &token, &2, &hash_b);
-    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b);
-    client.finalize_snapshot(&issuer, &ns, &token, &2);
+    client.commit_snapshot(&issuer, &ns, &token, &2, &hash_b, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &ns, &token, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_ne!(root_a, root_b, "merkle root must rotate between snapshots");
     assert_ne!(hash_a, hash_b, "content_hash must rotate between snapshots");
@@ -118,19 +118,19 @@ fn stale_hash_from_old_snapshot_is_rejected_on_new_snapshot() {
     let holders_a = soroban_sdk::vec![&env, (h1.clone(), 5_000u32)];
     let hash_a = flat_content_hash(&env, &[(h1.clone(), 5_000)]);
 
-    client.commit_snapshot(&issuer, &ns, &token, &1, &hash_a);
-    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders_a);
-    client.finalize_snapshot(&issuer, &ns, &token, &1);
+    client.commit_snapshot(&issuer, &ns, &token, &1, &hash_a, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders_a, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &ns, &token, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // New snapshot: real holder set is different, but we (mis)use the old
     // ("stale proof") hash when committing ref 2.
     let h2 = Address::generate(&env);
     let holders_b = soroban_sdk::vec![&env, (h2.clone(), 5_000u32)];
 
-    client.commit_snapshot(&issuer, &ns, &token, &2, &hash_a); // stale hash reused
-    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b);
+    client.commit_snapshot(&issuer, &ns, &token, &2, &hash_a, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])); // stale hash reused
+    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders_b, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let result = client.try_finalize_snapshot(&issuer, &ns, &token, &2);
+    let result = client.try_finalize_snapshot(&issuer, &ns, &token, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert!(result.is_err());
     assert!(matches!(result.err(), Some(Ok(RevoraError::SnapshotHashMismatch))));
 }
@@ -148,17 +148,17 @@ fn identical_holder_sets_produce_identical_root_no_op_rotation() {
     let hash1 = flat_content_hash(&env, &[(h1.clone(), 5_000)]);
     let root1 = merkle_root_for(&env, &[(h1.clone(), 5_000)]);
 
-    client.commit_snapshot(&issuer, &ns, &token, &1, &hash1);
-    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders);
-    client.finalize_snapshot(&issuer, &ns, &token, &1);
+    client.commit_snapshot(&issuer, &ns, &token, &1, &hash1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &ns, &token, &1, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &ns, &token, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Same holder set again, new ref.
     let hash2 = flat_content_hash(&env, &[(h1.clone(), 5_000)]);
     let root2 = merkle_root_for(&env, &[(h1.clone(), 5_000)]);
 
-    client.commit_snapshot(&issuer, &ns, &token, &2, &hash2);
-    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders);
-    client.finalize_snapshot(&issuer, &ns, &token, &2);
+    client.commit_snapshot(&issuer, &ns, &token, &2, &hash2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.apply_snapshot_shares(&issuer, &ns, &token, &2, &0, &holders, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.finalize_snapshot(&issuer, &ns, &token, &2, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert_eq!(root1, root2, "identical holder sets must yield identical roots");
     assert_eq!(hash1, hash2, "identical holder sets must yield identical content hashes");
@@ -183,7 +183,7 @@ fn snap_cmt_event_emitted_on_each_commit() {
     let hash1 = flat_content_hash(&env, &[(h1.clone(), 5_000)]);
 
     let before = env.events().all().len();
-    client.commit_snapshot(&issuer, &ns, &token, &1, &hash1);
+    client.commit_snapshot(&issuer, &ns, &token, &1, &hash1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     let after = env.events().all().len();
 
     assert!(after > before, "commit_snapshot must emit an event");

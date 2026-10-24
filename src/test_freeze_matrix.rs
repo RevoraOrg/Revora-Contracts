@@ -12,7 +12,8 @@
 
 #![cfg(test)]
 
-use crate::{FreezeReason, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{FreezeReason, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::RoundingMode;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _},
@@ -113,7 +114,7 @@ fn frozen_deposit_revenue_returns_contract_frozen() {
         &payout_asset,
         &10_000i128,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("ns"), &token), 0);
 }
@@ -130,7 +131,7 @@ fn frozen_deposit_revenue_with_snapshot_returns_contract_frozen() {
         &10_000i128,
         &1u64,
         &1u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("ns"), &token), 0);
 }
@@ -143,7 +144,7 @@ fn frozen_set_holder_share_returns_contract_frozen() {
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let holder = Address::generate(&env);
     let result =
-        client.try_set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &500u32);
+        client.try_set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &500u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns"), &token, &holder), 0);
 }
@@ -207,7 +208,7 @@ fn frozen_set_concentration_limit_returns_contract_frozen() {
         &5_000u32,
         &true,
         &0u64,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert!(client.get_concentration_limit(&issuer, &symbol_short!("ns"), &token).is_none());
 }
@@ -217,7 +218,7 @@ fn frozen_report_concentration_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let result =
-        client.try_report_concentration(&issuer, &symbol_short!("ns"), &token, &3_000u32);
+        client.try_report_concentration(&issuer, &symbol_short!("ns"), &token, &3_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_current_concentration(&issuer, &symbol_short!("ns"), &token), 0);
 }
@@ -233,7 +234,7 @@ fn frozen_set_rounding_mode_returns_contract_frozen() {
         &symbol_short!("ns"),
         &token,
         &RoundingMode::RoundHalfUp,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     // Default rounding mode must be unchanged.
     assert_eq!(
@@ -254,7 +255,7 @@ fn frozen_set_investment_constraints_returns_contract_frozen() {
         &token,
         &100i128,
         &10_000i128,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert!(client.get_investment_constraints(&issuer, &symbol_short!("ns"), &token).is_none());
 }
@@ -266,7 +267,7 @@ fn frozen_set_min_revenue_threshold_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let result =
-        client.try_set_min_revenue_threshold(&issuer, &symbol_short!("ns"), &token, &500i128);
+        client.try_set_min_revenue_threshold(&issuer, &symbol_short!("ns"), &token, &500i128, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_min_revenue_threshold(&issuer, &symbol_short!("ns"), &token), 0);
 }
@@ -277,7 +278,7 @@ fn frozen_set_min_revenue_threshold_returns_contract_frozen() {
 fn frozen_set_claim_delay_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
-    let result = client.try_set_claim_delay(&issuer, &symbol_short!("ns"), &token, &3600u64);
+    let result = client.try_set_claim_delay(&issuer, &symbol_short!("ns"), &token, &3600u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_claim_delay(&issuer, &symbol_short!("ns"), &token), 0);
 }
@@ -310,7 +311,7 @@ fn frozen_set_claim_window_returns_contract_frozen() {
 fn frozen_set_snapshot_config_returns_contract_frozen() {
     let env = Env::default();
     let (client, _, issuer, token, _) = frozen_setup(&env);
-    let result = client.try_set_snapshot_config(&issuer, &symbol_short!("ns"), &token, &true);
+    let result = client.try_set_snapshot_config(&issuer, &symbol_short!("ns"), &token, &true, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert!(!client.get_snapshot_config(&issuer, &symbol_short!("ns"), &token));
 }
@@ -321,7 +322,7 @@ fn frozen_commit_snapshot_returns_contract_frozen() {
     let (client, _, issuer, token, _) = frozen_setup(&env);
     let hash = BytesN::<32>::from_array(&env, &[0u8; 32]);
     let result =
-        client.try_commit_snapshot(&issuer, &symbol_short!("ns"), &token, &1u64, &hash);
+        client.try_commit_snapshot(&issuer, &symbol_short!("ns"), &token, &1u64, &hash, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert!(client.get_snapshot_entry(&issuer, &symbol_short!("ns"), &token, &1u64).is_none());
 }
@@ -343,7 +344,7 @@ fn frozen_apply_snapshot_shares_returns_contract_frozen() {
         &1u64,
         &0u32,
         &holders,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_frozen_err(result);
     assert_eq!(client.get_holder_share(&issuer, &symbol_short!("ns"), &token, &holder), 0);
 }
@@ -455,7 +456,7 @@ fn frozen_claim_is_not_blocked() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000u32, &payout_asset, &0i128, &symbol_short!(""), &0);
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32, &1);
+    client.set_holder_share(&issuer, &symbol_short!("ns"), &token, &holder, &1_000u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Freeze the contract.
     client.freeze();
@@ -505,8 +506,8 @@ fn frozen_set_holder_share_no_partial_write() {
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &2500, &payout, &0, &symbol_short!(""), &0u32);
 
     soroban_sdk::token::StellarAssetClient::new(&env, &payout).mint(&issuer, &1_000_000);
-    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1);
-    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1); // 50%
+    client.deposit_revenue(&issuer, &ns, &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &ns, &token, &holder, &5_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()])); // 50%
 
     (env, client, admin, ns, token, issuer, holder)
 }
@@ -865,7 +866,7 @@ fn ofac_attestation_auto_freezes_holder() {
     let ns = symbol_short!("ofac");
     
     // Set up holder with shares
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     // Submit OFAC attestation
     let attestation_hash = BytesN::from_array(&env, &[0x01u8; 32]);
@@ -883,7 +884,7 @@ fn ofac_attestation_replay_is_idempotent() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     let attestation_hash = BytesN::from_array(&env, &[0x02u8; 32]);
     
@@ -905,7 +906,7 @@ fn ofac_attestation_emits_auto_frz_event() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     let attestation_hash = BytesN::from_array(&env, &[0x03u8; 32]);
     let before = env.events().all().len();
@@ -953,7 +954,7 @@ fn ofac_attestation_blocked_when_contract_frozen() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     // Freeze the contract globally
     client.freeze();
@@ -975,8 +976,8 @@ fn multiple_ofac_attestations_freeze_independently() {
     let holder2 = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder1, &500, &1);
-    client.set_holder_share(&issuer, &ns, &token, &holder2, &500, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder1, &500, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &ns, &token, &holder2, &500, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     let hash1 = BytesN::from_array(&env, &[0x05u8; 32]);
     let hash2 = BytesN::from_array(&env, &[0x06u8; 32]);
@@ -1000,7 +1001,7 @@ fn ofac_attestation_uses_sanctions_match_reason() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
     
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     let attestation_hash = BytesN::from_array(&env, &[0x07u8; 32]);
     client.process_ofac_attestation(&attestation_hash, &issuer, &ns, &token, &holder);
@@ -1204,7 +1205,7 @@ fn ofac_attestation_with_existing_freeze_combines_bitmask() {
     let holder = Address::generate(&env);
     let ns = symbol_short!("ofac");
 
-    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1);
+    client.set_holder_share(&issuer, &ns, &token, &holder, &1_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // First, manual freeze with CourtOrder
     client.emergency_freeze_holder(

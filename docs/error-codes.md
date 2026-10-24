@@ -95,3 +95,4 @@ Generated from the `RevoraError` enum in `src/lib.rs` (`#[repr(u32)]`). Wire val
 | 90 | `ProofTooDeep` |
 | 91 | `OracleQuoteStale` |
 | 92 | `RedemptionWindowOverlap` |
+| 93 | `DecimalsLocked` |

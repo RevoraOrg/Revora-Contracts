@@ -38,14 +38,14 @@ fn test_reject_issuer_transfer_success() {
     let namespace = symbol_short!("def");
 
     // Propose transfer
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Reject transfer
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert!(res.is_ok());
 
     // Verify it was rejected by checking we can't accept it anymore
-    let accept_res = client.try_accept_issuer_transfer(&new_issuer, &namespace, &token);
+    let accept_res = client.try_accept_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert_eq!(accept_res, Err(Ok(RevoraError::NoTransferPending)));
     
     // Check events
@@ -75,7 +75,7 @@ fn test_reject_issuer_transfer_no_pending() {
     let new_issuer = Address::generate(&env);
     let namespace = symbol_short!("def");
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -88,9 +88,9 @@ fn test_reject_issuer_transfer_wrong_new_issuer() {
     let wrong_new_issuer = Address::generate(&env);
     let namespace = symbol_short!("def");
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let res = client.try_reject_issuer_transfer(&wrong_new_issuer, &namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &wrong_new_issuer, &namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -103,9 +103,9 @@ fn test_reject_issuer_transfer_wrong_namespace() {
     let namespace = symbol_short!("def");
     let wrong_namespace = symbol_short!("wrong");
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &wrong_namespace, &token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &wrong_namespace, &token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }
 
@@ -118,8 +118,8 @@ fn test_reject_issuer_transfer_wrong_token() {
     let namespace = symbol_short!("def");
     let wrong_token = Address::generate(&env);
 
-    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer);
+    client.propose_issuer_transfer(&issuer, &namespace, &token, &new_issuer, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
-    let res = client.try_reject_issuer_transfer(&new_issuer, &namespace, &wrong_token);
+    let res = client.try_reject_issuer_transfer(&issuer, &new_issuer, &namespace, &wrong_token);
     assert_eq!(res, Err(Ok(RevoraError::NoTransferPending)));
 }

@@ -20,7 +20,7 @@ fn test_transfer_restrictions() {
     let holder1 = Address::generate(&env);
     let holder2 = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1);
+    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     // Transfer from holder1 to holder2, assigning holder2 to "RegD"
     let nonce = 1u64;
@@ -33,7 +33,7 @@ fn test_transfer_restrictions() {
     assert_eq!(res.unwrap_err().unwrap(), RevoraError::CategoryCapReached);
 
     // Drop holder2 to 0
-    client.set_holder_share(&issuer, &namespace, &token, &holder2, &0, &1);
+    client.set_holder_share(&issuer, &namespace, &token, &holder2, &0, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Now we can transfer to holder3
     let nonce3 = 3u64;
@@ -58,7 +58,7 @@ fn test_oscillating_across_zero() {
     let holder2 = Address::generate(&env);
     let holder3 = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1);
+    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     
     let nonce = 1u64;
     let expires_at = u64::MAX;

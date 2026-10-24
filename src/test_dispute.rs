@@ -26,7 +26,7 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Symbol,
 
 fn make_holder(env: &Env, client: &RevoraRevenueShareClient<'static>, issuer: &Address, ns: &Symbol, token: &Address) -> Address {
     let holder = Address::generate(env);
-    client.set_holder_share(issuer, ns, token, &holder, &500u32, &1);
+    client.set_holder_share(issuer, ns, token, &holder, &500u32, &1, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
     holder
 }
 
@@ -512,8 +512,8 @@ fn critical_dispute_freeze_isolation_across_offerings() {
     client.initialize(&admin, &None::<Address>, &None::<bool>);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_a, &2500, &payout, &0i128, &symbol_short!(""), &0u32);
     client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token_b, &2500, &payout, &0i128, &symbol_short!(""), &0u32);
-    client.set_holder_share(&issuer, &ns, &token_a, &holder, &500u32, &1);
-    client.set_holder_share(&issuer, &ns, &token_b, &holder, &500u32, &1);
+    client.set_holder_share(&issuer, &ns, &token_a, &holder, &500u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.set_holder_share(&issuer, &ns, &token_b, &holder, &500u32, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Open critical dispute on token_a only
     client.open_dispute(
@@ -587,3 +587,85 @@ fn standard_dispute_resolve_does_not_emit_freeze_events() {
     assert_eq!(freeze_events.len(), 0,
         "standard dispute must not emit dsp_frzon or dsp_frzoff events");
 }
+
+#[test]
+fn resolve_dispute_rejects_open_resolution_and_freeze_remains_active() {
+    let (env, client, _admin, issuer, ns, token) = setup();
+    let holder = make_holder(&env, &client, &issuer, &ns, &token);
+
+    // Open two critical disputes
+    let id1 = client.open_dispute(
+        &holder, &issuer, &ns, &token, &DisputeSeverity::Critical, &meta(&env, 1),
+    ).unwrap();
+    let _id2 = client.open_dispute(
+        &holder, &issuer, &ns, &token, &DisputeSeverity::Critical, &meta(&env, 2),
+    ).unwrap();
+
+    // Freeze active
+    let res = client.try_claim(&holder, &issuer, &ns, &token, &0u32);
+    assert_eq!(res, Err(Ok(RevoraError::DisputeFreezeActive)));
+
+    // Attempt to resolve dispute with Open — must fail with InvalidDisputeResolution
+    let res = client.try_resolve_dispute(&issuer, &id1, &DisputeStatus::Open);
+    assert_eq!(res, Err(Ok(RevoraError::InvalidDisputeResolution)));
+
+    // Freeze must still be active
+    let res = client.try_claim(&holder, &issuer, &ns, &token, &0u32);
+    assert_eq!(res, Err(Ok(RevoraError::DisputeFreezeActive)));
+}
+
+#[test]
+fn holder_opens_five_resolves_one_can_open_sixth() {
+    let (env, client, _admin, issuer, ns, token) = setup();
+    let holder = make_holder(&env, &client, &issuer, &ns, &token);
+
+    let mut first_id = None;
+    for i in 0..MAX_OPEN_DISPUTES_PER_HOLDER {
+        let m = meta(&env, (i + 1) as u8);
+        let id = client.open_dispute(&holder, &issuer, &ns, &token, &DisputeSeverity::Standard, &m).unwrap();
+        if i == 0 {
+            first_id = Some(id);
+        }
+    }
+
+    // Attempting a 6th dispute fails because cap is reached
+    let m6 = meta(&env, 6);
+    let res = client.open_dispute(&holder, &issuer, &ns, &token, &DisputeSeverity::Standard, &m6);
+    match res {
+        Err(RevoraError::MaxDisputesReached) => {}
+        other => panic!("expected MaxDisputesReached, got: {:?}", other),
+    }
+
+    // Resolve one dispute
+    client.resolve_dispute(&issuer, &first_id.unwrap(), &DisputeStatus::Resolved);
+
+    // Holder can now open a 6th dispute
+    let res6 = client.open_dispute(&holder, &issuer, &ns, &token, &DisputeSeverity::Standard, &m6);
+    assert!(res6.is_ok(), "holder should be able to open a 6th dispute after 1 of 5 is resolved");
+}
+
+#[test]
+fn resolve_dispute_emits_disp_res_event_with_resolution() {
+    let (env, client, _admin, issuer, ns, token) = setup();
+    let holder = make_holder(&env, &client, &issuer, &ns, &token);
+    let m = meta(&env, 1);
+
+    let dispute_id = client.open_dispute(
+        &holder, &issuer, &ns, &token, &DisputeSeverity::Standard, &m,
+    ).unwrap();
+
+    client.resolve_dispute(&issuer, &dispute_id, &DisputeStatus::Resolved);
+
+    let events = env.events().all();
+    let res_events: Vec<_> = events.iter()
+        .filter(|e| {
+            let (_, topics, _) = e;
+            if topics.is_empty() { return false; }
+            let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+            t0 == symbol_short!("disp_res")
+        })
+        .collect();
+
+    assert_eq!(res_events.len(), 1, "exactly one disp_res event should be emitted");
+}
+

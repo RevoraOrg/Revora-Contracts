@@ -75,7 +75,7 @@ fn setup_with_offering(
         &0,
         &symbol_short!(""),
         &0);
-    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1);
+    client.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000, &1, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     // Mint to issuer and deposit period 1
     token::StellarAssetClient::new(env, &payment_token.address()).mint(&issuer, &500_000);
@@ -86,7 +86,7 @@ fn setup_with_offering(
         &payment_token.address(),
         &100_000,
         &1,
-    );
+     &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
 
     (client, admin, safety, issuer, offering_token, payment_token.address(), holder)
 }
@@ -213,7 +213,7 @@ fn soft_pause_deposit_blocked() {
         &payment_token,
         &100_000,
         &2,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(
         result,
         Err(Ok(RevoraError::ContractPaused)),
@@ -251,7 +251,7 @@ fn soft_pause_set_holder_share_blocked() {
         &offering_token,
         &holder,
         &5_000u32,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -292,7 +292,7 @@ fn hard_pause_deposit_blocked() {
         &payment_token,
         &100_000,
         &2,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     assert_eq!(result, Err(Ok(RevoraError::ContractPaused)));
 }
 
@@ -352,7 +352,7 @@ fn escalation_soft_to_hard_blocks_claim() {
         &_payment_token,
         &100_000,
         &2,
-    );
+     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Escalate to hard pause
     client.hard_pause_admin(&admin);
