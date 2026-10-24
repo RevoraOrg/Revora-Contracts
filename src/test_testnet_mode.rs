@@ -93,7 +93,7 @@ fn assert_relaxed_rejected(c: &Ctx) {
 }
 
 fn set_mode(c: &Ctx, enabled: bool) {
-    c.client.set_testnet_mode(&enabled).unwrap();
+    c.client.set_testnet_mode(&enabled);
 }
 
 /// Decode every `test_mode` flag emitted at or after `start_idx`.

@@ -3,5 +3,5 @@ package-lock.json/
 Cargo.lock
 test_snapshots/
 target/
-test_snapshots/
 
+branch_structure.json
