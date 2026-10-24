@@ -37,6 +37,14 @@
 //! with fixed concrete inputs so `cargo test` catches basic regressions without the
 //! Kani tool-chain.
 
+// The crate is `#![no_std]`; `std` is only linked under `cfg(test)` (see
+// `src/lib.rs`), and without the prelude. The test-only modules below use
+// `Box`, `String`, and `format!`, so import them explicitly here.
+#[cfg(test)]
+extern crate std;
+#[cfg(test)]
+use std::{boxed::Box, format, string::String};
+
 /// Default expiry (7 days in seconds) mirroring `ISSUER_TRANSFER_EXPIRY_SECS`.
 pub const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60; // 604_800
 /// Minimum configurable expiry (1 hour) mirroring `MIN_ISSUER_TRANSFER_EXPIRY_SECS`.
@@ -745,6 +753,7 @@ mod tests {
 mod orphan_pending_guard_tests {
     use super::*;
     use std::panic::catch_unwind;
+    use std::panic::catch_unwind;
 
     /// Guard message asserted by the negative cases.
     const GUARD_MESSAGE: &str = "PendingIssuerTransfer key must be absent after cancel";
@@ -753,6 +762,7 @@ mod orphan_pending_guard_tests {
         StorageModel { pending, offering: OfferingState { issuer }, offering_issuer_lookup: issuer }
     }
 
+
     fn pending(new_issuer: AddrId, timestamp: u64, expiry_secs: u64) -> PendingTransfer {
         PendingTransfer { new_issuer, timestamp, expiry_secs }
     }
@@ -760,6 +770,7 @@ mod orphan_pending_guard_tests {
     /// Render a panic payload as text so the exact guard message can be asserted.
     fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
         if let Some(s) = payload.downcast_ref::<&'static str>() {
+            // `&'static str` payloads are the common `assert!` case.
             (*s).to_string()
         } else if let Some(s) = payload.downcast_ref::<String>() {
             s.clone()
@@ -768,12 +779,14 @@ mod orphan_pending_guard_tests {
         }
     }
 
+
     /// `None` when the guard accepts the model, otherwise the panic message.
     fn guard_outcome(model: StorageModel) -> Option<String> {
         catch_unwind(move || assert_no_orphan_pending(&model)).err().map(panic_text)
     }
 
     // ── The guard accepts a clean model ──────────────────────────────────────
+
 
     #[test]
     fn guard_accepts_an_empty_pending_slot() {
@@ -782,6 +795,7 @@ mod orphan_pending_guard_tests {
 
     #[test]
     fn guard_accepts_every_possible_issuer_id() {
+        // AddrId is a full u8: 0 is the "no offering" sentinel and 1..=255 are real
         // AddrId is a full u8: 0 is the "no offering" sentinel and 1..=255 are real
         // addresses. The guard inspects `pending` only, so the whole domain must pass.
         for issuer in u8::MIN..=u8::MAX {
@@ -793,12 +807,14 @@ mod orphan_pending_guard_tests {
         }
     }
 
+
     #[test]
     fn guard_ignores_the_offering_and_lookup_fields() {
         // A stale reverse-lookup is a *different* invariant (`assert_issuer_lookup_consistent`)
         // and must not make the orphan-key guard misfire.
         let stale = StorageModel {
             pending: None,
+            offering: OfferingState { issuer: 5 },
             offering: OfferingState { issuer: 5 },
             offering_issuer_lookup: 9,
         };
@@ -809,6 +825,7 @@ mod orphan_pending_guard_tests {
     #[test]
     fn guard_does_not_mutate_the_model_it_inspects() {
         let before = model(None, 7);
+        let before = model(None, 7);
         let outcome = guard_outcome(before);
 
         assert_eq!(outcome, None);
@@ -817,6 +834,7 @@ mod orphan_pending_guard_tests {
         assert_eq!(before, model(None, 7));
     }
 
+
     // ── The guard trips on any surviving key ─────────────────────────────────
 
     #[test]
@@ -824,12 +842,14 @@ mod orphan_pending_guard_tests {
         let outcome = guard_outcome(model(Some(pending(2, 1_000, 0)), 1));
 
         assert_eq!(outcome.as_deref(), Some(GUARD_MESSAGE));
+        assert_eq!(outcome.as_deref(), Some(GUARD_MESSAGE));
     }
 
     #[test]
     fn guard_trips_for_an_expired_but_still_stored_transfer() {
         // Expiry is enforced at propose/report time; a cancelled proposal must be
         // *removed*, not merely aged out. A payload that can never execute is still
+        // an orphan key and must fail the guard.
         // an orphan key and must fail the guard.
         let expired = pending(3, 0, MIN_EXPIRY_SECS);
 
@@ -840,6 +860,7 @@ mod orphan_pending_guard_tests {
     fn guard_trips_for_every_pending_payload_shape() {
         // Exhaustive over the payload dimensions the state model can hold: destination
         // address (including the null sentinel and the max id) x timestamp bounds x the
+        // address (including the null sentinel and the max id) x timestamp bounds x the
         // three legal expiry encodings. Presence alone must decide the outcome.
         let issuers: [AddrId; 3] = [0, 1, 255];
         let timestamps: [u64; 3] = [0, 1, u64::MAX];
@@ -848,6 +869,7 @@ mod orphan_pending_guard_tests {
         for issuer in issuers {
             for new_issuer in issuers {
                 for timestamp in timestamps {
+                    for expiry_secs in expiries {
                     for expiry_secs in expiries {
                         let outcome = guard_outcome(model(
                             Some(pending(new_issuer, timestamp, expiry_secs)),
@@ -860,12 +882,14 @@ mod orphan_pending_guard_tests {
                              timestamp={timestamp} expiry={expiry_secs}"
                         );
                     }
+                    }
                 }
             }
         }
     }
 
     // ── The guard reflects reality across the transfer lifecycle ─────────────
+
 
     #[test]
     fn guard_trips_after_a_rejected_cancel_but_passes_after_a_successful_one() {
@@ -874,6 +898,7 @@ mod orphan_pending_guard_tests {
         // Unauthorised cancel: the proposal must survive, so the orphan guard must
         // still trip afterwards — the guard cannot be satisfied by a no-op cancel.
         model_propose(&mut storage, 1, 2, 500, 0).unwrap();
+        assert_eq!(model_cancel(&mut storage, 4), Err(TransferError::NotAuthorized));
         assert_eq!(model_cancel(&mut storage, 4), Err(TransferError::NotAuthorized));
         assert_eq!(
             guard_outcome(storage).as_deref(),
@@ -884,12 +909,14 @@ mod orphan_pending_guard_tests {
         // Authorised cancel: the key is gone and the guard accepts the model.
         assert!(model_cancel(&mut storage, 1).is_ok());
         assert_eq!(guard_outcome(storage), None);
+        assert_eq!(guard_outcome(storage), None);
     }
 
     #[test]
     fn guard_detects_a_cancel_that_overwrites_instead_of_removing_the_key() {
         // Regression model for the bug the guard exists to catch: an implementation
         // that "cancels" by zeroing the pending payload while leaving the key stored.
+        // Nothing about the payload is suspicious — only presence matters.
         // Nothing about the payload is suspicious — only presence matters.
         let mut storage = model(None, 1);
         model_propose(&mut storage, 1, 2, 500, MAX_EXPIRY_SECS).unwrap();
@@ -900,6 +927,7 @@ mod orphan_pending_guard_tests {
     }
 
     #[test]
+    #[test]
     fn guard_passes_once_the_key_is_actually_taken() {
         let mut storage = model(None, 1);
         model_propose(&mut storage, 1, 2, 500, 0).unwrap();
@@ -907,6 +935,7 @@ mod orphan_pending_guard_tests {
 
         assert!(taken.is_ok());
         assert_eq!(storage.pending, None);
+        assert_eq!(guard_outcome(storage), None);
         assert_eq!(guard_outcome(storage), None);
     }
 }
