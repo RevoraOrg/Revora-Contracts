@@ -165,6 +165,7 @@ const CORE_LAYOUT: &[StorageLayoutEntry] = storage_layout_entries!("revora_reven
     ("DataKey2::OraclePubKey(Address)", "BytesN<32>", "oracle"),
     ("DataKey2::ClassConversionRatio(OfferingId, ShareClass, ShareClass)", "u32", "offering+class"),
     ("DataKey3::DeferredQueue(OfferingId)", "Vec<DeferredQueueEntry>", "offering"),
+    ("DataKey4::DeferredQueueNextId(OfferingId)", "u32", "offering"),
     // ── Accrual-checkpoint keys ──
     ("DataKey2::AccrualAnchor(OfferingId, Address)", "AccrualAnchor", "offering+holder"),
     ("DataKey2::CheckpointThreshold(OfferingId)", "u32", "offering"),
@@ -318,6 +319,7 @@ fn collect_source_keys(repo_root: &Path) -> Result<BTreeSet<String>, String> {
         ("src/lib.rs", "DataKey"),
         ("src/lib.rs", "DataKey2"),
         ("src/lib.rs", "DataKey3"),
+        ("src/lib.rs", "DataKey4"),
         ("src/lib.rs", "FreezeDataKey"),
         ("src/lib.rs", "MigrationDataKey"),
         ("src/revenue_deposit_contract.rs", "DataKey"),

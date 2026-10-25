@@ -46,3 +46,21 @@ pub enum DeferredDataKey {
 | Code | Name | Condition |
 |------|------|-----------|
 | 456 | `DistributionDeferred` | `claim` called while `DeferredReports(period_id)` exists |
+
+## Deferred Queue Priority Lifecycle
+
+Provides a prioritized queue of deferred actions per offering.
+
+### Semantics & Architecture
+
+1. **Queue Capacity Limit:** Enqueuing is bounded by `MAX_DEFERRED_QUEUE_LEN` (100 entries). Attempting to enqueue beyond this capacity rejects with `RevoraError::LimitReached`.
+2. **Monotonic Queue ID:** `queue_id` is assigned from a dedicated, persistent per-offering counter `DataKey4::DeferredQueueNextId(OfferingId)`. Removing or releasing entries does not reset or reuse previous queue IDs, guaranteeing strict uniqueness and deterministic tie-breaking throughout the offering's entire lifecycle.
+3. **Maturity & Release (`release_deferred`):**
+   - Head-of-queue priority: Pops entries strictly in sorted order: `(release_ts ASC, priority ASC, queue_id ASC)`.
+   - Maturity check: Only entries where `entry.release_ts <= env.ledger().timestamp()` are popped.
+   - Batch cap: Pops at most `max` matured entries per call.
+   - Event emission: Emits `EVENT_DEFERRED_RELEASED` (`def_rel`) per popped entry:
+     - Topic: `(def_rel, issuer, namespace, token)`
+     - Data: `(queue_id, release_ts, priority, payload_id)`
+   - No-op: If called before any entry has matured (`release_ts > now`) or with `max == 0`, returns an empty list without mutating state.
+
