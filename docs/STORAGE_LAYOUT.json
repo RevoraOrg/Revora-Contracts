@@ -753,6 +753,13 @@
     },
     {
       "module": "revora_revenue_share",
+      "key": "DataKey4::DeferredQueueNextId(OfferingId)",
+      "value_type": "u32",
+      "ownership": "offering",
+      "version": 6
+    },
+    {
+      "module": "revora_revenue_share",
       "key": "DataKey::AccrualIndexE18(OfferingId)",
       "value_type": "i128",
       "ownership": "offering",

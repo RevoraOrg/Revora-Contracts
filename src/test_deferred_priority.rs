@@ -408,3 +408,172 @@ fn large_queue_maintains_correct_order() {
         );
     }
 }
+
+// ── Tests: Queue Release & Lifecycle ──────────────────────────────────────────
+
+#[test]
+fn enqueue_3_entries_advance_time_release_returns_in_order_and_queue_shrinks() {
+    let (env, client, issuer, namespace, token) = setup_offering();
+    env.ledger().set_timestamp(1_000);
+
+    // Enqueue 3 entries with release timestamps 1500, 2000, 2500 and distinct priorities
+    let q1 = client.enqueue_deferred(&issuer, &namespace, &token, &2000, &5, &102);
+    let q2 = client.enqueue_deferred(&issuer, &namespace, &token, &1500, &1, &101);
+    let q3 = client.enqueue_deferred(&issuer, &namespace, &token, &2500, &0, &103);
+
+    // Initial queue has 3 entries
+    let queue_initial = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert_eq!(queue_initial.len(), 3);
+    // Verified sorted order: q2 (1500), q1 (2000), q3 (2500)
+    assert_eq!(queue_initial.get(0).unwrap().queue_id, q2);
+    assert_eq!(queue_initial.get(1).unwrap().queue_id, q1);
+    assert_eq!(queue_initial.get(2).unwrap().queue_id, q3);
+
+    // Advance time to 2100 (matures q2 and q1, but not q3)
+    env.ledger().set_timestamp(2_100);
+
+    // Release up to 10 entries
+    let released = client.release_deferred(&issuer, &namespace, &token, &10);
+    assert_eq!(released.len(), 2);
+    assert_eq!(released.get(0).unwrap().queue_id, q2);
+    assert_eq!(released.get(0).unwrap().release_ts, 1500);
+    assert_eq!(released.get(0).unwrap().payload_id, 101);
+
+    assert_eq!(released.get(1).unwrap().queue_id, q1);
+    assert_eq!(released.get(1).unwrap().release_ts, 2000);
+    assert_eq!(released.get(1).unwrap().payload_id, 102);
+
+    // Queue has shrunk to 1 entry (q3)
+    let queue_shrunk = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert_eq!(queue_shrunk.len(), 1);
+    assert_eq!(queue_shrunk.get(0).unwrap().queue_id, q3);
+    assert_eq!(queue_shrunk.get(0).unwrap().payload_id, 103);
+
+    // Advance time past q3 (ts = 3000) and release
+    env.ledger().set_timestamp(3_000);
+    let released_final = client.release_deferred(&issuer, &namespace, &token, &10);
+    assert_eq!(released_final.len(), 1);
+    assert_eq!(released_final.get(0).unwrap().queue_id, q3);
+
+    // Queue is now empty
+    let queue_empty = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert!(queue_empty.is_empty());
+}
+
+#[test]
+fn queue_ids_remain_unique_after_releases() {
+    let (env, client, issuer, namespace, token) = setup_offering();
+    env.ledger().set_timestamp(1_000);
+
+    // Enqueue 2 entries: queue_id must be 0 and 1
+    let q0 = client.enqueue_deferred(&issuer, &namespace, &token, &1200, &0, &1);
+    let q1 = client.enqueue_deferred(&issuer, &namespace, &token, &1300, &0, &2);
+    assert_eq!(q0, 0);
+    assert_eq!(q1, 1);
+
+    // Advance time past both entries and release them
+    env.ledger().set_timestamp(1_500);
+    let released = client.release_deferred(&issuer, &namespace, &token, &10);
+    assert_eq!(released.len(), 2);
+
+    // Queue is now empty
+    let queue = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert!(queue.is_empty());
+
+    // Enqueue a 3rd entry into the now-empty queue: queue_id must be 2, NOT 0
+    let q2 = client.enqueue_deferred(&issuer, &namespace, &token, &1600, &0, &3);
+    assert_eq!(q2, 2);
+
+    // Enqueue a 4th entry: queue_id must be 3, NOT 1
+    let q3 = client.enqueue_deferred(&issuer, &namespace, &token, &1700, &0, &4);
+    assert_eq!(q3, 3);
+}
+
+#[test]
+fn enqueue_beyond_cap_returns_limit_reached() {
+    let (_env, client, issuer, namespace, token) = setup_offering();
+
+    // Fill queue to MAX_DEFERRED_QUEUE_LEN
+    for i in 0..MAX_DEFERRED_QUEUE_LEN {
+        client.enqueue_deferred(&issuer, &namespace, &token, &(1000 + i as u64), &0, &(i as u64));
+    }
+
+    let queue = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert_eq!(queue.len(), MAX_DEFERRED_QUEUE_LEN);
+
+    // Enqueue beyond cap must fail with LimitReached
+    let result = client.try_enqueue_deferred(&issuer, &namespace, &token, &99999, &0, &999);
+    assert_eq!(result, Err(Ok(RevoraError::LimitReached)));
+}
+
+#[test]
+fn release_before_maturity_is_noop() {
+    let (env, client, issuer, namespace, token) = setup_offering();
+    env.ledger().set_timestamp(500);
+
+    // Enqueue entries with release timestamps strictly in the future (1000, 2000)
+    client.enqueue_deferred(&issuer, &namespace, &token, &1000, &1, &201);
+    client.enqueue_deferred(&issuer, &namespace, &token, &2000, &2, &202);
+
+    // Calling release_deferred before maturity (timestamp 500 < 1000)
+    let released = client.release_deferred(&issuer, &namespace, &token, &10);
+    assert!(released.is_empty());
+
+    // Queue must remain untouched
+    let queue = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert_eq!(queue.len(), 2);
+}
+
+#[test]
+fn release_deferred_emits_event_and_respects_max_cap() {
+    let (env, client, issuer, namespace, token) = setup_offering();
+    env.ledger().set_timestamp(100);
+
+    // Enqueue 3 entries with the same release timestamp
+    let q0 = client.enqueue_deferred(&issuer, &namespace, &token, &500, &0, &301);
+    let q1 = client.enqueue_deferred(&issuer, &namespace, &token, &500, &1, &302);
+    let _q2 = client.enqueue_deferred(&issuer, &namespace, &token, &500, &2, &303);
+
+    // Advance time to 600
+    env.ledger().set_timestamp(600);
+
+    let before_events = env.events().all().len();
+
+    // Release with max = 2
+    let released = client.release_deferred(&issuer, &namespace, &token, &2);
+    assert_eq!(released.len(), 2);
+    assert_eq!(released.get(0).unwrap().queue_id, q0);
+    assert_eq!(released.get(1).unwrap().queue_id, q1);
+
+    // 1 entry remains in queue
+    let remaining = client.get_deferred_queue(&issuer, &namespace, &token);
+    assert_eq!(remaining.len(), 1);
+
+    // Check emitted EVENT_DEFERRED_RELEASED events
+    let events = env.events().all();
+    assert!(events.len() >= before_events + 2);
+
+    let def_rel_events: std::vec::Vec<_> = events
+        .iter()
+        .filter(|(_cid, topics_val, _data)| {
+            let topics: soroban_sdk::Vec<soroban_sdk::Val> = topics_val.clone().into_val(&env);
+            if let Some(first_topic) = topics.get(0).map(|v| v.into_val(&env)) {
+                let sym: Symbol = first_topic;
+                sym == EVENT_DEFERRED_RELEASED
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    assert_eq!(def_rel_events.len(), 2);
+}
+
+#[test]
+fn release_deferred_requires_issuer_auth() {
+    let (env, client, _issuer, namespace, token) = setup_offering();
+    let attacker = Address::generate(&env);
+
+    let result = client.try_release_deferred(&attacker, &namespace, &token, &10);
+    assert_eq!(result, Err(Ok(RevoraError::OfferingNotFound)));
+}

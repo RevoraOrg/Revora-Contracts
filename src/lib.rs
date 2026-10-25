@@ -702,6 +702,8 @@ const EVENT_PERIOD_CLOSED: Symbol = symbol_short!("per_clos");
 const EVENT_DUAL_SIG_CLOSE: Symbol = symbol_short!("dual_cls");
 /// Emitted when a new entry is enqueued into the deferred-distribution priority queue (#551).
 const EVENT_DEFERRED_PRIORITY_SET: Symbol = symbol_short!("def_pset");
+/// Emitted when a deferred-distribution entry is released from the queue.
+const EVENT_DEFERRED_RELEASED: Symbol = symbol_short!("def_rel");
 /// Emitted when an offering's off-chain disclosure metadata is set or updated (#485).
 const EVENT_DISCLOSURE_UPDATED: Symbol = symbol_short!("disc_upd");
 /// Emitted when a dispute is resolved by admin (#593).
@@ -2252,8 +2254,20 @@ pub enum DataKey3 {
     CanonicalIssuer(OfferingId),
 }
 
+/// Quaternary storage keys (overflow beyond the 50-case spec union limit).
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey4 {
+    /// Monotonically-increasing next queue_id counter for deferred-distribution entries.
+    DeferredQueueNextId(OfferingId),
+}
+
 /// Maximum number of offerings returned in a single page.
 const MAX_PAGE_LIMIT: u32 = 20;
+
+/// Maximum number of entries allowed in an offering's deferred-distribution queue.
+/// Prevents unbounded storage growth and runaway serialization costs.
+pub const MAX_DEFERRED_QUEUE_LEN: u32 = 100;
 
 /// Maximum number of addresses that can be blacklisted per offering.
 /// Prevents unbounded storage growth and keeps distribution gas predictable.
@@ -15846,6 +15860,7 @@ impl RevoraRevenueShare {
     ///
     /// ### Errors
     /// - `OfferingNotFound` — offering does not exist or caller is not the current issuer.
+    /// - `LimitReached` — queue has reached MAX_DEFERRED_QUEUE_LEN or queue counter overflow.
     /// - `ContractFrozen` / `ContractPaused` — contract is not operational.
     pub fn enqueue_deferred(
         env: Env,
@@ -15871,21 +15886,39 @@ impl RevoraRevenueShare {
             return Err(RevoraError::OfferingNotFound);
         }
 
-        // Assign the next queue_id (per-offering monotonic counter stored inline as
-        // Vec length before insertion, making the counter free to derive).
         let queue_key = DataKey3::DeferredQueue(offering_id.clone());
 
-        let mut entries: Vec<DeferredQueueEntry> =
+        let entries: Vec<DeferredQueueEntry> =
             env.storage().persistent().get(&queue_key).unwrap_or_else(|| Vec::new(&env));
 
-        let queue_id: u32 = entries.len();
+        if entries.len() >= MAX_DEFERRED_QUEUE_LEN {
+            return Err(RevoraError::LimitReached);
+        }
+
+        // Assign the next queue_id from the persisted monotonic counter.
+        let counter_key = DataKey4::DeferredQueueNextId(offering_id.clone());
+        let queue_id: u32 = match env.storage().persistent().get(&counter_key) {
+            Some(id) => id,
+            None => {
+                let mut max_id: u32 = entries.len();
+                for i in 0..entries.len() {
+                    let e = entries.get(i).unwrap();
+                    if e.queue_id >= max_id {
+                        max_id = e.queue_id + 1;
+                    }
+                }
+                max_id
+            }
+        };
+        let next_queue_id = queue_id.checked_add(1).ok_or(RevoraError::LimitReached)?;
+        env.storage().persistent().set(&counter_key, &next_queue_id);
 
         let new_entry = DeferredQueueEntry { release_ts, priority, queue_id, payload_id };
 
         // Insert in sorted position: (release_ts ASC, priority ASC, queue_id ASC).
         // Because queue_id is strictly increasing and unique, the sort is always stable
         // and deterministic. A linear scan is safe here since queue sizes are bounded
-        // in practice (bounded by the number of deferred periods per offering).
+        // in practice (bounded by MAX_DEFERRED_QUEUE_LEN).
         let insert_pos = Self::sorted_insert_position(&entries, &new_entry);
 
         // Build a new sorted Vec by copying elements around the insertion point.
@@ -15907,6 +15940,91 @@ impl RevoraRevenueShare {
         );
 
         Ok(queue_id)
+    }
+
+    /// Release matured entries from the deferred-distribution priority queue for an offering.
+    ///
+    /// Matured entries (`release_ts <= env.ledger().timestamp()`) are popped from the head
+    /// in priority order, up to `max` entries.
+    ///
+    /// Emits `EVENT_DEFERRED_RELEASED` (`def_rel`) per released entry:
+    /// - topic: `(EVENT_DEFERRED_RELEASED, issuer, namespace, token)`
+    /// - data: `(queue_id, release_ts, priority, payload_id)`
+    ///
+    /// ### Semantics
+    /// - Entries are processed strictly from head (which is sorted by `(release_ts, priority, queue_id)`).
+    /// - An entry is matured if and only if `entry.release_ts <= current_ledger_timestamp`.
+    /// - Up to `max` matured entries are removed from the queue and returned in priority order.
+    /// - If `max == 0` or no entries are matured, returns an empty `Vec` (no-op, queue unmodified).
+    ///
+    /// ### Auth
+    /// Requires `issuer.require_auth()`.
+    ///
+    /// ### Parameters
+    /// - `issuer`: Offering issuer (must be the current issuer of the offering).
+    /// - `namespace`: Offering namespace.
+    /// - `token`: Offering token.
+    /// - `max`: Maximum number of matured entries to pop and release.
+    ///
+    /// ### Returns
+    /// A `Vec<DeferredQueueEntry>` containing the released entries in popped priority order.
+    ///
+    /// ### Errors
+    /// - `OfferingNotFound` — offering does not exist or caller is not the current issuer.
+    /// - `ContractFrozen` / `ContractPaused` — contract is not operational.
+    pub fn release_deferred(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        max: u32,
+    ) -> Result<Vec<DeferredQueueEntry>, RevoraError> {
+        Self::require_not_frozen(&env)?;
+        Self::require_not_paused(&env)?;
+        issuer.require_auth();
+
+        let offering_id =
+            Self::canonical_offering_id(&env, issuer.clone(), namespace.clone(), token.clone());
+
+        // Verify offering exists and caller is the current issuer.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        if current_issuer != issuer {
+            return Err(RevoraError::OfferingNotFound);
+        }
+
+        let queue_key = DataKey3::DeferredQueue(offering_id);
+        let entries: Vec<DeferredQueueEntry> =
+            env.storage().persistent().get(&queue_key).unwrap_or_else(|| Vec::new(&env));
+
+        let now = env.ledger().timestamp();
+        let mut released: Vec<DeferredQueueEntry> = Vec::new(&env);
+        let mut remaining: Vec<DeferredQueueEntry> = Vec::new(&env);
+
+        let total = entries.len();
+        let mut popped_count: u32 = 0;
+
+        for i in 0..total {
+            let entry = entries.get(i).unwrap();
+            if popped_count < max && entry.release_ts <= now {
+                released.push_back(entry.clone());
+                popped_count += 1;
+
+                env.events().publish(
+                    (EVENT_DEFERRED_RELEASED, issuer.clone(), namespace.clone(), token.clone()),
+                    (entry.queue_id, entry.release_ts, entry.priority, entry.payload_id),
+                );
+            } else {
+                remaining.push_back(entry);
+            }
+        }
+
+        if popped_count > 0 {
+            env.storage().persistent().set(&queue_key, &remaining);
+        }
+
+        Ok(released)
     }
 
     /// Return the full deferred-distribution priority queue for an offering, in release order.
