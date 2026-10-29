@@ -6,7 +6,7 @@
 // The crate is `#![no_std]`; the harnesses use `std` only items (`format!`,
 // `Box`, `String`) in their `test` fallbacks, so bring them into scope
 // explicitly under the appropriate cfg.
-#[cfg(any(feature = "kani", test))
+#[cfg(any(feature = "kani", test))]
 pub mod compute_share;
 
 /// Kani bounded verification harness for `cancel_issuer_transfer` (Issue #577).
@@ -22,5 +22,5 @@ pub mod compute_share;
 /// - Unauthorised cancel is rejected.
 ///
 /// The `#[cfg(test)]` shims run as ordinary cargo tests in CI without the Kani toolchain.
-#[cfg(any(feature = "kani", test))
+#[cfg(any(feature = "kani", test))]
 pub mod issuer_transfer_cancel;

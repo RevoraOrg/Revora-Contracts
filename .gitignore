@@ -1,10 +1,9 @@
 /target/
 package-lock.json/
 Cargo.lock
-temp_auto_push.bat
-test_snapshots/
-target/
 test_snapshots/
 
 .gitignore
 branch_structure.json
+config.bat
+node_modules

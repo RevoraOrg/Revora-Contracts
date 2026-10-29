@@ -753,7 +753,6 @@ mod tests {
 mod orphan_pending_guard_tests {
     use super::*;
     use std::panic::catch_unwind;
-    use std::panic::catch_unwind;
 
     /// Guard message asserted by the negative cases.
     const GUARD_MESSAGE: &str = "PendingIssuerTransfer key must be absent after cancel";
@@ -767,7 +766,6 @@ mod orphan_pending_guard_tests {
         PendingTransfer { new_issuer, timestamp, expiry_secs }
     }
 
-    /// Render a panic payload as text so the exact guard message can be asserted.
     fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
         if let Some(s) = payload.downcast_ref::<&'static str>() {
             // `&'static str` payloads are the common `assert!` case.
@@ -810,11 +808,9 @@ mod orphan_pending_guard_tests {
 
     #[test]
     fn guard_ignores_the_offering_and_lookup_fields() {
-        // A stale reverse-lookup is a *different* invariant (`assert_issuer_lookup_consistent`)
         // and must not make the orphan-key guard misfire.
         let stale = StorageModel {
             pending: None,
-            offering: OfferingState { issuer: 5 },
             offering: OfferingState { issuer: 5 },
             offering_issuer_lookup: 9,
         };
