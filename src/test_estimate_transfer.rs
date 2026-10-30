@@ -388,7 +388,7 @@ fn estimate_reports_cooldown_active_then_allows_after_expiry() {
     let jurisdiction = symbol_short!("us");
 
     ctx.give_share(&from, 100);
-    ctx.set_jurisdiction(&from, jurisdiction);
+    ctx.set_jurisdiction(&from, jurisdiction.clone());
     let _ =
         ctx.client.set_transfer_cooldown(&ctx.issuer, &ns(), &ctx.token, &jurisdiction, &3_600u64);
 
