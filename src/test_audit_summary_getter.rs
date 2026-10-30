@@ -468,14 +468,13 @@ fn unauthorized_callers_cannot_mutate_the_summary_while_reads_stay_open() {
     );
     assert_eq!(
         client.try_set_min_revenue_threshold(
-            &attacker,
             &issuer,
             &ns,
             &token,
             &0,
             &soroban_sdk::Vec::from_array(&env, [attacker.clone()])
         ),
-        Err(Ok(RevoraError::OfferingNotFound))
+        Err(Ok(RevoraError::NotAuthorized))
     );
     assert_eq!(
         RevoraRevenueShare::freeze_offering(
