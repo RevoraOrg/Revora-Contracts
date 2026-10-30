@@ -201,16 +201,15 @@ fn test_deposit_revenue_payment_token_mismatch_after_lock() {
     let (env, client, issuer, token, payment_token, contract_id) = setup_offering();
     let (other_payment_token, _other_admin) = create_payment_token(&env);
 
-    client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &token,
-            &payment_token,
-            &100_000,
-            &1,
-            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
-        );
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payment_token,
+        &100_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let res = client.try_deposit_revenue(
         &issuer,
