@@ -409,6 +409,8 @@ pub enum RevoraError {
     InvalidDisputeResolution = 99,
     /// The voter has zero voting weight in the pinned snapshot and cannot cast a vote.
     NoVotingWeight = 100,
+    /// `initialize` was called after the admin was already set (#1309).
+    AlreadyInitialized = 101,
 }
 
 pub mod tax_bucket;
@@ -5260,11 +5262,24 @@ impl RevoraRevenueShare {
 
     /// Initialize admin and optional safety role for emergency pause (#7).
     /// `event_only` configures the contract to skip persistent business state (#72).
-    /// Can only be called once; panics if already initialized.
-    pub fn initialize(env: Env, admin: Address, safety: Option<Address>, event_only: Option<bool>) {
+    ///
+    /// ### Security (#1309)
+    /// - `admin` must authorize the call, so a front-runner cannot install an
+    ///   address they do not control without that address's signature. Deploy
+    ///   and initialize in the same transaction to close the front-running window.
+    /// - Can only be called once. A second call (or a call after `set_admin`)
+    ///   returns `Err(RevoraError::AlreadyInitialized)` and leaves the existing
+    ///   admin untouched, so a hijacked initialization is surfaced as an error.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        safety: Option<Address>,
+        event_only: Option<bool>,
+    ) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey::Admin) {
-            return; // Already initialized, no-op
+            return Err(RevoraError::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
         Self::emit_v2_event(&env, (EVENT_ADMIN_SET,), admin.clone());
         if let Some(ref s) = safety {
@@ -5282,6 +5297,7 @@ impl RevoraRevenueShare {
         env.storage().persistent().set(&DataKey::DeployedVersion, &CONTRACT_VERSION);
 
         env.events().publish((EVENT_INIT, admin.clone()), (safety, eo));
+        Ok(())
     }
 
     /// Soft-pause the contract (Admin only).
@@ -13166,6 +13182,10 @@ impl RevoraRevenueShare {
 
     /// Set the admin address. May only be called once; caller must authorize as the new admin.
     /// If multisig is initialized, this function is disabled in favor of execute_action(SetAdmin).
+    ///
+    /// Shares the single initialization slot with [`initialize`](Self::initialize) (#1309):
+    /// once either has installed an admin, `set_admin` returns `Err(LimitReached)` and
+    /// `initialize` returns `Err(AlreadyInitialized)`; neither can overwrite the admin.
     pub fn set_admin(env: Env, admin: Address) -> Result<(), RevoraError> {
         if env.storage().persistent().has(&DataKey3::MultisigThreshold) {
             return Err(RevoraError::LimitReached);
@@ -16792,6 +16812,8 @@ impl RevoraRevenueShare {
     }
 }
 
+#[cfg(test)]
+mod test_issue_1309;
 #[cfg(test)]
 mod test_issue_1316;
 
