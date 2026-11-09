@@ -61,10 +61,14 @@ When testnet mode is enabled, the following behaviors are modified:
 
 ### Setting Up Testnet Mode
 
-1. **Set Admin** (one-time operation):
+1. **Initialize** (one-time operation, signed by `admin_address`):
 ```rust
-contract.set_admin(&admin_address);
+contract.initialize(&admin_address, &None, &None);
 ```
+`initialize` requires the admin's authorization and returns `AlreadyInitialized` if an
+admin is already set (#1309). Deploy and initialize in the same transaction (for example
+through a factory contract), or initialize right after the deploy and check
+`get_admin() == Some(admin_address)`. If the check fails, redeploy.
 
 2. **Enable Testnet Mode** (admin only):
 ```rust
@@ -85,7 +89,7 @@ contract.set_testnet_mode(&false);
 
 ```rust
 // Enable testnet mode
-contract.set_admin(&admin);
+contract.initialize(&admin, &None, &None);
 contract.set_testnet_mode(&true);
 
 // Register offering with > 100% revenue share (for testing)
@@ -98,7 +102,7 @@ contract.register_offering(&issuer, &token, &15_000); // 150%
 
 ```rust
 // Enable testnet mode
-contract.set_admin(&admin);
+contract.initialize(&admin, &None, &None);
 contract.set_testnet_mode(&true);
 
 // Set up concentration limit with enforcement
@@ -122,7 +126,7 @@ Testnet mode bypasses validations designed to protect investor funds. Enabling i
 
 ### Admin-Only Access
 - Only the contract admin can toggle testnet mode
-- Requires `set_admin()` to be called first
+- Requires `initialize()` (or the legacy `set_admin()`) to be called first. Both share one initialization slot and fail once an admin is set
 - Admin authorization is enforced via `require_auth()`
 
 ### Production Safety

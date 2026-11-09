@@ -45,7 +45,8 @@ Every pause/unpause call emits two events:
 
 | Method | Required Auth | Logic Check | Notes |
 | :--- | :--- | :--- | :--- |
-| `initialize` | None (public) | Checks `!has_admin` | Can only be called once to set admin. |
+| `initialize` | `admin` | Checks `!has_admin` | Can only be called once to set admin; a second call returns `AlreadyInitialized` (#1309). |
+| `set_admin` | `admin` | Checks `!has_admin`, no multisig | Shares the one initialization slot with `initialize`; fails with `LimitReached` once an admin is set. |
 | `pause_admin` | `caller` | `caller == admin` | Sets **SoftPaused**. Admin only. |
 | `unpause_admin` | `caller` | `caller == admin` | Sets **NotPaused**. Admin only. Works from any tier. |
 | `hard_pause_admin` | `caller` | `caller == admin` | Sets **HardPaused**. Admin only. Blocks `claim`. |

@@ -89,4 +89,9 @@ The `npm` scripts in `package.json` are thin wrappers around `cargo build/test`.
 
 ## Deployment notes
 
-No deployment scripts or contract IDs are tracked here. A deployer would build the WASM, deploy with the Stellar CLI, call `initialize`, and then verify `is_testnet_mode()` is `false` for any production use. Treat this as guidance, not a tested runbook. Review [AUTH_MATRIX.md](AUTH_MATRIX.md) and [docs/admin-rotation-safety-flow.md](docs/admin-rotation-safety-flow.md) first.
+No deployment scripts or contract IDs are tracked here. A deployer would build the WASM, deploy with the Stellar CLI, call `initialize`, and then verify `is_testnet_mode()` is `false` for any production use. Treat this as guidance, not a tested runbook.
+
+Initialization (#1309): `initialize(admin, safety, event_only)` must be signed by `admin`, and it can run only once. A second call, or a call after `set_admin`, returns `AlreadyInitialized`. It is not a silent no-op. Until `initialize` runs, anyone can claim the admin slot with an address they control, so close that window:
+
+1. Preferred: deploy and initialize in one transaction, using a factory contract that calls `env.deployer()...deploy(wasm_hash)` and then `initialize` on the new contract in the same invocation.
+2. Otherwise, send `initialize` signed by the intended admin straight after the deploy. Then confirm `get_admin()` returns that address. If `initialize` fails with `AlreadyInitialized`, someone else got there first: throw the deployment away and redeploy. Never reuse it. Review [AUTH_MATRIX.md](AUTH_MATRIX.md) and [docs/admin-rotation-safety-flow.md](docs/admin-rotation-safety-flow.md) first.
