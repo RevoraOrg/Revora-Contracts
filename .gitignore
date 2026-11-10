@@ -5,3 +5,7 @@ test_snapshots/
 target/
 test_snapshots/
 
+.gitignore
+branch_structure.json
+config.bat
+node_modules

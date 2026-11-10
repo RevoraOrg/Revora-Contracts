@@ -4,12 +4,13 @@
 //! - `set_offering_platform_fee` stores a `(fee_bps, treasury)` model, admin-only,
 //!   and rejects configurations where `fee_bps + holder_aggregate_bps > 10_000`
 //!   with `FeeExceedsHolderShare`.
-//! - `report_revenue` deducts the configured fee and emits a `plat_fee` event with
-//!   `(treasury, fee_bps, fee_amount, period_id)`.
-//! - `fee_bps = 0` (and zero-revenue reports) skip the deduction and emit no `plat_fee` event.
+//! - `deposit_revenue` transfers the configured fee to the treasury and emits a
+//!   `plat_fee` event with `(treasury, fee_bps, fee_amount, period_id)`; only the
+//!   net amount is stored as distributable revenue.
+//! - `fee_bps = 0` (and zero-revenue deposits) skip the transfer and emit no `plat_fee` event.
 //!
 //! Off-chain indexers rely on `plat_fee` being present only when a real, non-zero fee
-//! was routed to the treasury.
+//! was actually routed to the treasury.
 
 #![cfg(test)]
 
