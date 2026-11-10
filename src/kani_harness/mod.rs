@@ -1,8 +1,11 @@
 //! Bounded Kani verification harnesses for `compute_share` rounding modes (Issue #465).
-//!
-//! Enabled only with `--features kani` so default `cargo test` / CI are unaffected.
-//! Proofs exhaustively cover `amount ∈ [-2^32, 2^32]` and `bps ∈ [0, 10_000]`.
+///
+/// Enabled only with `--features kani` so default `cargo test` / CI are unaffected.
+/// Proofs exhaustively cover `amount ∈ -[-2^32, 2^32]` and `bps ∈ [0, 10_000]`.
 
+// The crate is `#![no_std]`; the harnesses use `std` only items (`format!`,
+// `Box`, `String`) in their `test` fallbacks, so bring them into scope
+// explicitly under the appropriate cfg.
 #[cfg(any(feature = "kani", test))]
 pub mod compute_share;
 
@@ -19,4 +22,5 @@ pub mod compute_share;
 /// - Unauthorised cancel is rejected.
 ///
 /// The `#[cfg(test)]` shims run as ordinary cargo tests in CI without the Kani toolchain.
+#[cfg(any(feature = "kani", test))]
 pub mod issuer_transfer_cancel;

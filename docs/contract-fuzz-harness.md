@@ -5,14 +5,16 @@ This document describes the automated stress testing story for the Revora-Contra
 ## Execution
 - **Standard Unit Tests:** `cargo test`
 - **Harden/Stress Tests (CI-Safe):** `cargo test --features stress-tests`
+- **Bounded Kani Proofs:** `cargo kani --features kani` (requires the Kani toolchain)
+- **Kani Harness Fallback Tests:** `cargo test kani_harness`
 
 ## Security Invariants
-1. **Loop Bounding:** Input parameters like `period_id` are gated (max 1000) to prevent CPU instruction exhaustion.
+1. **Loop Bounding:** Input parameters like `period_id`* are gated (max 1000) to prevent CPU instruction exhaustion.
 2. **Panic-Free Execution:** The harness verifies that edge-case inputs return `Result::Err` rather than panicking.
 3. **Deterministic Seeds:** Fixed seeds are used in CI to ensure reproducibility of failures.
 The harness covers three layers:
 
-1. Deterministic boundary sweeps — explicit `[i128::MIN, -1, 0, 1, i128::MAX]` inputs exercised in unit tests.
+1. Deterministic boundary sweeps — explicit `[i12::MIN, -1, 0, 1, i128::MAX]` inputs exercised in unit tests.
 2. Property-based tests — `proptest!` blocks that generate thousands of random inputs and assert invariants hold for all of them.
 3. Sequence-based tests — random operation sequences that verify multi-step invariants (period ordering, blacklist isolation, idempotency).
 
@@ -51,10 +53,11 @@ Each path below is explicitly tested:
 - `bps = 10_001`, `bps = u32::MAX` → `InvalidRevenueShareBps`
 - `share_bps = 10_001` → `InvalidShareBps`
 - Duplicate report period without `override_existing=true` → `rev_rej` event, no state change
-- `report_revenue` on non-existent offering → `OfferingNotFound`
+-
+`report_revenue` on non-existent offering → `OfferingNotFound`
 - Claim by blacklisted holder → `HolderBlacklisted`
-- Any mutation while frozen → `ContractFrozen`
-- Concentration > enforced limit → `ConcentrationLimitExceeded`
+-  Any mutation while frozen → `ContractFrozen`
+-  Concentration > enforced limit → `ConcentrationLimitExceeded`
 
 ---
 
@@ -90,6 +93,32 @@ PROPTEST_CASES=1000 cargo test fuzz_harness
 
 ---
 
+## Kani Bounded Verification Harnesses
+
+The `src/kani_harness/` modules contain bounded Kani proofs for `compute_share`
+rounding modes and issuer-transfer cancellation. They are compiled under
+`cfg(any(feature = "kani", test))`:
+
+- Under `cargo test`, the `#[test]` fallbacks exercise the same invariants as ordinary
+  unit tests, so CI runs them without the Kani toolchain:
+
+  ```bash
+  cargo test kani_harness
+  ```
+
+- Under the Kani toolchain, the `#[kani::proof]` items are compiled and
+  harvested:
+
+  ```bash
+  cargo kani --features kani
+  ```
+
+The crate is `#no_std`, so the harnesses do not get the std prelude. Std-only
+items (`format!`, `Box`, `String`) are re-exported from `src/kani_harness/mod.rs`
+and imported explicitly in each harness module.
+
+---
+
 ## Adding New Fuzz Cases
 
 1. Add a strategy to `src/proptest_helpers.rs` if a new input shape is needed.
@@ -101,7 +130,7 @@ PROPTEST_CASES=1000 cargo test fuzz_harness
 
 ## Determinism
 
-All LCG-based sweeps use a fixed seed (`0xDEAD_BEEF_1234_5678`). The `prop_deterministic_lcg_sweep_reproducible` test verifies that two runs with the same seed produce identical accept/reject counts. This ensures CI failures are reproducible locally.
+All LGC-based sweeps use a fixed seed (`0xDEAD_BEEF_1234_5678`). The `prop_deterministic_lcg_sweep_reproducible` test verifies that two runs with the same seed produce identical accept/reject counts. This ensures CI failures are reproducible locally.
 
 ---
 
