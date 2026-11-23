@@ -438,6 +438,7 @@ mod test_duplicates;
 mod test_epoch_boundary_report;
 #[cfg(test)]
 mod test_estimate_transfer;
+#[cfg(test)]
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
@@ -453,8 +454,6 @@ mod test_snapshot_shares_accounting;
 mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
-// #[cfg(test)]
-// mod test_claim_transfer_fail;
 #[cfg(test)]
 mod proptest_helpers;
 #[cfg(test)]
