@@ -35,7 +35,6 @@ ALLOWLIST=(
     "src/test_accrual_ledger.rs"
     "src/test_auth.rs"
     "src/test_blacklist_batch_gas.rs"
-    "src/test_blacklist_batch_prop.rs"
     "src/test_class_transfer_lock.rs"
     "src/test_cross_contract.rs"
     "src/test_cross_contract_transfer_fail.rs"
@@ -49,6 +48,9 @@ ALLOWLIST=(
     "src/test_governance_proposals.rs"
     "src/test_holder_share_sum_invariant.rs"
     "src/test_indexer_fixtures.rs"
+    # These separate issue-specific modules are intentionally pending wiring.
+    "src/test_issue_1312.rs"
+    "src/test_issue_1313.rs"
     "src/test_jurisdiction.rs"
     "src/test_merkle_root_rotation.rs"
     "src/test_multisig_gas.rs"
