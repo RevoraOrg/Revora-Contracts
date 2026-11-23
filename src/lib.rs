@@ -482,6 +482,8 @@ mod test_holder_share_class;
 #[cfg(test)]
 mod test_meta_revenue_approval;
 #[cfg(test)]
+mod test_milestone_signals;
+#[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
 mod test_multisig_regression;
