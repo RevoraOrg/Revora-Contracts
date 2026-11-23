@@ -71,6 +71,10 @@ ALLOWLIST=(
     "src/test_transfer_with_attestation.rs"
     "src/test_twap_window.rs"
     "src/vesting_test.rs"
+    # Existing issue-specific test files are tracked separately and not wired yet.
+    # See issues #1312 and #1313.
+    "src/test_issue_1312.rs"
+    "src/test_issue_1313.rs"
 )
 
 # ── Find every candidate test file in src/ ─────────────────────────────────────
