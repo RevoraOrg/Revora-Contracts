@@ -487,6 +487,8 @@ mod test_multi_token_independence;
 #[cfg(test)]
 mod test_multisig_regression;
 #[cfg(test)]
+mod test_multisig_gas;
+#[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
