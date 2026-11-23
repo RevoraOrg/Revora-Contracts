@@ -504,6 +504,8 @@ mod test_platform_fee_per_asset;
 mod test;
 #[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
+#[cfg(test)]
+mod test_share_conservation_prop;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
