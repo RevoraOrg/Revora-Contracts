@@ -53,7 +53,6 @@ ALLOWLIST=(
     "src/test_merkle_root_rotation.rs"
     "src/test_multisig_gas.rs"
     "src/test_namespaces.rs"
-    "src/test_ofac_snapshot_pin.rs"
     "src/test_override_audit_trail.rs"
     "src/test_pause_tiers.rs"
     "src/test_period_id_boundary.rs"
