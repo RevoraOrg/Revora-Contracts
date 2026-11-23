@@ -70,7 +70,6 @@ ALLOWLIST=(
     "src/test_transfer_restriction.rs"
     "src/test_transfer_restrictions.rs"
     "src/test_transfer_with_attestation.rs"
-    "src/test_twap_window.rs"
     "src/vesting_test.rs"
 )
 
