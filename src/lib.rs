@@ -501,6 +501,8 @@ mod test_utils;
 mod test_platform_fee_per_asset;
 
 #[cfg(test)]
+mod structured_error_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
