@@ -481,6 +481,8 @@ mod test_get_payment_token;
 #[cfg(test)]
 mod test_holder_share_class;
 #[cfg(test)]
+mod test_holder_share_sum_invariant;
+#[cfg(test)]
 mod test_meta_revenue_approval;
 #[cfg(test)]
 mod test_multi_token_independence;
