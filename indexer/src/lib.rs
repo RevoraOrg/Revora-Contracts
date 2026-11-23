@@ -55,6 +55,7 @@ pub struct EventAnalytics {
 }
 
 /// Event indexer service
+#[derive(Clone)]
 pub struct EventIndexer {
     pool: sqlx::PgPool,
 }
@@ -228,8 +229,9 @@ impl EventIndexer {
             wtr.serialize(event)?;
         }
 
-        wtr.flush()?;
-        Ok(wtr.into_inner()?)
+        wtr.flush().map_err(|e| IndexerError::CsvError(csv::Error::from(e)))?;
+        wtr.into_inner()
+            .map_err(|e| IndexerError::CsvError(csv::Error::from(e.into_error())))
     }
 
     /// Export events to JSON
