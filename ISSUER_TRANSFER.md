@@ -215,6 +215,95 @@ After transfer completion, the old issuer:
 - ✅ **Storage location stable** - Offering remains at same storage key under old issuer
 - ✅ **Blacklist unchanged** - Existing blacklist entries remain valid
 
+## Offering Identity After Transfer (Canonical-ID Handover)
+
+> Added with the state-handover fix on branch `fix/issuer-transfer-state-handover`.
+
+### The bug this fixes
+
+On `master`, `accept_issuer_transfer` moved the `OfferingIssuer` reverse-lookup
+alias to the new issuer's tenant key but left the `OfferingRecord` (and every
+piece of per-offering state — holder shares, accrual indexes, claim
+timestamps, config keys, …) under the old issuer's `OfferingId`. The result:
+
+- the **new issuer's** `get_offering(new_issuer, …)` resolved to nothing
+  (`OfferingNotFound` on every management call),
+- the **old issuer's** record still reported `issuers.primary == old`, and
+- all state was effectively stranded under an identity nobody could act through.
+
+### Decision: the canonical `OfferingId` never changes
+
+A transfer changes **who may act** on an offering, not **what the offering
+is**. The offering's canonical `OfferingId { issuer, namespace, token }`
+keeps the address that originally registered it forever. All state
+(`HolderShare`, `AccrualIndex`, `LastClaimedIdx`, config keys, vesting,
+taxes, …) stays under that canonical id, and every lookup is resolved through
+an idempotent helper:
+
+```rust
+fn canonical_offering_id(env: &Env, issuer, namespace, token) -> OfferingId
+```
+
+The helper follows the `DataKey3::CanonicalIssuer(OfferingId) -> Address`
+alias chain (storage layout **v6**), so any caller-supplied issuer triple —
+old issuer, new issuer, or any intermediate owner in a chained transfer —
+resolves to the same canonical identity in one hop. The alias is written only
+at accept time and always stores the *original registrant*, which makes
+A→B→C chains resolve without multi-hop lookups.
+
+**Why not migrate every key instead (Option A)?** Infeasible. Per-offering
+state is stored under an un-enumerable set of keys (`HolderShare`,
+`LastClaimedIdx`, `DisputeCount(id, addr)`, `VoteRecord`, `TaxYearEntry`,
+`AccPerShareAtIndex(id, i)`, …); the contract has no index that can enumerate
+all of them for a given offering, so a storage migration cannot be complete.
+
+### What `accept_issuer_transfer` now does
+
+1. Loads the offering by its canonical id; `previous_owner` is the record's
+   current `issuers.primary` (differs from the canonical issuer only in
+   chained transfers).
+2. Rejects only if the new issuer *independently owns* an offering with the
+   same namespace + token (`existing.issuers.primary == new_issuer`); a stale
+   record under the new issuer's key that names someone else as primary is
+   part of this offering's own chain and is overwritten (this is what makes
+   A→B→A transfer-backs work).
+3. Rewrites the issuers struct: `primary := new_issuer`, the previous primary
+   leaves `co`, `new_issuer` is deduplicated out of `co`, and `quorum` is
+   clamped into the legal range for the reduced signer set.
+4. Appends a handover record to the new issuer's tenant list (counts and
+   indexes are append-only) and rewrites the canonical record, the new
+   issuer's record, the *previous owner's* record, and both tenants' list
+   slots in place — no read path can resurrect the pre-transfer issuers.
+5. Sets `OfferingIssuer` for both ids and writes
+   `CanonicalIssuer(new_id) = canonical issuer`.
+6. Consumes the pending transfer and emits `iss_acc` with
+   `(previous_owner, new_issuer)`.
+
+Config state is intentionally **not** migrated: config keys are read and
+written through `canonical_offering_id`, so they stay with the canonical id.
+
+### Behaviour notes
+
+- **Old issuer** is rejected everywhere: management functions return
+  `OfferingNotFound`/`NotAuthorized` (including `report_revenue`, which is
+  now guarded by the current-issuer check like every other issuer path).
+- **Holders** claim uninterrupted, and may pass either the old or the new
+  issuer identity to `claim` — both resolve to the canonical offering.
+- **Chained transfers** (A→B then B→C) work: the pending record for the
+  second hop is stored under the canonical id and found via the new owner's
+  tenant scan; the vesting migration keys off `previous_owner` for the same
+  reason.
+- **Co-issuers** survive the transfer (minus the previous primary); quorum is
+  clamped to the surviving signer count. Note `require_issuer_quorum_auth`
+  requires auth from the primary *and all* co-issuers.
+- **Events**: functions that pass the resolved (canonical) issuer into
+  internal helpers may emit that address in event topics/data where `master`
+  emitted the raw caller-supplied issuer. Indexers should treat the canonical
+  issuer as the stable offering identity.
+
+Regression coverage lives in `tests/issuer_transfer_handover.rs`
+(10 tests; the handover tests fail on `master` and pass with the fix).
+
 ## Security Considerations
 
 ### Attack Vectors & Mitigations
@@ -420,6 +509,13 @@ data: (current_issuer, proposed_new_issuer)
 **A:** No, all transfer operations (propose, accept, cancel) are blocked when frozen, but queries still work.
 
 ## Changelog
+
+### State-handover fix (`fix/issuer-transfer-state-handover`)
+- 🐛 Fixed `accept_issuer_transfer` leaving offering state stranded under the old issuer's `OfferingId` (new issuer got `OfferingNotFound`, old issuer kept control)
+- ✨ Added `DataKey3::CanonicalIssuer(OfferingId)` alias + `canonical_offering_id` helper (storage layout v6)
+- ✨ Accept now rewrites canonical/new/previous-owner records and tenant list slots; transfer-backs (A→B→A) and chained transfers (A→B→C) work
+- 🔒 `report_revenue_internal` now enforces the current-issuer check
+- ✅ Added `tests/issuer_transfer_handover.rs` regression suite (fails on `master`)
 
 ### Version 0.1.0 (February 2026)
 - ✨ Initial implementation of two-step issuer transfer

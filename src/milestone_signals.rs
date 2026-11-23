@@ -33,7 +33,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -51,7 +51,16 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let token = Address::generate(env);
     let payout = Address::generate(env);
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
     (issuer, token, payout)
 }
 
@@ -81,7 +90,7 @@ fn event_position(env: &Env, sym: Symbol) -> Option<u32> {
 #[test]
 fn milestone_event_ordering_offer_before_rev_rep() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -111,7 +120,7 @@ fn milestone_event_ordering_offer_before_rev_rep() {
 #[test]
 fn milestone_period_id_must_be_strictly_increasing() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -172,7 +181,7 @@ fn milestone_period_id_must_be_strictly_increasing() {
 #[test]
 fn milestone_period_id_zero_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     assert!(
@@ -198,7 +207,7 @@ fn milestone_period_id_zero_rejected() {
 #[test]
 fn milestone_audit_summary_accumulates_correctly() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -220,7 +229,7 @@ fn milestone_audit_summary_accumulates_correctly() {
 #[test]
 fn milestone_audit_summary_not_updated_on_rejected_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -240,12 +249,12 @@ fn milestone_audit_summary_not_updated_on_rejected_report() {
 #[test]
 fn milestone_concentration_enforcement_blocks_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &6_000u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &6_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(
         client
@@ -263,12 +272,12 @@ fn milestone_concentration_enforcement_blocks_revenue_report() {
 #[test]
 fn milestone_concentration_at_limit_allows_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &5_000u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &5_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
 
@@ -279,12 +288,12 @@ fn milestone_concentration_at_limit_allows_revenue_report() {
 #[test]
 fn milestone_concentration_warning_does_not_block_report() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &8_000u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &8_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     client.report_revenue(&issuer, &ns, &token, &payout, &500i128, &1u64, &false);
 
@@ -299,12 +308,12 @@ fn milestone_concentration_warning_does_not_block_report() {
 #[test]
 fn milestone_concentration_warning_event_emitted() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, _payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &8_000u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &3_000u32, &false, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &8_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     assert!(
         events_contain(&env, symbol_short!("conc_wrn")),
@@ -316,12 +325,12 @@ fn milestone_concentration_warning_event_emitted() {
 #[test]
 fn milestone_concentration_one_bps_over_limit_rejected() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &5_001u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &5_001u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let result = client.try_report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
     assert_eq!(result, Err(Ok(RevoraError::ConcentrationLimitExceeded)));
@@ -331,15 +340,15 @@ fn milestone_concentration_one_bps_over_limit_rejected() {
 #[test]
 fn milestone_concentration_testnet_mode_bypasses_enforcement() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
     // Enable testnet mode (requires admin auth)
     client.set_testnet_mode(&true);
 
-    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64);
-    client.report_concentration(&issuer, &ns, &token, &6_000u32);
+    client.set_concentration_limit(&issuer, &ns, &token, &5_000u32, &true, &0u64, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.report_concentration(&issuer, &ns, &token, &6_000u32, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     // Should succeed despite being over limit
     client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
@@ -358,7 +367,7 @@ fn milestone_concentration_testnet_mode_bypasses_enforcement() {
 #[test]
 fn milestone_blacklist_snapshot_captured_at_report_time() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
     let investor = Address::generate(&env);
@@ -382,16 +391,16 @@ fn milestone_blacklist_snapshot_captured_at_report_time() {
 #[test]
 fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
     client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &42u64, &false);
 
     // The fixture helper returns canonical v2 topics — verify rv_rep shape
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
     let mut rv_rep_opt = None;
-    for f in fixtures.iter() {
+    for f in v2_fixtures.iter() {
         if f.event_type == symbol_short!("rv_rep") {
             rv_rep_opt = Some(f);
             break;
@@ -410,15 +419,15 @@ fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
 #[test]
 fn milestone_fixture_covers_all_canonical_event_types() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
-    assert_eq!(fixtures.len(), 6u32);
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
+    assert!(v2_fixtures.len() >= 16, "fixture count must be at least 16 (including rg_lim_d)");
 
-    // Check all expected event types are present
+    // Check all expected event types are present (core 6 + new rg_lim_d)
     let expected = [
         symbol_short!("offer"),
         symbol_short!("rv_init"),
@@ -426,9 +435,10 @@ fn milestone_fixture_covers_all_canonical_event_types() {
         symbol_short!("rv_rej"),
         symbol_short!("rv_rep"),
         symbol_short!("claim"),
+        symbol_short!("rg_lim_d"),
     ];
     for expected_type in expected.iter() {
-        let found = fixtures.iter().any(|f| f.event_type == *expected_type);
+        let found = v2_fixtures.iter().any(|f| f.event_type == *expected_type);
         assert!(found, "fixture must contain event_type");
     }
 }
@@ -438,17 +448,22 @@ fn milestone_fixture_covers_all_canonical_event_types() {
 #[test]
 fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    let fixtures = client.get_indexer_fixture_topics(&issuer, &ns, &token, &99u64);
-    for f in fixtures.iter() {
-        if f.event_type == symbol_short!("offer") || f.event_type == symbol_short!("claim") {
-            assert_eq!(f.period_id, 0u64, "non-period-scoped event must have period_id = 0");
-        } else {
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &99u64);
+    for f in v2_fixtures.iter() {
+        // Only revenue event types are period-scoped
+        if f.event_type == symbol_short!("rv_init")
+            || f.event_type == symbol_short!("rv_ovr")
+            || f.event_type == symbol_short!("rv_rej")
+            || f.event_type == symbol_short!("rv_rep")
+        {
             assert_eq!(f.period_id, 99u64, "period-scoped event must carry the requested period_id");
+        } else {
+            assert_eq!(f.period_id, 0u64, "non-period-scoped event must have period_id = 0");
         }
     }
 }
@@ -459,7 +474,7 @@ fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
 #[test]
 fn milestone_audit_summary_isolated_per_offering() {
     let env = Env::default();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
     env.mock_all_auths();
 
     let issuer = Address::generate(&env);
@@ -469,8 +484,26 @@ fn milestone_audit_summary_isolated_per_offering() {
     let ns = symbol_short!("def");
 
     client.set_admin(&issuer);
-    client.register_offering(&issuer, &ns, &token_a, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
-    client.register_offering(&issuer, &ns, &token_b, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_a,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token_b,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0);
 
     client.report_revenue(&issuer, &ns, &token_a, &payout, &5_000i128, &1u64, &false);
 

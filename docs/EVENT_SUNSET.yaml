@@ -1,0 +1,15 @@
+# docs/EVENT_SUNSET.yaml
+#
+# Single source of truth for deprecated Revora contract event topics.
+# Machine-readable. Consumed by scripts/generate_event_sunset_json.py to produce
+# docs/EVENT_SUNSET.json, which is shipped alongside the contract WASM.
+
+schema_version: 1
+
+deprecated_events:
+  - topic: ev_idx2
+    deprecated_in: "v3"
+    sunset_epoch: 3000000
+    replacement: ev_idx3
+    note: >
+      V2 indexed events carry 6-field topics (version, event_type, issuer, namespace, token, period_id). V3 adds a `_reserved` field for future additive schema evolution. Migrate indexers to subscribe to `ev_idx3` and validate `version == 3`. Dual emission ends at sunset_epoch; after that only ev_idx3 is emitted.

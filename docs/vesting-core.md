@@ -73,13 +73,16 @@ pub fn vesting_register(
     cliff_ts: u64,
     start_ts: u64,
     end_ts: u64,
+    curve: VestingCurve,
+    cliff_secs: u64,
 ) -> Result<(), VestingError>
 ```
 
 Registers a new schedule and transfers `total_amount` from `issuer` into the contract.
-The issuer must call `approve` on the token contract first (standard SEP-41 pattern).
+The issuer must authorize the transfer through the token contract.
 
-**Errors:** `InvalidAmount`, `InvalidTimestamps`, `ScheduleAlreadyExists`.
+**Errors:** `InvalidAmount`, `InvalidTimestamps`, `ScheduleAlreadyExists`,
+`TokenTransferFailed`.
 
 ---
 
@@ -92,20 +95,16 @@ pub fn vesting_claim(env: Env, beneficiary: Address) -> Result<i128, VestingErro
 Transfers all newly-vested tokens to `beneficiary`.  Returns `0` (no error) when nothing
 new has vested since the last claim (idempotent).
 
-**Errors:** `ScheduleNotFound`, `NothingToClaimYet` (before cliff).
+**Errors:** `ScheduleNotFound`, `NothingToClaimYet`, `VestingCliffNotReached`,
+`TokenTransferFailed`.
 
 ---
 
-### `vesting_revoke`
+### Schedule cancellation
 
-```rust
-pub fn vesting_revoke(env: Env, issuer: Address, beneficiary: Address) -> Result<(), VestingError>
-```
-
-Revokes a schedule.  Vested-but-unclaimed tokens are sent to `beneficiary`; unvested tokens
-are returned to `issuer`.  The schedule is deleted from storage.
-
-**Errors:** `ScheduleNotFound`, `Unauthorized`.
+The standalone `VestingContract` does not currently expose a cancellation or revoke
+entry point. Unvested escrow stays in the contract; cancellation and a policy for
+returning that escrow to the issuer are follow-up work.
 
 ---
 
@@ -133,8 +132,8 @@ are returned to `issuer`.  The schedule is deleted from storage.
 | 6 | `start_ts < cliff_ts` rejected at registration | `test_register_start_before_cliff_fails` |
 | 7 | `end_ts ≤ start_ts` rejected at registration | `test_register_end_not_after_start_fails` |
 | 8 | After cliff but before `start_ts`: 0 vested | `test_pure_cliff_period_no_unlock_before_start` |
-| 9 | Revoke splits tokens correctly at midpoint | `test_revoke_midway_splits_correctly` |
-| 10 | Non-issuer cannot revoke | `test_revoke_wrong_issuer_fails` |
+| 9 | Registration escrows the full amount and claims transfer vested tokens | `vesting_register_escrows_and_claims_transfer_tokens` |
+| 10 | Insufficient issuer balance leaves no schedule or escrow | `vesting_register_insufficient_balance_does_not_store_schedule` |
 | 11 | Non-existent schedule yields `ScheduleNotFound` | `test_claim_on_nonexistent_schedule_fails` |
 | 12 | Pure-function `vested_amount` boundary values | `test_vested_amount_pure_function` |
 
@@ -149,7 +148,8 @@ are returned to `issuer`.  The schedule is deleted from storage.
 | 102  | `InvalidAmount`        | `total_amount` ≤ 0.                                 |
 | 103  | `InvalidTimestamps`    | `start_ts < cliff_ts` or `end_ts ≤ start_ts`.       |
 | 104  | `NothingToClaimYet`    | Cliff has not been reached.                         |
-| 105  | `Unauthorized`         | Caller is not the issuer (for revocation).          |
+| 105  | `Unauthorized`         | Caller lacks required authorization.                |
+| 111  | `TokenTransferFailed`  | Escrow or beneficiary token transfer failed.        |
 
 ---
 
@@ -165,14 +165,17 @@ are returned to `issuer`.  The schedule is deleted from storage.
 
 ## Storage layout
 
-Two persistent keys per beneficiary:
+Persistent vesting state includes:
 
 | Key                            | Value              | TTL policy |
 |--------------------------------|--------------------|------------|
 | `VestingKey::Schedule(addr)`   | `VestingSchedule`  | Persistent |
 | `VestingKey::Claimed(addr)`    | `i128`             | Persistent |
+| `VestingKey::OfferingScheduleCount(id)` | `u32` | Persistent |
+| `VestingKey::OfferingScheduleItem(id, index)` | `Address` | Persistent |
+| `VestingKey::Acceleration(addr, trigger)` | `bool` | Persistent |
 
-Both keys are deleted on revocation.
+There is no cancellation or revocation operation to delete these entries.
 
 ---
 
@@ -203,22 +206,19 @@ cargo fmt --all -- --check
    schedules measured in days or months, this is not a meaningful attack surface.
 
 2. **Token contract trust** — The vesting contract calls SEP-41 `transfer`.
-   A malicious token could re-enter; however Soroban's cross-contract call model
-   makes re-entrancy structurally very difficult and the `claimed` cursor is
-   updated *before* the token transfer (checks-effects-interactions pattern).
+   Claimed accounting is updated only after the transfer succeeds, so a failed
+   transfer cannot increase the recorded claimed amount.
 
 3. **One schedule per beneficiary** — The current design allows one active
    schedule per beneficiary address.  Issuers needing multiple tranches should
    either revoke-and-re-register or use distinct beneficiary addresses.
 
-4. **No supply-cap enforcement** — The contract does not validate that the issuer
-   has minted only a certain amount of the token.  The `total_amount` parameter is
-   advisory; the token contract's own supply logic governs issuance.
+4. **Escrow funding** — Registration requires the issuer to transfer the full
+   `total_amount` into the contract. The token contract's own supply logic governs
+   issuance.
 
-5. **Revocation is issuer-initiated** — There is no beneficiary-initiated
-   early-exit mechanism.  If a schedule needs to be paused, the issuer must
-   revoke and optionally re-register a new schedule starting from the current
-   vested amount.
+5. **No cancellation or refund** — Unvested escrow remains in the contract after
+   registration; adding cancellation and a refund policy is follow-up work.
 
 6. **No upgradeability** — Consistent with the main contract's design philosophy,
    this module deploys as a single WASM contract.  Storage-layout changes require

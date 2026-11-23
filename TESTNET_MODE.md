@@ -332,7 +332,82 @@ let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &5);
 
 | Code | Variant | Condition |
 |------|---------|-----------|
-| 51 | `TestnetOnly` | `faucet_seed_holders` called with `testnet_mode == false` |
+| 62 | `TestnetOnly` | `faucet_seed_holders` or `faucet_reset` called with `testnet_mode == false` |
+| 63 | `FaucetCooldownActive` | `faucet_seed_holders` called within the 1-hour cooldown window |
+
+---
+
+## Faucet Reset (`faucet_reset`)
+
+### Overview
+
+`faucet_reset(caller, issuer, namespace, token, seed)` deterministically resets the
+faucet state for an offering. It clears all persisted `FaucetSeedEntry` records and
+resets the seed count to zero, then emits a single `fct_rst` event carrying the
+caller-supplied `seed` value.
+
+This lets CI test suites restore a known clean state between runs **without
+redeploying the contract**.
+
+### Gating
+
+- **Strictly testnet-only.** Returns `RevoraError::TestnetOnly` (wire value 62) when
+  `testnet_mode == false`. **Must never be callable on mainnet.**
+- **Admin-only.** `caller` must equal the stored admin address; any other address
+  returns `RevoraError::NotAuthorized`.
+- Offering must be registered; returns `RevoraError::OfferingNotFound` otherwise.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `caller` | `Address` | Admin address — must match the stored admin key. |
+| `issuer` | `Address` | Offering issuer address. |
+| `namespace` | `Symbol` | Offering namespace. |
+| `token` | `Address` | Offering token address. |
+| `seed` | `BytesN<32>` | Arbitrary 32-byte value; echoed in the `fct_rst` event so test suites can anchor the exact reset. |
+
+### State Mutations
+
+1. Removes `FaucetSeedEntry(offering_id, idx)` for `idx` in `0..seed_count`
+   (where `seed_count` is the running counter stored in `FaucetSeedCount(offering_id)`).
+2. Resets `FaucetSeedCount(offering_id)` to `0`.
+3. Emits one `fct_rst` event.
+
+### What is NOT reset
+
+- Per-requester `FaucetLastRequest` cooldown timestamps are **not** cleared by this
+  call. Cooldowns expire naturally after `DEFAULT_FAUCET_COOLDOWN_SECONDS` (3 600 s).
+  This is intentional: the reset targets seed state reproducibility, not cooldown bypass.
+
+### Event
+
+```
+Topics: (fct_rst, issuer, namespace, token)
+Data:   (caller: Address, seed: BytesN<32>, cleared_count: u32)
+```
+
+`cleared_count` is the number of `FaucetSeedEntry` records that were removed.
+
+### Example Usage
+
+```rust
+// Prerequisites: testnet mode enabled, offering registered, caller == admin.
+let seed: BytesN<32> = env.crypto().sha256(&Bytes::from_array(&env, b"test-run-42"));
+client.faucet_reset(&admin, &issuer, &ns, &token, &seed);
+
+// After this call, faucet_seed_holders behaves as if the offering is fresh.
+// (Cooldown for each requester still applies independently.)
+```
+
+### Security Notes
+
+- **Admin key required.** Unauthorised callers cannot reset faucet state, preventing
+  cooldown circumvention by unprivileged actors.
+- **Testnet gate is unconditional.** Even the admin cannot call this on mainnet;
+  `testnet_mode` must be explicitly enabled first.
+- The `seed` parameter is informational only — it does not influence storage mutations.
+  It provides an anchor for test-suite assertions and audit logs.
 
 ---
 
@@ -346,11 +421,18 @@ let seeds = client.faucet_seed_holders(&issuer, &ns, &token, &5);
 
 - **v0.2.0** - Deterministic faucet (Issue #476)
   - `faucet_seed_holders` function
-  - `RevoraError::TestnetOnly` (wire value 51)
-  - `RevoraError::StaleConcentrationData` (wire value 52, pre-existing usage fixed)
+  - `RevoraError::TestnetOnly` (wire value 62)
+  - `RevoraError::FaucetCooldownActive` (wire value 63)
   - `DataKey2::FaucetSeedEntry` storage key
   - `EVENT_FAUCET_SEED` (`fct_seed`) event symbol
   - `src/test_faucet_seed.rs` — 95%+ test coverage
+
+- **v0.3.0** - Faucet reset primitive (Issue #615)
+  - `faucet_reset(caller, issuer, namespace, token, seed)` function
+  - `DataKey2::FaucetSeedCount` storage key (tracks highest slot index for safe iteration)
+  - `EVENT_FAUCET_RESET` (`fct_rst`) event symbol
+  - `faucet_seed_holders` updated to maintain `FaucetSeedCount`
+  - Comprehensive `faucet_reset` tests in `src/test_faucet_seed.rs`
 
 ## Support
 

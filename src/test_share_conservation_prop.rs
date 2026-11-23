@@ -50,12 +50,12 @@ proptest! {
         for op in seq {
             match op {
                 TestOperation::RegisterOffering { issuer, namespace, token, bps, payout_asset, supply_cap } => {
-                    if let Ok(_) = client.try_register_offering(&issuer, &namespace, &token, &bps, &payout_asset, &supply_cap) {
+                    if let Ok(_) = client.try_register_offering(&issuer, &Vec::new(&env), &1u32, &namespace, &token, &bps, &payout_asset, &supply_cap, &symbol_short!(""), &0u32) {
                         active_offerings.push((issuer, namespace, token));
                     }
                 }
                 TestOperation::SetHolderShare { issuer, namespace, token, holder, share_bps } => {
-                    let _ = client.try_set_holder_share(&issuer, &namespace, &token, &holder, &share_bps);
+                    let _ = client.try_set_holder_share(&issuer, &namespace, &token, &holder, &share_bps, &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]));
                     if !all_holders.contains(&holder) {
                         all_holders.push(holder);
                     }

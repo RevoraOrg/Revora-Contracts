@@ -53,6 +53,16 @@ remaining owners must create a new proposal.
 
 **Test:** `multisig_remove_last_approver_blocks_execution`.
 
+### Epoch-based replay guard for stale proposals
+
+Each successful multisig rotation now increments a monotonic `multisig_epoch`. Proposals
+carry the epoch they were created in, and `execute_action` rejects any proposal whose
+epoch no longer matches the current one. This prevents a threshold-change proposal from
+being replayed after an owner/threshold rotation changes the multisig state.
+
+**Security note:** A stale proposal is rejected with `RevoraError::StaleProposal` and
+emits the `stale_pr` event so off-chain tooling can surface the replay attempt.
+
 ## Bug Fixes Applied (PR #296)
 
 Two compile-blocking bugs existed in the `RemoveOwner` branch of `execute_action`:

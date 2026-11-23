@@ -1,6 +1,6 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token::Client as TokenClient,
-    Address, Env, Map, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    token::Client as TokenClient, Address, Env, Map, Vec,
 };
 
 /// Top-level storage keys stored in persistent contract storage.
@@ -23,6 +23,10 @@ pub enum DataKey {
     Beneficiaries(u32),
     /// Claim record: whether `address` has claimed from `period_id`.
     Claimed(u32, Address),
+    /// Per-period share fixed on the first claim.
+    SharePerBeneficiary(u32),
+    /// Per-period remainder fixed on the first claim.
+    Remainder(u32),
 }
 
 /// Metadata for a single revenue period.
@@ -70,6 +74,10 @@ pub enum ContractError {
     NoBeneficiaries = 11,
     /// The caller is not an authorized offering contract.
     UnauthorizedDepositor = 12,
+    /// The period has ended and can no longer be changed or funded.
+    PeriodClosed = 13,
+    /// The recorded claims would exceed the period's revenue.
+    InvariantViolation = 14,
 }
 
 #[contract]
@@ -109,7 +117,7 @@ impl RevenueDepositContract {
             env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
         }
 
-        env.events().publish(&symbol_short!("dep_allow_add"), &offering);
+        env.events().publish((&symbol_short!("dep_add"),), &offering);
         Ok(())
     }
 
@@ -124,16 +132,24 @@ impl RevenueDepositContract {
             .get(&DataKey::AuthorizedOfferings)
             .unwrap_or_else(|| Vec::new(&env));
 
-        let pos = offerings.iter().position(|entry| entry == offering).ok_or(ContractError::UnauthorizedDepositor)?;
+        let pos = offerings
+            .iter()
+            .position(|entry| entry == offering)
+            .ok_or(ContractError::UnauthorizedDepositor)?;
         offerings.remove(pos as u32);
         env.storage().persistent().set(&DataKey::AuthorizedOfferings, &offerings);
 
-        env.events().publish(&symbol_short!("dep_allow_rm"), &offering);
+        env.events().publish((&symbol_short!("dep_rm"),), &offering);
         Ok(())
     }
 
     /// Deposit `amount` of the configured token into `period_id` from an authorized offering.
-    pub fn deposit(env: Env, caller: Address, period_id: u32, amount: i128) -> Result<(), ContractError> {
+    pub fn deposit(
+        env: Env,
+        caller: Address,
+        period_id: u32,
+        amount: i128,
+    ) -> Result<(), ContractError> {
         let offerings: Vec<Address> = env
             .storage()
             .persistent()
@@ -156,7 +172,8 @@ impl RevenueDepositContract {
             .get(&DataKey::Period(period_id))
             .ok_or(ContractError::PeriodNotFound)?;
 
-        period.revenue_amount = period.revenue_amount.checked_add(amount).ok_or(ContractError::Overflow)?;
+        period.revenue_amount =
+            period.revenue_amount.checked_add(amount).ok_or(ContractError::Overflow)?;
         env.storage().persistent().set(&DataKey::Period(period_id), &period);
 
         let token: Address = env.storage().persistent().get(&DataKey::Token).unwrap();
@@ -216,6 +233,8 @@ impl RevenueDepositContract {
         admin.require_auth();
 
         Self::assert_period_exists(&env, period_id)?;
+        let period: Period = env.storage().persistent().get(&DataKey::Period(period_id)).unwrap();
+        Self::assert_period_open(&env, &period)?;
 
         let mut beneficiaries: Vec<Address> = env
             .storage()
@@ -241,6 +260,8 @@ impl RevenueDepositContract {
         admin.require_auth();
 
         Self::assert_period_exists(&env, period_id)?;
+        let period: Period = env.storage().persistent().get(&DataKey::Period(period_id)).unwrap();
+        Self::assert_period_open(&env, &period)?;
 
         let mut beneficiaries: Vec<Address> = env
             .storage()
@@ -293,23 +314,51 @@ impl RevenueDepositContract {
             return Err(ContractError::AlreadyClaimed);
         }
 
-        let count = beneficiaries.len() as i128;
-        let share = period.revenue_amount.checked_div(count).ok_or(ContractError::Overflow)?;
+        let share_key = DataKey::SharePerBeneficiary(period_id);
+        let remainder_key = DataKey::Remainder(period_id);
+        let (share, remainder) = if let (Some(share), Some(remainder)) = (
+            env.storage().persistent().get::<DataKey, i128>(&share_key),
+            env.storage().persistent().get::<DataKey, i128>(&remainder_key),
+        ) {
+            (share, remainder)
+        } else {
+            let count = beneficiaries.len() as i128;
+            let share = period.revenue_amount.checked_div(count).ok_or(ContractError::Overflow)?;
+            let remainder =
+                period.revenue_amount.checked_rem(count).ok_or(ContractError::Overflow)?;
+            env.storage().persistent().set(&share_key, &share);
+            env.storage().persistent().set(&remainder_key, &remainder);
+            (share, remainder)
+        };
 
-        if share <= 0 {
-            return Err(ContractError::InvalidInput);
+        let mut unclaimed_count = 0u32;
+        for beneficiary in beneficiaries.iter() {
+            if !env.storage().persistent().has(&DataKey::Claimed(period_id, beneficiary)) {
+                unclaimed_count = unclaimed_count.checked_add(1).ok_or(ContractError::Overflow)?;
+            }
         }
+        let payout = if unclaimed_count == 1 {
+            share.checked_add(remainder).ok_or(ContractError::Overflow)?
+        } else {
+            share
+        };
 
+        let claimed_amount =
+            period.claimed_amount.checked_add(payout).ok_or(ContractError::Overflow)?;
+        if period.claimed_amount > period.revenue_amount || claimed_amount > period.revenue_amount {
+            return Err(ContractError::InvariantViolation);
+        }
         env.storage().persistent().set(&claim_key, &true);
-        period.claimed_amount =
-            period.claimed_amount.checked_add(share).ok_or(ContractError::Overflow)?;
+        period.claimed_amount = claimed_amount;
         env.storage().persistent().set(&DataKey::Period(period_id), &period);
 
-        let token: Address = env.storage().persistent().get(&DataKey::Token).unwrap();
-        let token_client = TokenClient::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &claimant, &share);
+        if payout > 0 {
+            let token: Address = env.storage().persistent().get(&DataKey::Token).unwrap();
+            let token_client = TokenClient::new(&env, &token);
+            token_client.transfer(&env.current_contract_address(), &claimant, &payout);
+        }
 
-        Ok(share)
+        Ok(payout)
     }
 
     /// Return metadata for a period.
@@ -378,6 +427,13 @@ impl RevenueDepositContract {
     fn assert_period_exists(env: &Env, period_id: u32) -> Result<(), ContractError> {
         if !env.storage().persistent().has(&DataKey::Period(period_id)) {
             return Err(ContractError::PeriodNotFound);
+        }
+        Ok(())
+    }
+
+    fn assert_period_open(env: &Env, period: &Period) -> Result<(), ContractError> {
+        if env.ledger().sequence() > period.end_ledger {
+            return Err(ContractError::PeriodClosed);
         }
         Ok(())
     }

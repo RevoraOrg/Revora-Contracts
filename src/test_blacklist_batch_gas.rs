@@ -13,7 +13,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 fn blacklist_add_many_gas_bound_worst_case() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env);
+    let client = make_client(&env.clone());
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -21,7 +21,7 @@ fn blacklist_add_many_gas_bound_worst_case() {
 
     // Initialize and register offering
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns, &token, &1000u32, &token, &0_i128, &symbol_short!(""), &0);
+    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000u32, &token, &0_i128, &symbol_short!(""), &0);
 
     // Prefill blacklist to half the default cap (MAX_BLACKLIST_SIZE = 200 -> 100)
     let mut prefilled: Vec<Address> = Vec::new(&env);

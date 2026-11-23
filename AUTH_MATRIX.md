@@ -61,6 +61,8 @@ Every pause/unpause call emits two events:
 | `cancel_issuer_transfer` | `current_issuer` | None | Current issuer cancels transfer. |
 | `accept_issuer_transfer` | `new_issuer` | None | New issuer accepts transfer. |
 | `freeze` | `admin` | None | Admin freezes contract permanently. |
+| `freeze_offering`, `emergency_freeze_holder` | `caller` | Current issuer or admin | Admin authority takes precedence; issuer cannot downgrade an admin hold. |
+| `unfreeze_offering`, `clear_freeze_reason`, `emergency_unfreeze_holder` | `caller` | Admin, or current issuer clearing an issuer-imposed hold | Legacy/unknown authority fails closed as admin; holder authority is per reason. |
 | `update_admin` | `admin` | None | Admin updates admin address. |
 | `set_safety` | `admin` | None | Admin sets safety address. |
 | `set_concentration_limit` | `issuer` | `current_issuer == issuer` | Issuer sets concentration limit. |

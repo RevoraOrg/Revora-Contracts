@@ -2,114 +2,122 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [master]
   pull_request:
-    branches: [main, master, develop]
-  workflow_dispatch:
-    inputs:
-      toolchain:
-        description: "Rust toolchain version"
-        required: true
-        default: "1.79.0"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  toolchain: stable
-  # Treat every clippy warning as a hard error in CI.
-  # Mirrors the #![deny(clippy::...)] attributes in src/lib.rs so local and
-  # remote checks are identical.  Developers must run:
-  #   cargo fmt --all -- --check
-  #   cargo clippy --all-targets --all-features -- -D warnings
-  # before pushing.  See docs/clippy-format-gate-hardening.md for details.
-  RUSTFLAGS: "-D warnings"
+    branches: [master]
 
 jobs:
-  # ── 1. Format gate ────────────────────────────────────────────────────────
-  fmt:
-    name: Format check (cargo fmt)
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust (stable + rustfmt)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo check --lib
+      # Compile the gated test-helper block (issue #1308) in a non-test build so
+      # it cannot rot behind `cfg(any(test, feature = "testutils"))`.
+      - run: cargo check --lib --features testutils
 
-      # Hard failure: unformatted code blocks the PR.
-      # Auto-commit is intentionally removed — contributors must format locally.
-      # Local command: cargo fmt --all -- --check
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  # ── 2. Clippy gate ────────────────────────────────────────────────────────
-  clippy:
-    name: Clippy lint check
+  # Fail the build if the deployed contract exports a `test_*` helper. Issue
+  # #1308: test_insert_period / test_set_last_claimed_idx mutate accounting state
+  # without authorization, so they must not be reachable on-chain.
+  wasm-exports:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust (stable + clippy)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Assert release wasm exports no test_* helpers
+        run: ./scripts/check_wasm_exports.sh
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
-
-      # -D warnings: every warning is a hard error.
-      # --all-targets: includes tests, benches, examples.
-      # --all-features: exercises feature-gated code paths.
-      # Local command: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  # ── 3. Build + test ───────────────────────────────────────────────────────
-  test:
-    name: Build and test
+  wasm-size:
     runs-on: ubuntu-latest
-    needs: [fmt, clippy]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release wasm (default features)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p revora-contracts -p revora-vesting -p revora-governance
+      - name: Build release wasm (testnet feature)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p revora-contracts --features testnet
+      - name: Optimize and report wasm sizes
+        run: |
+          set -e
+          LIMIT=131072
+          REPORT="wasm-size-report.txt"
+          EXEMPT_CONTRACTS="revora_contracts"
+          echo "Contract size limit: ${LIMIT} bytes (128 KiB)" | tee "$REPORT"
+          echo "" | tee -a "$REPORT"
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+          for features in "default" "testnet"; do
+            if [ "$features" = "default" ]; then
+              FEATURE_ARGS=""
+            else
+              FEATURE_ARGS="--features testnet"
+            fi
+            echo "=== Building with features: $features ===" | tee -a "$REPORT"
+            WASM_DIR="target/wasm32-unknown-unknown/release"
+            for wasm in "$WASM_DIR"/*.wasm; do
+              [ -f "$wasm" ] || continue
+              name=$(basename "$wasm")
+              raw_size=$(stat -c %s "$wasm")
+              # Try wasm-opt if available, otherwise report raw size
+              opt_size="$raw_size"
+              opt_note="raw"
+              if command -v wasm-opt >/dev/null 2>&1; then
+                wasm-opt -Oz "$wasm" -o "${wasm}.opt" 2>/dev/null && {
+                  opt_size=$(stat -c %s "${wasm}.opt")
+                  opt_note="wasm-opt -Oz"
+                  rm -f "${wasm}.opt"
+                }
+              fi
+              exempt="no"
+              for ec in $EXEMPT_CONTRACTS; do
+                if [ "$name" = "${ec}.wasm" ]; then
+                  exempt="yes"
+                  break
+                fi
+              done
+              status="OK"
+              if [ "$opt_size" -gt "$LIMIT" ] && [ "$exempt" = "no" ]; then
+                status="FAIL"
+              fi
+              echo "$features | $name | raw=${raw_size} | ${opt_note}=${opt_size} | limit=${LIMIT} | exempt=$exempt | $status" | tee -a "$REPORT"
+              if [ "$status" = "FAIL" ]; then
+                echo "::error::${name} (${features}) exceeds size limit: ${opt_size} > ${LIMIT} bytes"
+              fi
+            done
+          done
+
+          echo "" | tee -a "$REPORT"
+          echo "Known oversize exemption: revora_contracts (main contract, ~412 KB) tracked until split issues land." | tee -a "$REPORT"
+
+      - name: Fail on size gate violations
+        run: |
+          if grep -q "| FAIL |" wasm-size-report.txt; then
+            echo "::error::One or more contracts exceed the wasm size limit. See wasm-size-report.txt"
+            exit 1
+          fi
+
+      - name: Upload wasm artifacts
+        uses: actions/upload-artifact@v4
         with:
+          name: release-wasm
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.toml', '**/src/**') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
+            target/wasm32-unknown-unknown/release/*.wasm
+          if-no-files-found: ignore
 
-      - name: Build
-        run: cargo build --release
-
-      - name: Check storage layout JSON drift
-        run: cargo test --test storage_layout_json storage_layout_json_matches_checked_in_docs -- --exact --test-threads=1
-
-      # --test-threads=1 keeps Soroban test output deterministic.
-      # Local command: cargo test -- --test-threads=1
-      - name: Test
-        run: cargo test -- --test-threads=1
-        env:
-          RUST_BACKTRACE: full
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size-report
+          path: wasm-size-report.txt

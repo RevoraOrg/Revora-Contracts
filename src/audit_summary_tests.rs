@@ -21,7 +21,16 @@ fn setup_offering() -> (Env, Address, Address, Address, Address) {
     let payout_asset = Address::generate(&env);
 
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(&issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0);
 
     (env, contract_id, issuer, token, payout_asset)
 }
@@ -187,7 +196,7 @@ fn below_threshold_report_is_no_op_and_threshold_toggle_allows_same_period_later
     let (env, contract_id, issuer, token, payout_asset) = setup_offering();
     let client = RevoraRevenueShareClient::new(&env, &contract_id);
 
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000);
+    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &1_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &999, &1, &false);
@@ -199,7 +208,7 @@ fn below_threshold_report_is_no_op_and_threshold_toggle_allows_same_period_later
     assert!(client.get_audit_summary(&issuer, &symbol_short!("def"), &token).is_none());
     assert_eq!(client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &1), 0);
 
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0);
+    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &0, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
     let before_accept = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &999, &1, &false);
 
@@ -225,7 +234,7 @@ fn override_can_correct_below_current_threshold_without_emitting_rev_below() {
         &1,
         &false,
     );
-    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &2_000);
+    client.set_min_revenue_threshold(&issuer, &symbol_short!("def"), &token, &2_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
 
     let before = env.events().all().len();
     client.report_revenue(&issuer, &symbol_short!("def"), &token, &payout_asset, &500, &1, &true);

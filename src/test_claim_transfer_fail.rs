@@ -42,7 +42,7 @@
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
-    String,
+    String, Vec,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -232,8 +232,17 @@ fn setup_claim_fail() -> (
         &fail_token_id,
         &0,
         &symbol_short!(""),
-        &0);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &10_000);
+        &0,
+    );
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Mint to issuer and deposit — transfer direction is issuer→contract, not yet failing
     fail_token.mint(&issuer, &1_000_000);
@@ -244,6 +253,7 @@ fn setup_claim_fail() -> (
         &fail_token_id,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     // Now arm the token to fail when `from == revora_id` (claim: contract→holder)
@@ -366,6 +376,7 @@ fn claim_transfer_fail_multi_period_no_partial_state() {
         &fail_token_id,
         &100_000,
         &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
     revora.deposit_revenue(
         &issuer,
@@ -374,6 +385,7 @@ fn claim_transfer_fail_multi_period_no_partial_state() {
         &fail_token_id,
         &100_000,
         &3,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     // Re-arm fail mode for claim direction
@@ -403,8 +415,24 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
 
     let holder2 = Address::generate(&env);
     // Give holder2 a share (adjust holder1 to 50% too)
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder, &5_000);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token, &holder2, &5_000);
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder,
+        &5_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &holder2,
+        &5_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // Deposit period 2 while fail mode is temporarily off
     let dummy = Address::generate(&env);
@@ -417,6 +445,7 @@ fn claim_transfer_fail_does_not_affect_other_holder_state() {
         &fail_token_id,
         &100_000,
         &2,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     // Re-arm fail mode
@@ -448,17 +477,25 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
 
     revora.register_offering(
         &issuer,
+        &Vec::new(&env),
+        &1u32,
         &symbol_short!("def"),
         &offering_token_b,
         &10_000,
         &token_b_id,
         &0,
         &symbol_short!(""),
-        &0);
-    revora.set_holder_share(&issuer, &symbol_short!("def"), &offering_token_b, &holder, &10_000);
-    
-    // Mint payout tokens to the issuer so they can deposit revenue
-    soroban_sdk::token::StellarAssetClient::new(&env, &payout_b_id).mint(&issuer, &100_000);
+        &0,
+    );
+    revora.set_holder_share(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token_b,
+        &holder,
+        &10_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     revora.deposit_revenue(
         &issuer,
@@ -467,6 +504,7 @@ fn claim_transfer_fail_does_not_affect_sibling_offering() {
         &token_b_id,
         &100_000,
         &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
     );
 
     // Claim on offering A fails (failing token)

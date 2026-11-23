@@ -313,6 +313,48 @@ assert!(payout > 0);
 
 ---
 
+## Read-Only Preflight (`preflight_close_period`, Issue #563)
+
+Operators can preview a close-of-period distribution BEFORE committing,
+without mutating state. The preflight surfaces the same precondition chain
+as `close_period` (`ContractFrozen`, `ContractPaused`, `InvalidPeriodId`,
+`OfferingNotFound`, `PeriodAlreadyClosed`) and returns:
+
+- `period_revenue` — the value currently stored at `DataKey::PeriodRevenue`.
+- `class_pay_order` — the canonical class pay order that
+  `record_and_emit_pay_order` would write for this period (empty when no
+  classes are registered).
+- `payouts` — per-holder distribution preview, computed by
+  `compute_share(revenue, share_bps, mode)` — the same math
+  `simulate_distribution` uses for classless offerings.
+- `total_distributed` — saturating sum of `payouts[i].normalized_payout`,
+  bounded by `period_revenue`.
+
+#### Signature
+
+```rust
+pub fn preflight_close_period(
+    env: Env,
+    offering_id: OfferingId,
+    period_id: u64,
+    holders: Vec<Address>,           // caller-supplied (see Scope note)
+) -> Result<PreflightCloseResult, RevoraError>
+```
+
+The full specification is in [`docs/close-period-preflight.md`](docs/close-period-preflight.md).
+
+#### Scope deviation
+
+The issue's literal text suggested a 2-arg signature. We ship a 3-arg
+signature because Soroban persistent maps do not support key iteration and
+the closest analogue (`simulate_distribution`) already takes a
+caller-supplied holder vector. Indexer/operator flows pass the same holder
+set that the eventual `claim()` flow will iterate. Blacklisted addresses
+are silently dropped from `payouts` (matching the contract-wide blacklist
+precedence rule).
+
+---
+
 ## Future Enhancements
 
 Potential future work (not part of v1):
@@ -331,8 +373,9 @@ Potential future work (not part of v1):
 - **Tests:** `src/test_close_period.rs`
 - **Core Logic:** `src/lib.rs` (lines 4904–4958, 2411–2414)
 - **Event:** `EVENT_PERIOD_CLOSED` symbol definition
+- **Preflight (Issue #563):** [`docs/close-period-preflight.md`](docs/close-period-preflight.md)
 
 ---
 
-**Last Updated:** June 2, 2026  
+**Last Updated:** July 28, 2026  
 **Status:** ✅ Complete & Production Ready
