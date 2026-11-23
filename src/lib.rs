@@ -429,6 +429,8 @@ pub mod kani_harness;
 #[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
+mod normalize_share_tests;
+#[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_compute_share_invariants;
