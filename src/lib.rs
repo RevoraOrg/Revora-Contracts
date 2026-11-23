@@ -479,6 +479,8 @@ mod test_freeze_reason_bitmask;
 #[cfg(test)]
 mod test_get_payment_token;
 #[cfg(test)]
+mod test_governance_proposals;
+#[cfg(test)]
 mod test_holder_share_class;
 #[cfg(test)]
 mod test_meta_revenue_approval;
