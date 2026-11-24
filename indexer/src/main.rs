@@ -2,15 +2,33 @@ use axum::{
     extract::{Query, State},
     http::header,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
-use revora_indexer::{ContractEvent, EventFilter, EventIndexer, NewContractEvent, Result};
+use revora_indexer::{
+    normalize_pagination, ContractEvent, EventFilter, EventIndexer, NewContractEvent, Result,
+    MAX_PAGE_SIZE,
+};
+use revora_indexer::{EventFilter, EventIndexer, IndexerError, NewContractEvent, Result};
 use serde::Deserialize;
 use std::env;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber;
+
+struct IndexerErrorResponse(IndexerError);
+
+impl IntoResponse for IndexerErrorResponse {
+    fn into_response(self) -> Response {
+        let (status, message) = match &self.0 {
+            IndexerError::InvalidEventData => (StatusCode::BAD_REQUEST, "Invalid event data"),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+        };
+
+        tracing::error!(error = %self.0, "Indexer request failed");
+        (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct PaginationParams {
@@ -23,71 +41,87 @@ struct AppState {
     indexer: EventIndexer,
 }
 
+fn validate_pagination(
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> std::result::Result<(i64, i64), String> {
+    if let Some(limit) = limit {
+        if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+            return Err(format!("limit must be between 1 and {MAX_PAGE_SIZE}"));
+        }
+    }
+    if offset.is_some_and(|offset| offset < 0) {
+        return Err("offset must be non-negative".to_string());
+    }
+    Ok(normalize_pagination(limit, offset))
+}
+
 async fn get_events(
     State(state): State<AppState>,
     Query(filter): Query<EventFilter>,
     Query(pagination): Query<PaginationParams>,
-) -> impl IntoResponse {
+) -> Response {
+    let (limit, offset) = match validate_pagination(pagination.limit, pagination.offset) {
+        Ok(values) => values,
+        Err(message) => return (StatusCode::BAD_REQUEST, axum::Json(message)).into_response(),
+    };
+
+    match state.indexer.query_events(&filter, Some(limit), Some(offset)).await {
+        Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to query events"))
+            .into_response(),
     match state.indexer.query_events(&filter, pagination.limit, pagination.offset).await {
-        Ok(events) => (StatusCode::OK, axum::Json(events)),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to query events")),
+        Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
+        Err(error) => IndexerErrorResponse(error).into_response(),
     }
 }
 
 async fn create_event(
     State(state): State<AppState>,
     axum::Json(new_event): axum::Json<NewContractEvent>,
-) -> impl IntoResponse {
+) -> Response {
     match state.indexer.insert_event(&new_event).await {
-        Ok(event) => (StatusCode::CREATED, axum::Json(event)),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to insert event")),
+        Ok(event) => (StatusCode::CREATED, axum::Json(event)).into_response(),
+        Err(error) => IndexerErrorResponse(error).into_response(),
     }
 }
 
-async fn get_analytics(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_analytics(State(state): State<AppState>) -> Response {
     match state.indexer.get_analytics().await {
-        Ok(analytics) => (StatusCode::OK, axum::Json(analytics)),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to get analytics")),
+        Ok(analytics) => (StatusCode::OK, axum::Json(analytics)).into_response(),
+        Err(error) => IndexerErrorResponse(error).into_response(),
     }
 }
 
 async fn export_csv(
     State(state): State<AppState>,
     Query(filter): Query<EventFilter>,
-) -> impl IntoResponse {
+) -> Response {
     match state.indexer.export_events_to_csv(&filter).await {
         Ok(data) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/csv")],
             [(header::CONTENT_DISPOSITION, "attachment; filename=\"events.csv\"")],
             data,
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(header::CONTENT_TYPE, "text/plain")],
-            vec![],
-            "Failed to export CSV".to_string().into_bytes(),
-        ),
+        )
+            .into_response(),
+        Err(error) => IndexerErrorResponse(error).into_response(),
     }
 }
 
 async fn export_json(
     State(state): State<AppState>,
     Query(filter): Query<EventFilter>,
-) -> impl IntoResponse {
+) -> Response {
     match state.indexer.export_events_to_json(&filter).await {
         Ok(data) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/json")],
             [(header::CONTENT_DISPOSITION, "attachment; filename=\"events.json\"")],
             data,
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(header::CONTENT_TYPE, "text/plain")],
-            vec![],
-            "Failed to export JSON".to_string().into_bytes(),
-        ),
+        )
+            .into_response(),
+        Err(error) => IndexerErrorResponse(error).into_response(),
     }
 }
 
@@ -105,6 +139,8 @@ async fn main() -> Result<()> {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     let app = Router::new()
+        // GET /events: limit defaults to 100 and is capped at 1000; offset must be >= 0.
+        // Invalid limit/offset values (including non-integers) return HTTP 400.
         .route("/events", get(get_events).post(create_event))
         .route("/analytics", get(get_analytics))
         .route("/export/csv", get(export_csv))
@@ -117,4 +153,34 @@ async fn main() -> Result<()> {
     axum::Server::bind(&addr).serve(app.into_make_service()).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn error_responses_map_status_and_hide_internal_details() {
+        let invalid_response =
+            IndexerErrorResponse(IndexerError::InvalidEventData).into_response();
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+        let invalid_body =
+            axum::body::to_bytes(invalid_response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&invalid_body).unwrap(),
+            serde_json::json!({ "error": "Invalid event data" })
+        );
+
+        let internal_response = IndexerErrorResponse(IndexerError::DatabaseError(
+            sqlx::Error::Protocol("sensitive SQL details".to_string()),
+        ))
+        .into_response();
+        assert_eq!(internal_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let internal_body =
+            axum::body::to_bytes(internal_response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&internal_body).unwrap(),
+            serde_json::json!({ "error": "Internal server error" })
+        );
+    }
 }

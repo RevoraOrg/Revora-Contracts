@@ -356,9 +356,12 @@ fn deposit_with_snapshot_rejects_when_snapshots_are_disabled() {
 
 #[test]
 fn deposit_with_snapshot_rejects_when_offering_is_frozen() {
-    let (_env, client, issuer, token, payment_token) = setup();
-    client.set_snapshot_config(&issuer, &namespace(), &token, &true);
-    client.freeze_offering(&issuer, &namespace(), &token);
+    let (env, client, issuer, token, payment_token) = setup();
+    let signers = soroban_sdk::Vec::from_array(&env, [issuer.clone()]);
+    // set_snapshot_config and freeze_offering take additional params
+    // (multisig signers and separate caller) added in #1389 and #1385.
+    client.set_snapshot_config(&issuer, &namespace(), &token, &true, &signers);
+    client.freeze_offering(&issuer, &issuer, &namespace(), &token);
 
     let result = client.try_deposit_revenue_with_snapshot(
         &issuer,
@@ -368,6 +371,7 @@ fn deposit_with_snapshot_rejects_when_offering_is_frozen() {
         &1_000,
         &1,
         &1,
+        &signers,
     );
 
     assert!(matches!(result.err(), Some(Ok(RevoraError::OfferingFrozen))));
