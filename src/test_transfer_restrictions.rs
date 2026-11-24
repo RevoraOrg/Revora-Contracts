@@ -1,76 +1,89 @@
 #![cfg(test)]
 
-use crate::{RevoraError, test_utils::setup_context};
-use soroban_sdk::{testutils::Ledger as _, Address, BytesN, Env, Symbol};
+use crate::{test_utils::setup_context, RevoraRevenueShareClient};
+use soroban_sdk::{symbol_short, testutils::Ledger as _, Address, Env, Vec};
 
-#[test]
-fn test_transfer_restrictions() {
-    let (env, client, _contract_id, issuer, token, payout_asset) = setup_context();
-    let namespace = Symbol::new(&env, "public");
+fn register_offering(
+    env: &Env,
+    client: &RevoraRevenueShareClient<'_>,
+    issuer: &Address,
+    token: &Address,
+    payout_asset: &Address,
+) {
+    let _ = client.register_offering(
+        issuer,
+        &Vec::new(env),
+        &1u32,
+        &symbol_short!("ns"),
+        token,
+        &5_000,
+        payout_asset,
+        &0i128,
+        &symbol_short!(""),
+        &0u32,
+    );
+}
 
-    client.initialize(&issuer);
-    client.register_offering(&issuer, &namespace, &token, &1000, &payout_asset);
-
-    env.ledger().set_network_id([0x01u8; 32]);
-    let category = Symbol::new(&env, "RegD");
-    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
-    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    client.set_transfer_restrictions(&issuer, &namespace, &token, &category, &1);
-
-    let holder1 = Address::generate(&env);
-    let holder2 = Address::generate(&env);
-
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    
-    // Transfer from holder1 to holder2, assigning holder2 to "RegD"
-    let nonce = 1u64;
-    let expires_at = u64::MAX;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &attestation_hash, &network_id, &nonce, &expires_at);
-
-    let holder3 = Address::generate(&env);
-    let nonce2 = 2u64;
-    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &attestation_hash, &network_id, &nonce2, &expires_at);
-    assert_eq!(res.unwrap_err().unwrap(), RevoraError::CategoryCapReached);
-
-    // Drop holder2 to 0
-    client.set_holder_share(&issuer, &namespace, &token, &holder2, &0, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-
-    // Now we can transfer to holder3
-    let nonce3 = 3u64;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder3, &50, &category, &attestation_hash, &network_id, &nonce3, &expires_at);
+fn give_share(
+    env: &Env,
+    client: &RevoraRevenueShareClient<'_>,
+    issuer: &Address,
+    token: &Address,
+    holder: &Address,
+) {
+    let _ = client.set_holder_share(
+        issuer,
+        &symbol_short!("ns"),
+        token,
+        holder,
+        &100,
+        &0u64,
+        &Vec::from_array(env, [issuer.clone()]),
+    );
 }
 
 #[test]
-fn test_oscillating_across_zero() {
-    let (env, client, _contract_id, issuer, token, payout_asset) = setup_context();
-    let namespace = Symbol::new(&env, "public");
-
-    client.initialize(&issuer);
-    client.register_offering(&issuer, &namespace, &token, &1000, &payout_asset);
-
+fn test_transfer_restrictions_are_offering_scoped() {
+    let (env, client, _, issuer, token_a, payout_asset_a) = setup_context();
+    let token_b = Address::generate(&env);
+    let payout_asset_b = Address::generate(&env);
+    register_offering(&env, &client, &issuer, &token_a, &payout_asset_a);
+    register_offering(&env, &client, &issuer, &token_b, &payout_asset_b);
     env.ledger().set_network_id([0x01u8; 32]);
-    let category = Symbol::new(&env, "RegS");
-    let attestation_hash = BytesN::from_array(&env, &[0xabu8; 32]);
-    let network_id = BytesN::from_array(&env, &[0x01u8; 32]);
-    client.set_transfer_restrictions(&issuer, &namespace, &token, &category, &1);
 
-    let holder1 = Address::generate(&env);
-    let holder2 = Address::generate(&env);
-    let holder3 = Address::generate(&env);
+    let namespace = symbol_short!("ns");
+    let category = symbol_short!("regs");
+    let sender_a = Address::generate(&env);
+    let sender_b = Address::generate(&env);
+    let recipient_a = Address::generate(&env);
+    let recipient_b = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &namespace, &token, &holder1, &100, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    
-    let nonce = 1u64;
-    let expires_at = u64::MAX;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder2, &50, &category, &attestation_hash, &network_id, &nonce, &expires_at);
+    client.set_transfer_restrictions(&issuer, &namespace, &token_a, &category, &1);
+    give_share(&env, &client, &issuer, &token_a, &sender_a);
+    give_share(&env, &client, &issuer, &token_b, &sender_b);
 
-    // Holder2 transfers entirely to holder3
-    let nonce2 = 2u64;
-    client.transfer_with_attestation(&issuer, &namespace, &token, &holder2, &holder3, &50, &category, &attestation_hash, &network_id, &nonce2, &expires_at);
-
-    // Cap is 1, holder3 is the only one in RegS. Try adding holder4.
-    let holder4 = Address::generate(&env);
-    let nonce3 = 3u64;
-    let res = client.try_transfer_with_attestation(&issuer, &namespace, &token, &holder1, &holder4, &50, &category, &attestation_hash, &network_id, &nonce3, &expires_at);
-    assert_eq!(res.unwrap_err().unwrap(), RevoraError::CategoryCapReached);
+    assert_eq!(
+        client.try_transfer_with_attestation(
+            &issuer,
+            &namespace,
+            &token_a,
+            &sender_a,
+            &recipient_a,
+            &50,
+            &category,
+        ),
+        Ok(Ok(()))
+    );
+    assert_eq!(
+        client.try_transfer_with_attestation(
+            &issuer,
+            &namespace,
+            &token_b,
+            &sender_b,
+            &recipient_b,
+            &50,
+            &category,
+        ),
+        Ok(Ok(()))
+    );
 }

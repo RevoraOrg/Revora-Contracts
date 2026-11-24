@@ -479,6 +479,10 @@ mod test_testnet_mode;
 #[cfg(test)]
 mod test_time_windows;
 #[cfg(test)]
+mod test_transfer_restriction;
+#[cfg(test)]
+mod test_transfer_restrictions;
+#[cfg(test)]
 mod proptest_helpers;
 #[cfg(test)]
 mod test_accrual_ledger;
