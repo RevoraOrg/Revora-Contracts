@@ -85,6 +85,8 @@ ALLOWLIST=(
     "src/vesting_test.rs"
     # Existing issue-specific test files are tracked separately and not wired yet.
     # See issues #1312 and #1313.
+    # Orphaned by the PRs that added them; tracked separately from the
+    # test-module wiring issues handled here.
     "src/test_issue_1312.rs"
     "src/test_issue_1313.rs"
 )
