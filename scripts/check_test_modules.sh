@@ -26,7 +26,6 @@ ALLOWLIST=(
     # See: https://github.com/upstage-interactive/revora-contracts/issues
     "src/audit_summary_tests.rs"
     "src/chunking_tests.rs"
-    "src/invalid_amount_matrix_tests.rs"
     "src/normalize_share_tests.rs"
     "src/payout_test.rs"
     "src/security_assertions_integration_tests.rs"
@@ -72,6 +71,10 @@ ALLOWLIST=(
     "src/test_transfer_with_attestation.rs"
     "src/test_twap_window.rs"
     "src/vesting_test.rs"
+    # Orphaned by the PRs that added them; tracked separately from the
+    # test-module wiring issues handled here.
+    "src/test_issue_1312.rs"
+    "src/test_issue_1313.rs"
 )
 
 # ── Find every candidate test file in src/ ─────────────────────────────────────
