@@ -427,11 +427,23 @@ pub mod security_assertions;
 pub mod kani_harness;
 
 #[cfg(test)]
+mod proptest_helpers;
+#[cfg(test)]
+mod test_accrual_overflow;
+#[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_close_period;
+#[cfg(test)]
+mod test_compute_share_decomposition_prop;
+#[cfg(test)]
 mod test_compute_share_invariants;
+#[cfg(test)]
+mod test_disclosure;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -442,30 +454,6 @@ mod test_estimate_transfer;
 mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
-#[cfg(test)]
-mod test_merkle_canonical_order;
-#[cfg(test)]
-mod test_min_revenue_threshold_boundary;
-#[cfg(test)]
-mod test_pending_issuer_transfer;
-#[cfg(test)]
-mod test_snapshot_shares_accounting;
-#[cfg(test)]
-mod test_testnet_mode;
-#[cfg(test)]
-mod test_time_windows;
-#[cfg(test)]
-mod proptest_helpers;
-#[cfg(test)]
-mod test_accrual_overflow;
-#[cfg(test)]
-mod test_accrual_reconciliation_prop;
-#[cfg(test)]
-mod test_close_period;
-#[cfg(test)]
-mod test_compute_share_decomposition_prop;
-#[cfg(test)]
-mod test_disclosure;
 #[cfg(test)]
 #[cfg(feature = "testnet")]
 mod test_faucet_metrics;
@@ -480,17 +468,29 @@ mod test_get_payment_token;
 #[cfg(test)]
 mod test_holder_share_class;
 #[cfg(test)]
+mod test_merkle_canonical_order;
+#[cfg(test)]
 mod test_meta_revenue_approval;
+#[cfg(test)]
+mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
 mod test_multisig_regression;
 #[cfg(test)]
+mod test_pending_issuer_transfer;
+#[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
 #[cfg(test)]
+mod test_snapshot_shares_accounting;
+#[cfg(test)]
 mod test_tax_year;
+#[cfg(test)]
+mod test_testnet_mode;
+#[cfg(test)]
+mod test_time_windows;
 #[cfg(test)]
 mod test_transfer_cooldown;
 #[cfg(test)]
@@ -12872,6 +12872,76 @@ impl RevoraRevenueShare {
         total
     }
 
+    /// Read the pending dividend accrued for a holder by the report-time
+    /// accrual ledger (issue #864).
+    ///
+    /// The returned amount is `accrued_owed` (frozen by previous share
+    /// changes) plus the unsettled delta since the last settlement:
+    ///
+    /// ```text
+    /// unsettled = (ReportAccPerShareE18 - last_report_acc_e18) * current_share / 1e18
+    /// ```
+    ///
+    /// Returns `0` for blacklisted holders and for holders with no share.
+    /// This is a read-only O(1) query: it reads the global accumulator, the
+    /// holder's ledger checkpoint and the holder's current share.
+    ///
+    /// This public query is part of the dividend accrual ledger feature and was
+    /// accidentally dropped from the contract surface during an unrelated
+    /// refactor; restoring it keeps the feature's regression tests meaningful
+    /// (see issue #1433).
+    pub fn get_holder_pending_accrual(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> i128 {
+        let offering_id = Self::canonical_offering_id(&env, issuer.clone(), namespace, token);
+
+        if Self::is_blacklisted(
+            env.clone(),
+            issuer,
+            offering_id.namespace.clone(),
+            offering_id.token.clone(),
+            holder.clone(),
+        ) {
+            return 0;
+        }
+
+        let global_key = DataKey2::ReportAccPerShareE18(offering_id.clone());
+        let global_acc: i128 = env.storage().persistent().get(&global_key).unwrap_or(0);
+
+        let ledger_key = DataKey2::HolderReportLedger(offering_id.clone(), holder.clone());
+        let ledger: HolderReportAccrual = env
+            .storage()
+            .persistent()
+            .get(&ledger_key)
+            .unwrap_or(HolderReportAccrual { last_report_acc_e18: global_acc, accrued_owed: 0 });
+
+        let unsettled = if global_acc > ledger.last_report_acc_e18 {
+            let current_share: u32 = env
+                .storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::HolderShare(offering_id.clone(), holder.clone()))
+                .unwrap_or(0);
+            if current_share == 0 {
+                0
+            } else {
+                let delta = global_acc.saturating_sub(ledger.last_report_acc_e18);
+                delta
+                    .checked_mul(current_share as i128)
+                    .unwrap_or(i128::MAX)
+                    .checked_div(ACCRUAL_SCALE_E18)
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+
+        ledger.accrued_owed.saturating_add(unsettled)
+    }
+
     // ââ Fiscal year configuration âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     /// Set the fiscal year start month for an offering.
@@ -16979,3 +17049,8 @@ mod test_atomic_swap_share_transfer {
         assert_eq!(over_res, Err(Ok(RevoraError::InvalidAmount)));
     }
 }
+
+// Tests wired in by later issues. Kept outside the main `mod test_*` block so
+// parallel test-module PRs do not conflict with each other.
+#[cfg(test)]
+mod test_dividend_accrual_ledger;
