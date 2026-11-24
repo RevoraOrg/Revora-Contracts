@@ -466,10 +466,12 @@ fn unauthorized_callers_cannot_mutate_the_summary_while_reads_stay_open() {
         client.try_repair_audit_summary(&attacker, &issuer, &ns, &token),
         Err(Ok(RevoraError::NotAuthorized))
     );
+    // set_min_revenue_threshold no longer has a separate caller param;
+    // passing the attacker as issuer gives OfferingNotFound since
+    // no offering exists under the attacker's address.
     assert_eq!(
         client.try_set_min_revenue_threshold(
             &attacker,
-            &issuer,
             &ns,
             &token,
             &0,

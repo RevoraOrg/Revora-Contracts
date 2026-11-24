@@ -6,6 +6,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use revora_indexer::{
+    normalize_pagination, ContractEvent, EventFilter, EventIndexer, NewContractEvent, Result,
+    MAX_PAGE_SIZE,
+};
 use revora_indexer::{EventFilter, EventIndexer, IndexerError, NewContractEvent, Result};
 use serde::Deserialize;
 use std::env;
@@ -37,11 +41,35 @@ struct AppState {
     indexer: EventIndexer,
 }
 
+fn validate_pagination(
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> std::result::Result<(i64, i64), String> {
+    if let Some(limit) = limit {
+        if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+            return Err(format!("limit must be between 1 and {MAX_PAGE_SIZE}"));
+        }
+    }
+    if offset.is_some_and(|offset| offset < 0) {
+        return Err("offset must be non-negative".to_string());
+    }
+    Ok(normalize_pagination(limit, offset))
+}
+
 async fn get_events(
     State(state): State<AppState>,
     Query(filter): Query<EventFilter>,
     Query(pagination): Query<PaginationParams>,
 ) -> Response {
+    let (limit, offset) = match validate_pagination(pagination.limit, pagination.offset) {
+        Ok(values) => values,
+        Err(message) => return (StatusCode::BAD_REQUEST, axum::Json(message)).into_response(),
+    };
+
+    match state.indexer.query_events(&filter, Some(limit), Some(offset)).await {
+        Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to query events"))
+            .into_response(),
     match state.indexer.query_events(&filter, pagination.limit, pagination.offset).await {
         Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
@@ -111,6 +139,8 @@ async fn main() -> Result<()> {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     let app = Router::new()
+        // GET /events: limit defaults to 100 and is capped at 1000; offset must be >= 0.
+        // Invalid limit/offset values (including non-integers) return HTTP 400.
         .route("/events", get(get_events).post(create_event))
         .route("/analytics", get(get_analytics))
         .route("/export/csv", get(export_csv))
