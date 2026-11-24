@@ -506,6 +506,7 @@ mod test_multi_token_independence;
 mod test_multisig_regression;
 #[cfg(test)]
 mod test_ofac_snapshot_pin;
+mod test_multisig_gas;
 #[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]

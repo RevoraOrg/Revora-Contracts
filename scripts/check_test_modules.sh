@@ -61,6 +61,7 @@ ALLOWLIST=(
     "src/test_issue_1313.rs"
     "src/test_jurisdiction.rs"
     "src/test_multisig_gas.rs"
+    "src/test_merkle_root_rotation.rs"
     "src/test_namespaces.rs"
     "src/test_override_audit_trail.rs"
     "src/test_pause_tiers.rs"
