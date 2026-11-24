@@ -499,6 +499,8 @@ mod test_issue_1313;
 #[cfg(test)]
 mod test_get_payment_token;
 #[cfg(test)]
+mod test_governance_proposals;
+#[cfg(test)]
 mod test_holder_share_class;
 #[cfg(test)]
 mod test_holder_share_sum_invariant;

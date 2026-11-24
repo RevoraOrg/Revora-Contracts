@@ -57,6 +57,7 @@ ALLOWLIST=(
     "src/test_governance_proposals.rs"
     "src/test_issue_1312.rs" # Issue #1312
     "src/test_issue_1313.rs" # Issue #1313
+    "src/test_holder_share_sum_invariant.rs"
     "src/test_indexer_fixtures.rs"
     "src/test_issue_1312.rs"
     "src/test_issue_1313.rs"
@@ -79,6 +80,11 @@ ALLOWLIST=(
     "src/test_transfer_restrictions.rs"
     "src/test_transfer_with_attestation.rs"
     "src/test_twap_window.rs"
+    "src/vesting_test.rs"
+    # Existing issue-specific test files are tracked separately and not wired yet.
+    # See issues #1312 and #1313.
+    "src/test_issue_1312.rs"
+    "src/test_issue_1313.rs"
 )
 
 # ── Find every candidate test file in src/ ─────────────────────────────────────
