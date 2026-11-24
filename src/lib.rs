@@ -434,6 +434,8 @@ pub mod security_assertions;
 pub mod kani_harness;
 
 #[cfg(test)]
+mod normalize_share_tests;
+#[cfg(test)]
 mod proptest_helpers;
 #[cfg(test)]
 mod test_accrual_overflow;

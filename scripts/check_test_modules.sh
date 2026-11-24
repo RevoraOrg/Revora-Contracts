@@ -34,7 +34,6 @@ ALLOWLIST=(
     "src/audit_summary_tests.rs"
     "src/chunking_tests.rs"
     "src/invalid_amount_matrix_tests.rs"
-    "src/normalize_share_tests.rs"
     "src/payout_test.rs"
     "src/security_assertions_integration_tests.rs"
     "src/self_test.rs"
