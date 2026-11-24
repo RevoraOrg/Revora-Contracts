@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{BlacklistEntryMeta, RevoraRevenueShare, RevoraRevenueShareClient};
+use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events},
