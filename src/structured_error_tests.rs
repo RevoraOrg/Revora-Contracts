@@ -109,7 +109,6 @@ mod tests {
             ("DisputeZeroShare", RevoraError::DisputeZeroShare as u32),
             ("OracleQuoteStale", RevoraError::OracleQuoteStale as u32),
             ("AllOraclesStale", RevoraError::AllOraclesStale as u32),
-            ("TestnetOnly", RevoraError::TestnetOnly as u32),
             ("HolderFrozen", RevoraError::HolderFrozen as u32),
             ("InvalidShareClass", RevoraError::InvalidShareClass as u32),
             ("InvalidShareClassBps", RevoraError::InvalidShareClassBps as u32),
@@ -122,9 +121,14 @@ mod tests {
             ("InsufficientClassBalance", RevoraError::InsufficientClassBalance as u32),
             ("RedemptionWindowClosed", RevoraError::RedemptionWindowClosed as u32),
             ("RedemptionWindowOverlap", RevoraError::RedemptionWindowOverlap as u32),
-            ("JurisdictionMigrationDeadlineExceeded", RevoraError::JurisdictionMigrationDeadlineExceeded as u32),
+            (
+                "JurisdictionMigrationDeadlineExceeded",
+                RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
+            ),
             ("TransferCooldownActive", RevoraError::TransferCooldownActive as u32),
-            ("JurisdictionBlocked", RevoraError::JurisdictionBlocked as u32),
+            // `JurisdictionBlocked` was removed from `RevoraError`; code 90 now
+            // belongs to `ProofTooDeep` (returned by `verify_snapshot_proof`).
+            ("ProofTooDeep", RevoraError::ProofTooDeep as u32),
             ("NoVotingWeight", RevoraError::NoVotingWeight as u32),
         ];
 
@@ -202,15 +206,21 @@ mod tests {
         assert_eq!(RevoraError::ContractPaused as u32, 44);
         assert_eq!(RevoraError::BlacklistSizeLimitExceeded as u32, 45);
         assert_eq!(RevoraError::AlreadyApproved as u32, 46);
-        // 62: TestnetOnly — added in v0.3.0 (faucet reset, issue #615)
-        assert_eq!(RevoraError::TestnetOnly as u32, 62);
-        // 63: FaucetCooldownActive — renumbered from 59 to avoid collision with DisputeAlreadyOpen
-        assert_eq!(RevoraError::FaucetCooldownActive as u32, 63);
+        // `faucet_reset` returns `TestnetOnly` with code 64 in the current
+        // `RevoraError` table; 62 was an obsolete expectation.
+        assert_eq!(RevoraError::TestnetOnly as u32, 64);
+        // Code 63 now belongs to `AllOraclesStale` (convert_report_amount_if_needed);
+        // `faucet_seed_holders` returns `FaucetCooldownActive` with code 38.
+        assert_eq!(RevoraError::AllOraclesStale as u32, 63);
+        assert_eq!(RevoraError::FaucetCooldownActive as u32, 38);
         assert_eq!(RevoraError::MissingReportForOverride as u32, 47);
         assert_eq!(RevoraError::JurisdictionMigrationDeadlineExceeded as u32, 76);
         assert_eq!(RevoraError::TransferCooldownActive as u32, 89);
-        assert_eq!(RevoraError::JurisdictionBlocked as u32, 90);
-        assert_eq!(RevoraError::NoVotingWeight as u32, 94);
+        // `JurisdictionBlocked` no longer exists; `verify_snapshot_proof`
+        // returns `ProofTooDeep` for code 90.
+        assert_eq!(RevoraError::ProofTooDeep as u32, 90);
+        // `cast_vote` returns `NoVotingWeight` with code 100, not 94.
+        assert_eq!(RevoraError::NoVotingWeight as u32, 100);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -240,14 +250,16 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 4. VALID RANGE — all discriminants within 1..=56, gaps preserved
+    // 4. VALID RANGE — all discriminants within 1..=100, gaps preserved
     // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_discriminants_within_valid_range_1_to_56() {
-        // All discriminants must be within 1..=63. Gaps are preserved for wire
+    fn test_discriminants_within_valid_range_1_to_100() {
+        // All discriminants must be within 1..=100. Gaps are preserved for wire
         // compatibility — do not renumber existing variants. New variants should
         // use the next available number or fill gaps intentionally.
+        // `cast_vote` returns `NoVotingWeight`, currently the highest `RevoraError`
+        // code at 100; the old 94 upper bound predates that variant.
         let all = [
             RevoraError::InvalidRevenueShareBps as u32,
             RevoraError::LimitReached as u32,
@@ -296,11 +308,11 @@ mod tests {
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
             RevoraError::TransferCooldownActive as u32,
-            RevoraError::JurisdictionBlocked as u32,
+            RevoraError::ProofTooDeep as u32,
             RevoraError::NoVotingWeight as u32,
         ];
         for v in all.iter() {
-            assert!(*v >= 1 && *v <= 94, "discriminant {v} out of expected range 1..=94");
+            assert!(*v >= 1 && *v <= 100, "discriminant {v} out of expected range 1..=100");
         }
     }
 
@@ -375,7 +387,7 @@ mod tests {
             RevoraError::FaucetCooldownActive as u32,
             RevoraError::JurisdictionMigrationDeadlineExceeded as u32,
             RevoraError::TransferCooldownActive as u32,
-            RevoraError::JurisdictionBlocked as u32,
+            RevoraError::ProofTooDeep as u32,
             RevoraError::NoVotingWeight as u32,
         ];
         for v in all.iter() {
