@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! delta_e18 = normalized(amount) * 1e18 / total_share_bps
-//! GlobalReportAccPerShareE18 += delta_e18
+//! ReportAccPerShareE18 += delta_e18
 //! ```
 //!
 //! Per-holder state (`HolderReportLedger`) is settled O(1) on every
@@ -17,8 +17,8 @@
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    testutils::{Address as _, Events as _, Ledger},
+    Address, Env, Vec,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -41,11 +41,15 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
     // Register offering: revenue_share_bps = 10_000 (100%), claim delay = 0.
     client.register_offering(
         &issuer,
-        &symbol_short!("ns"),
+        &Vec::new(&env),
+        &1u32,
+        &ns(),
         &token,
         &10_000u32,
         &payout_asset,
         &0i128,
+        &symbol_short!(""),
+        &0u32,
     );
 
     (env, client, issuer, token, payout_asset)
@@ -53,6 +57,27 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
 
 fn ns() -> soroban_sdk::Symbol {
     symbol_short!("ns")
+}
+
+/// Set a holder's share with an explicit, monotonically increasing nonce.
+fn set_share(
+    client: &RevoraRevenueShareClient<'_>,
+    env: &Env,
+    issuer: &Address,
+    token: &Address,
+    holder: &Address,
+    share_bps: u32,
+    nonce: u64,
+) {
+    client.set_holder_share(
+        issuer,
+        &ns(),
+        token,
+        holder,
+        &share_bps,
+        &nonce,
+        &Vec::from_array(env, [issuer.clone()]),
+    );
 }
 
 // ── happy path ────────────────────────────────────────────────────────────────
@@ -64,10 +89,10 @@ fn single_holder_full_share_report_accrues_correctly() {
     let (env, client, issuer, token, _payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &_payout, &100_000, &1, &false);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 100_000, "100% holder should accrue the full reported amount");
 }
 
@@ -78,12 +103,12 @@ fn two_equal_holders_split_report_accrual() {
     let h1 = Address::generate(&env);
     let h2 = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &h1, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &h2, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &h1, 5_000, 1);
+    set_share(&client, &env, &issuer, &token, &h2, 5_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    let p1 = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &h1);
-    let p2 = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &h2);
+    let p1 = client.get_holder_pending_accrual(&issuer, &ns(), &token, &h1);
+    let p2 = client.get_holder_pending_accrual(&issuer, &ns(), &token, &h2);
     assert_eq!(p1, 50_000, "h1: 50% of 100_000");
     assert_eq!(p2, 50_000, "h2: 50% of 100_000");
 }
@@ -94,11 +119,11 @@ fn multiple_reports_accumulate_in_ledger() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &50_000, &1, &false);
     client.report_revenue(&issuer, &ns(), &token, &payout, &30_000, &2, &false);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 80_000, "accrual should accumulate across multiple reports");
 }
 
@@ -110,7 +135,7 @@ fn zero_share_holder_accrues_nothing() {
 
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &no_holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &no_holder);
     assert_eq!(pending, 0, "holder with no share should accrue 0");
 }
 
@@ -125,19 +150,19 @@ fn share_change_freezes_accrued_owed_at_old_share() {
     // Use a filler so total_share_bps = 10_000.
     let filler = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 5_000, 1);
+    set_share(&client, &env, &issuer, &token, &filler, 5_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     // holder: 50% of 100_000 = 50_000
 
     // Change share → settlement fires, freezing 50_000 into accrued_owed.
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &2_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &7_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 2_500, 2);
+    set_share(&client, &env, &issuer, &token, &filler, 7_500, 2);
 
     // Report again with new share (25%).
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &2, &false);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     // frozen 50_000 + 25% of 100_000 = 50_000 + 25_000 = 75_000
     assert_eq!(pending, 75_000, "frozen + new accrual should total 75_000");
 }
@@ -150,14 +175,14 @@ fn zeroing_share_preserves_previously_accrued_balance() {
     // Use a second holder to avoid total_share_bps dropping to 0
     let filler = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &filler, 5_000, 1);
+    set_share(&client, &env, &issuer, &token, &holder, 5_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
     // Zero out holder; filler still holds 5_000.
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &0, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 0, 2);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 50_000, "accrued balance must survive share being zeroed");
 }
 
@@ -170,17 +195,17 @@ fn re_increasing_share_adds_on_top_of_frozen_balance() {
     // Use a second holder to keep total_share_bps = 10_000 throughout.
     let filler = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &40_000, &1, &false);
     // holder (100%) accrues: 40_000. freeze: 40_000
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 5_000, 2);
+    set_share(&client, &env, &issuer, &token, &filler, 5_000, 1);
     // settlement: 40_000 frozen. total_share_bps now 10_000 again.
     client.report_revenue(&issuer, &ns(), &token, &payout, &20_000, &2, &false);
     // holder (50%) accrues: 50% × 20_000 = 10_000 (unsettled)
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 50_000, "40_000 frozen + 10_000 new");
 }
 
@@ -192,7 +217,7 @@ fn report_revenue_emits_rpt_acc_u_event() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
 
     let before = env.events().all().len();
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
@@ -202,7 +227,7 @@ fn report_revenue_emits_rpt_acc_u_event() {
     // The rpt_acc_u event is emitted when the report-time accrual index advances.
     // We verify it indirectly: the accrual index must have advanced, meaning the
     // event path was reached.
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 100_000, "accrual index advanced → pending balance must be 100_000");
 }
 
@@ -213,15 +238,15 @@ fn rejected_duplicate_report_does_not_advance_index() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    let after_first = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let after_first = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
 
-    // Duplicate — should be rejected silently.
+    // Duplicate — the contract records it as rejected (Ok) without advancing.
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    let after_dup = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let after_dup = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(after_first, after_dup, "rejected duplicate must not change accrual");
 }
 
@@ -231,17 +256,18 @@ fn override_report_adjusts_accrual_index() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    let after_initial = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let after_initial = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(after_initial, 100_000);
 
     // Override with a different amount.
     client.report_revenue(&issuer, &ns(), &token, &payout, &60_000, &1, &true);
 
-    // The override adds the new amount on top in the report index.
-    let after_override = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    // `report_revenue` override adds the new amount's index delta on top of
+    // the existing accumulator, so pending grows beyond the initial report.
+    let after_override = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert!(
         after_override > after_initial,
         "override must advance the accrual index: {} > {}",
@@ -252,18 +278,18 @@ fn override_report_adjusts_accrual_index() {
 
 // ── blacklist guards ──────────────────────────────────────────────────────────
 
-/// Blacklisted holders return 0 from get_holder_pending_report_accrual.
+/// Blacklisted holders return 0 from get_holder_pending_accrual.
 #[test]
 fn blacklisted_holder_pending_accrual_is_zero() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
 
-    client.blacklist_add(&issuer, &ns(), &token, &holder);
+    client.blacklist_add(&issuer, &issuer, &ns(), &token, &holder);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 0, "blacklisted holder must get 0");
 }
 
@@ -286,12 +312,12 @@ fn zero_amount_report_does_not_advance_index() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
 
     // Zero amount — allowed by validation matrix (amount >= 0 for reports).
     client.report_revenue(&issuer, &ns(), &token, &payout, &0, &1, &false);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 0, "zero-amount report must not advance index");
 }
 
@@ -305,18 +331,10 @@ fn report_revenue_period_id_zero_rejected() {
 
 // ── O(1) gas / concurrency ───────────────────────────────────────────────────
 
-/// get_holder_pending_report_accrual is O(1): it reads exactly 3 storage keys
+/// get_holder_pending_accrual is O(1): it reads exactly 3 storage keys
 /// regardless of the number of periods reported.  Verified by CPU budget delta.
 #[test]
 fn get_pending_report_accrual_is_o1_in_period_count() {
-    let env1 = Env::default();
-    env1.mock_all_auths();
-    env1.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-    let env10 = Env::default();
-    env10.mock_all_auths();
-    env10.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
     let measure = |periods: u64| -> u64 {
         let env = Env::default();
         env.mock_all_auths();
@@ -327,16 +345,32 @@ fn get_pending_report_accrual_is_o1_in_period_count() {
         let token = Address::generate(&env);
         let payout_admin = Address::generate(&env);
         let payout = crate::test_utils::create_token(&env, &payout_admin);
-        crate::test_utils::mint_tokens(&env, &payout, &issuer, periods as i128 * 10_000 + 1_000_000);
+        crate::test_utils::mint_tokens(
+            &env,
+            &payout,
+            &issuer,
+            periods as i128 * 10_000 + 1_000_000,
+        );
         let holder = Address::generate(&env);
-        client.register_offering(&issuer, &ns(), &token, &10_000u32, &payout, &0i128);
-        client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        client.register_offering(
+            &issuer,
+            &Vec::new(&env),
+            &1u32,
+            &ns(),
+            &token,
+            &10_000u32,
+            &payout,
+            &0i128,
+            &symbol_short!(""),
+            &0u32,
+        );
+        set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
         for p in 1..=periods {
             client.report_revenue(&issuer, &ns(), &token, &payout, &10_000, &p, &false);
         }
-        let before = env.budget().cpu_instruction_count();
-        client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
-        let after = env.budget().cpu_instruction_count();
+        let before = env.budget().cpu_instruction_cost();
+        client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
+        let after = env.budget().cpu_instruction_cost();
         after.saturating_sub(before)
     };
 
@@ -346,7 +380,7 @@ fn get_pending_report_accrual_is_o1_in_period_count() {
     // Allow up to 10× headroom: O(1) should not grow proportionally with periods.
     assert!(
         cpu_50 < cpu_1 * 10,
-        "get_holder_pending_report_accrual must be O(1): cpu@1={}, cpu@50={}",
+        "get_holder_pending_accrual must be O(1): cpu@1={}, cpu@50={}",
         cpu_1,
         cpu_50,
     );
@@ -361,11 +395,19 @@ fn existing_deposit_claim_flow_unaffected() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 5_000, 1);
     // report first (needed for some contract paths)
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     // then deposit
-    client.deposit_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(
+        &issuer,
+        &ns(),
+        &token,
+        &payout,
+        &100_000,
+        &1,
+        &Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let payout_amount = client.claim(&holder, &issuer, &ns(), &token, &10);
     assert_eq!(payout_amount, 50_000, "deposit-claim flow must still pay 50% of 100_000");
@@ -377,14 +419,22 @@ fn deposit_based_claimable_unaffected_by_report_accrual() {
     let (env, client, issuer, token, payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     // No deposit yet → deposit-based claimable must be 0.
     let claimable = client.get_claimable(&issuer, &ns(), &token, &holder);
     assert_eq!(claimable, 0, "get_claimable must be 0 before deposit");
 
     // Deposit → claimable should become 100_000.
-    client.deposit_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    client.deposit_revenue(
+        &issuer,
+        &ns(),
+        &token,
+        &payout,
+        &100_000,
+        &1,
+        &Vec::from_array(&env, [issuer.clone()]),
+    );
     let claimable_after = client.get_claimable(&issuer, &ns(), &token, &holder);
     assert_eq!(claimable_after, 100_000, "get_claimable must equal full deposit after deposit");
 }
@@ -399,19 +449,19 @@ fn late_joining_holder_does_not_accrue_pre_join_reports() {
     let early = Address::generate(&env);
     let late = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &early, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &early, 10_000, 1);
     // Two reports before late holder joins.
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &2, &false);
 
     // Late holder joins now.
-    client.set_holder_share(&issuer, &ns(), &token, &early, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &late, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &early, 5_000, 2);
+    set_share(&client, &env, &issuer, &token, &late, 5_000, 1);
 
     // Report after both hold shares.
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &3, &false);
 
-    let late_pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &late);
+    let late_pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &late);
     // late joined after the first two reports; their `last_report_acc` was
     // captured at join time, so only report 3 (50% of 100_000 = 50_000) is theirs.
     assert_eq!(
@@ -427,9 +477,9 @@ fn pending_accrual_zero_before_first_report() {
     let (env, client, issuer, token, _payout) = setup();
     let holder = Address::generate(&env);
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 0, "no reports yet → pending must be 0");
 }
 
@@ -441,26 +491,26 @@ fn multiple_share_changes_settle_correctly() {
     let filler = Address::generate(&env);
 
     // Use filler to keep total_share_bps = 10_000 throughout.
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &5_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &filler, 5_000, 1);
+    set_share(&client, &env, &issuer, &token, &holder, 5_000, 1);
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     // holder accrues: 50% of 100_000 = 50_000 (unsettled)
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &2_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &7_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 2_500, 2);
+    set_share(&client, &env, &issuer, &token, &filler, 7_500, 2);
     // settlement: 50_000 frozen into accrued_owed
 
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &2, &false);
     // holder accrues: 25% of 100_000 = 25_000 (unsettled)
 
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &7_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
-    client.set_holder_share(&issuer, &ns(), &token, &filler, &2_500, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 7_500, 3);
+    set_share(&client, &env, &issuer, &token, &filler, 2_500, 3);
     // settlement: 50_000 + 25_000 = 75_000 frozen
 
     client.report_revenue(&issuer, &ns(), &token, &payout, &100_000, &3, &false);
     // holder accrues: 75% of 100_000 = 75_000 (unsettled)
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 150_000, "75_000 frozen + 75_000 new = 150_000");
 }
 
@@ -483,10 +533,21 @@ fn soft_paused_report_does_not_advance_accrual_index() {
     crate::test_utils::mint_tokens(&env, &payout, &issuer, 1_000_000);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &ns(), &token, &10_000u32, &payout, &0i128);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns(),
+        &token,
+        &10_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0u32,
+    );
 
     let holder = Address::generate(&env);
-    client.set_holder_share(&issuer, &ns(), &token, &holder, &10_000, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+    set_share(&client, &env, &issuer, &token, &holder, 10_000, 1);
 
     // Soft-pause the contract.
     client.pause_admin(&admin);
@@ -494,6 +555,6 @@ fn soft_paused_report_does_not_advance_accrual_index() {
     let result = client.try_report_revenue(&issuer, &ns(), &token, &payout, &100_000, &1, &false);
     assert!(result.is_err(), "report must fail when SoftPaused");
 
-    let pending = client.get_holder_pending_report_accrual(&issuer, &ns(), &token, &holder);
+    let pending = client.get_holder_pending_accrual(&issuer, &ns(), &token, &holder);
     assert_eq!(pending, 0, "failed report must not advance accrual index");
 }

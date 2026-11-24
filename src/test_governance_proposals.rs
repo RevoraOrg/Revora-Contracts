@@ -15,7 +15,18 @@ fn setup_offering(env: &Env, client: &RevoraRevenueShareClient) -> (Address, Add
     let token = Address::generate(env);
     let payout = Address::generate(env);
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000u32, &payout, &0i128, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000u32,
+        &payout,
+        &0i128,
+        &symbol_short!(""),
+        &0,
+    );
     (issuer, token, payout)
 }
 
@@ -34,10 +45,18 @@ fn create_proposal_persists_deterministic_state_and_emits_event() {
     let (issuer, token, _payout) = setup_offering(&env, &client);
 
     let meta_hash = make_meta_hash(&env);
-    let proposal_id = client.create_proposal(&issuer, &symbol_short!("def"), &token, &meta_hash, &2500u32, &86_400u64);
+    let proposal_id = client.create_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &meta_hash,
+        &2500u32,
+        &86_400u64,
+    );
 
     assert_eq!(proposal_id, 0u32);
-    let proposal = client.get_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id).unwrap();
+    let proposal =
+        client.get_proposal(&issuer, &symbol_short!("def"), &token, &proposal_id).unwrap();
     assert_eq!(proposal.id, 0u32);
     assert_eq!(proposal.meta_hash, meta_hash);
     assert_eq!(proposal.quorum_bps, 2500u32);
@@ -51,7 +70,14 @@ fn create_proposal_rejects_zero_voting_window() {
     let (issuer, token, _payout) = setup_offering(&env, &client);
 
     let meta_hash = make_meta_hash(&env);
-    let result = client.try_create_proposal(&issuer, &symbol_short!("def"), &token, &meta_hash, &2500u32, &0u64);
+    let result = client.try_create_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &meta_hash,
+        &2500u32,
+        &0u64,
+    );
 
     assert!(matches!(result, Err(Ok(RevoraError::InvalidAmount))));
 }
@@ -63,8 +89,22 @@ fn create_proposal_rejects_duplicate_meta_hash_for_same_offering() {
     let (issuer, token, _payout) = setup_offering(&env, &client);
 
     let meta_hash = make_meta_hash(&env);
-    client.create_proposal(&issuer, &symbol_short!("def"), &token, &meta_hash, &2500u32, &86_400u64);
-    let result = client.try_create_proposal(&issuer, &symbol_short!("def"), &token, &meta_hash, &2500u32, &86_400u64);
+    client.create_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &meta_hash,
+        &2500u32,
+        &86_400u64,
+    );
+    let result = client.try_create_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &meta_hash,
+        &2500u32,
+        &86_400u64,
+    );
 
     assert!(matches!(result, Err(Ok(RevoraError::LimitReached))));
 }
@@ -77,7 +117,14 @@ fn create_proposal_requires_offering_to_exist() {
     let token = Address::generate(&env);
     let meta_hash = make_meta_hash(&env);
 
-    let result = client.try_create_proposal(&issuer, &symbol_short!("def"), &token, &meta_hash, &2500u32, &86_400u64);
+    let result = client.try_create_proposal(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &meta_hash,
+        &2500u32,
+        &86_400u64,
+    );
 
     assert!(matches!(result, Err(Ok(RevoraError::OfferingNotFound))));
 }
