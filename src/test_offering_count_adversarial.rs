@@ -229,7 +229,9 @@ fn get_offering_count_unchanged_on_duplicate_token_registration() {
     register_single_offering(&env, &client, &issuer, &namespace, &token);
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
 
-    // Second registration with the exact same token must fail
+    // Second registration with the exact same token must be idempotent (Ok)
+    // register_offering is now idempotent: duplicate returns Ok(()) instead of
+    // OfferingAlreadyExists (changed in the idempotency fix for off-chain catalogs).
     let duplicate_res = client.try_register_offering(
         &issuer,
         &Vec::new(&env),
@@ -242,7 +244,7 @@ fn get_offering_count_unchanged_on_duplicate_token_registration() {
         &symbol_short!(""),
         &0,
     );
-    assert_eq!(duplicate_res, Err(Ok(RevoraError::OfferingAlreadyExists)));
+    assert!(duplicate_res.is_ok(), "duplicate register_offering must be idempotent");
 
     // Offering count must remain 1
     assert_eq!(client.get_offering_count(&issuer, &namespace), 1);
