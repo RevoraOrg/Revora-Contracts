@@ -63,7 +63,7 @@ use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger as _},
-    token, Address, Env,
+    token, Address, Env, Vec,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -110,7 +110,8 @@ fn setup_with_holder(
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     mint(&env, &payment_token, &issuer, 10_000_000);
     RevoraRevenueShareClient::new(&env, &cid).set_holder_share(
         &issuer,
@@ -118,7 +119,9 @@ fn setup_with_holder(
         &offering_token,
         &holder,
         &10_000,
-    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &1,
+        &Vec::from_array(&env, [issuer.clone()]),
+    );
 
     (env, client, issuer, offering_token, payment_token, holder)
 }
@@ -133,7 +136,15 @@ fn deposit_period(
     period_id: u64,
     amount: i128,
 ) {
-    client.deposit_revenue(issuer, &symbol_short!("ns"), token, payment_token, &amount, &period_id, &soroban_sdk::Vec::from_array(env, [issuer.clone()]));
+    client.deposit_revenue(
+        issuer,
+        &symbol_short!("ns"),
+        token,
+        payment_token,
+        &amount,
+        &period_id,
+        &Vec::from_array(env, [issuer.clone()]),
+    );
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
@@ -154,7 +165,18 @@ fn get_dispute_window_returns_default_when_unset() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let window = client.get_dispute_window(&issuer, &symbol_short!("ns"), &token);
     assert_eq!(window, DEFAULT_DISPUTE_WINDOW_SECS);
@@ -169,9 +191,21 @@ fn get_dispute_window_returns_configured_value() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &5_000_000);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &5_000_000);
     let window = client.get_dispute_window(&issuer, &symbol_short!("ns"), &token);
     assert_eq!(window, 5_000_000);
 }
@@ -185,9 +219,22 @@ fn set_dispute_window_by_issuer_succeeds() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
-    let r = client.try_set_dispute_window(&issuer, &symbol_short!("ns"), &token, &10_000);
+    // Caller == issuer: authorized.
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    let r = client.try_set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &10_000);
     assert!(r.is_ok());
     assert_eq!(client.get_dispute_window(&issuer, &symbol_short!("ns"), &token), 10_000);
 }
@@ -201,10 +248,29 @@ fn set_dispute_window_by_unauthorized_fails() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let unauthorized = Address::generate(&env);
-    let r = client.try_set_dispute_window(&unauthorized, &symbol_short!("ns"), &token, &10_000);
+    // Caller != issuer and not admin → NotAuthorized.
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    let r = client.try_set_dispute_window(
+        &unauthorized,
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &10_000,
+    );
     assert_eq!(r, Err(Ok(RevoraError::NotAuthorized)));
 }
 
@@ -218,7 +284,9 @@ fn set_dispute_window_on_nonexistent_offering_fails() {
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let r = client.try_set_dispute_window(&issuer, &symbol_short!("ns"), &token, &10_000);
+    // No offering registered → OfferingNotFound.
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    let r = client.try_set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &10_000);
     assert_eq!(r, Err(Ok(RevoraError::OfferingNotFound)));
 }
 
@@ -231,10 +299,22 @@ fn set_dispute_window_emits_event() {
     let client = RevoraRevenueShareClient::new(&env, &cid);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    RevoraRevenueShareClient::new(&env, &cid).register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("ns"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    RevoraRevenueShareClient::new(&env, &cid).register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("ns"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let before = env.events().all().len();
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &12345);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &12345);
     assert!(env.events().all().len() > before, "expected event to be emitted");
 }
 
@@ -285,7 +365,8 @@ fn issuer_dispute_succeeds_before_deadline() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set custom dispute window: 100 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &100);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &100);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -311,7 +392,8 @@ fn issuer_dispute_succeeds_at_deadline_inclusive() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set custom dispute window: 100 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &100);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &100);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -337,7 +419,8 @@ fn issuer_dispute_fails_after_deadline() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set custom dispute window: 100 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &100);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &100);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -363,7 +446,8 @@ fn issuer_dispute_zero_window_succeeds_at_exact_close_time() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set zero dispute window
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &0);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &0);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -388,7 +472,8 @@ fn issuer_dispute_zero_window_fails_after_close() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set zero dispute window
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &0);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &0);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -414,7 +499,8 @@ fn other_freeze_reasons_bypass_dispute_window() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set zero dispute window
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &0);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &0);
 
     // Deposit and close period at T=1000
     set_time(&env, 1_000);
@@ -499,11 +585,12 @@ fn dispute_window_can_be_reconfigured() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set initial window: 100 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &100);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &100);
     assert_eq!(client.get_dispute_window(&issuer, &symbol_short!("ns"), &token), 100);
 
     // Reconfigure to 500 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &500);
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &500);
     assert_eq!(client.get_dispute_window(&issuer, &symbol_short!("ns"), &token), 500);
 
     // Deposit and close period at T=1000
@@ -530,7 +617,8 @@ fn dispute_window_checks_most_recent_closed_period() {
     let (env, client, issuer, token, payment_token, holder) = setup_with_holder();
 
     // Set dispute window: 100 seconds
-    client.set_dispute_window(&issuer, &symbol_short!("ns"), &token, &100);
+    // set_dispute_window(caller, issuer, namespace, token, window_secs)
+    client.set_dispute_window(&issuer, &issuer, &symbol_short!("ns"), &token, &100);
 
     // Deposit and close period 1 at T=1000
     set_time(&env, 1_000);

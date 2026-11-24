@@ -52,8 +52,15 @@ fn deposit_rejects_index_overflow_before_transfer_or_storage_mutation() {
         env.storage().persistent().set(&DataKey2::GlobalAccPerShareE18(id), &i128::MAX);
     });
 
-    let result =
-        client.try_deposit_revenue(&issuer, &symbol_short!("def"), &token, &payment_token, &1, &1);
+    let result = client.try_deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payment_token,
+        &1,
+        &1,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     assert_eq!(result, Err(Ok(RevoraError::ArithmeticOverflow)));
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &token), 0);

@@ -409,6 +409,13 @@ pub enum RevoraError {
     InvalidDisputeResolution = 99,
     /// The voter has zero voting weight in the pinned snapshot and cannot cast a vote.
     NoVotingWeight = 100,
+    /// A transfer would move shares between holders assigned to different
+    /// share classes. Cross-class movement must go through `convert_class`
+    /// with an issuer-approved conversion ratio instead.
+    ///
+    /// Wire value: 101. Restored in #1434 after the `#522` guard was dropped
+    /// from `transfer_with_attestation` by the per-class supply cap change (#648).
+    ClassTransferBlocked = 101,
 }
 
 pub mod tax_bucket;
@@ -437,6 +444,7 @@ mod test_audit_summary_getter;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
+mod test_class_transfer_lock;
 mod test_close_period;
 #[cfg(test)]
 mod test_compute_share_decomposition_prop;
@@ -455,6 +463,36 @@ mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
+mod test_merkle_canonical_order;
+#[cfg(test)]
+mod test_min_revenue_threshold_boundary;
+#[cfg(test)]
+mod test_pending_issuer_transfer;
+#[cfg(test)]
+mod test_pause_tiers;
+#[cfg(test)]
+mod test_snapshot_shares_accounting;
+#[cfg(test)]
+mod test_testnet_mode;
+#[cfg(test)]
+mod test_time_windows;
+#[cfg(test)]
+mod proptest_helpers;
+#[cfg(test)]
+mod test_accrual_ledger;
+#[cfg(test)]
+mod test_accrual_overflow;
+#[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
+mod test_close_period;
+#[cfg(test)]
+mod test_compute_share_decomposition_prop;
+#[cfg(test)]
+mod test_disclosure;
+#[cfg(test)]
+mod test_dispute_window;
+#[cfg(test)]
 #[cfg(feature = "testnet")]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
@@ -466,10 +504,19 @@ mod test_fork_replay_regression;
 #[cfg(test)]
 mod test_freeze_reason_bitmask;
 #[cfg(test)]
+mod test_freeze_matrix;
+#[cfg(test)]
+mod test_issue_1312;
+#[cfg(test)]
+mod test_issue_1313;
+#[cfg(test)]
 mod test_get_payment_token;
+#[cfg(test)]
+mod test_governance_proposals;
 #[cfg(test)]
 mod test_holder_share_class;
 #[cfg(test)]
+mod test_holder_share_sum_invariant;
 mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_meta_revenue_approval;
@@ -480,6 +527,8 @@ mod test_multi_token_independence;
 #[cfg(test)]
 mod test_multisig_regression;
 #[cfg(test)]
+mod test_ofac_snapshot_pin;
+mod test_multisig_gas;
 mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_quorum_check;
@@ -504,9 +553,13 @@ mod test_utils;
 mod test_platform_fee_per_asset;
 
 #[cfg(test)]
+mod structured_error_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_revenue_deposit_with_snapshot;
+#[cfg(test)]
+mod test_share_conservation_prop;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -8330,6 +8383,23 @@ impl RevoraRevenueShare {
             return Err(RevoraError::InvalidAmount);
         }
 
+        // ── Guard: class transfer lock (#522) ─────────────────────────────────
+        // Reject when `from` and `to` belong to different share classes; such a
+        // move must go through `convert_class` with an issuer-approved ratio.
+        // Holders without an assigned class keep the legacy behaviour.
+        {
+            let from_class =
+                Self::get_primary_class(env.clone(), offering_id.clone(), from.clone());
+            let to_class = Self::get_primary_class(env.clone(), offering_id.clone(), to.clone());
+            if from_class.is_some() && to_class.is_some() && from_class != to_class {
+                env.events().publish(
+                    (EVENT_CLASS_XFER_BLOCK, issuer.clone(), namespace.clone(), token.clone()),
+                    (from.clone(), to.clone(), from_class, to_class),
+                );
+                return Err(RevoraError::ClassTransferBlocked);
+            }
+        }
+
         // Blacklist check
         if Self::is_blacklisted(
             env.clone(),
@@ -8499,6 +8569,49 @@ impl RevoraRevenueShare {
         let last_xfer_key = DataKey3::HolderLastTransferTime(offering_id.clone(), from.clone());
         env.storage().persistent().set(&last_xfer_key, &now);
 
+        // ── Class bookkeeping ─────────────────────────────────────────────────
+        // On offerings with registered classes the transfer must stay inside a
+        // single class: the class lock above already rejected differing primary
+        // classes, so an unassigned counterparty joins the other holder's class.
+        let classes_configured =
+            env.storage().persistent().has(&DataKey3::OfferingClasses(offering_id.clone()));
+        let transfer_class = if classes_configured {
+            Self::get_primary_class(
+                env.clone(),
+                issuer.clone(),
+                namespace.clone(),
+                token.clone(),
+                from.clone(),
+            )
+            .or_else(|| {
+                Self::get_primary_class(
+                    env.clone(),
+                    issuer.clone(),
+                    namespace.clone(),
+                    token.clone(),
+                    to.clone(),
+                )
+            })
+        } else {
+            None
+        };
+        if let Some(ref sc) = transfer_class {
+            let from_class_key =
+                DataKey3::HolderShareClass(offering_id.clone(), from.clone(), sc.clone());
+            let from_class_share: u32 =
+                env.storage().persistent().get(&from_class_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&from_class_key, &from_class_share.saturating_sub(amount_bps));
+
+            let to_class_key =
+                DataKey3::HolderShareClass(offering_id.clone(), to.clone(), sc.clone());
+            let to_class_share: u32 = env.storage().persistent().get(&to_class_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&to_class_key, &to_class_share.saturating_add(amount_bps));
+        }
+
         // Apply share movement through the shared setter so accrual settlement,
         // share-history checkpoints and running totals stay consistent.
         Self::set_holder_share_internal(
@@ -8508,7 +8621,7 @@ impl RevoraRevenueShare {
             token.clone(),
             from.clone(),
             from_share_after,
-            None,
+            transfer_class.clone(),
             None,
         )?;
         Self::set_holder_share_internal(
@@ -8518,7 +8631,7 @@ impl RevoraRevenueShare {
             token.clone(),
             to.clone(),
             to_share_after,
-            None,
+            transfer_class,
             None,
         )?;
 
@@ -10017,6 +10130,36 @@ impl RevoraRevenueShare {
             .persistent()
             .get(&DataKey3::HolderShareClass(offering_id, holder, share_class))
             .unwrap_or(0)
+    }
+
+    /// Return the holder's primary share class for an offering.
+    ///
+    /// The primary class is the first class in the offering's registered
+    /// `DataKey3::OfferingClasses` order for which the holder has a non-zero
+    /// per-class balance. Returns `None` when the offering has no registered
+    /// classes or when the holder holds no non-zero class balance (a legacy,
+    /// unassigned holder).
+    pub fn get_primary_class(
+        env: Env,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        holder: Address,
+    ) -> Option<ShareClass> {
+        let offering_id = Self::canonical_offering_id(&env, issuer, namespace, token);
+        let classes: Vec<(ShareClass, ClassConfig)> =
+            env.storage().persistent().get(&DataKey3::OfferingClasses(offering_id.clone()))?;
+        for (sc, _) in classes.iter() {
+            let balance: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey3::HolderShareClass(offering_id.clone(), holder.clone(), sc.clone()))
+                .unwrap_or(0);
+            if balance > 0 {
+                return Some(sc);
+            }
+        }
+        None
     }
 
     /// Set the conversion ratio (in bps) for rolling from one class to another.
@@ -13683,6 +13826,12 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
+        // Enforce the dispute window for IssuerDispute freezes.
+        // Other freeze reasons (Sanctions, CourtOrder, Manual, etc.) bypass this check.
+        if reason == FreezeReason::IssuerDispute {
+            Self::enforce_dispute_window(&env, &offering_id)?;
+        }
+
         // Read existing bitmask (migrating legacy single-reason key on read).
         let key = DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone());
         let legacy_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
@@ -13821,6 +13970,84 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .get::<DataKey3, TwapConfig>(&DataKey3::TwapWindowSecs(offering_id))
+    }
+
+    // ── Dispute window configurability ───────────────────────────────────────
+
+    /// Configure the dispute window (in seconds) for `IssuerDispute` freezes on
+    /// an offering.
+    ///
+    /// The dispute window is the number of seconds after a period is closed during
+    /// which an issuer may still raise an `IssuerDispute` freeze. After the
+    /// deadline (`period_close_timestamp + window_secs`) the freeze is rejected
+    /// with [`RevoraError::DisputeWindowClosed`].
+    ///
+    /// A window of `0` means disputes are only accepted at the **exact** second
+    /// the period was closed. This is intentional but operationally fragile.
+    ///
+    /// When no window has been configured the default
+    /// (`DEFAULT_DISPUTE_WINDOW_SECS` = 30 days) is used.
+    ///
+    /// # Authorization
+    /// `caller` must be either the offering's current issuer or the contract admin.
+    /// `caller.require_auth()` is called before any state reads (auth-first pattern).
+    ///
+    /// # Errors
+    /// | Error | Condition |
+    /// |---|---|
+    /// | `ContractFrozen` | Contract is globally frozen |
+    /// | `OfferingNotFound` | No offering matches `(issuer, namespace, token)` |
+    /// | `NotAuthorized` | `caller` is neither issuer nor admin |
+    ///
+    /// # Events
+    /// On success emits:
+    /// ```text
+    /// topic: (disp_win, issuer, namespace, token)
+    /// data:  (caller, window_secs)
+    /// ```
+    pub fn set_dispute_window(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        window_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let offering_id =
+            Self::canonical_offering_id(&env, issuer.clone(), namespace.clone(), token.clone());
+
+        // Verify offering exists and resolve authorization.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone());
+        let is_admin = admin.as_ref().map(|a| caller == *a).unwrap_or(false);
+        if caller != current_issuer && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        env.storage().persistent().set(&DataKey3::DisputeWindowSecs(offering_id), &window_secs);
+
+        env.events()
+            .publish((EVENT_DISPUTE_WINDOW_SET, issuer, namespace, token), (caller, window_secs));
+        Ok(())
+    }
+
+    /// Return the dispute window in seconds for the given offering.
+    ///
+    /// Returns `DEFAULT_DISPUTE_WINDOW_SECS` (30 days) if no custom window has
+    /// been set via [`set_dispute_window`].
+    ///
+    /// This is a read-only view — no auth required.
+    pub fn get_dispute_window(env: Env, issuer: Address, namespace: Symbol, token: Address) -> u64 {
+        let offering_id = Self::canonical_offering_id(&env, issuer, namespace, token);
+        env.storage()
+            .persistent()
+            .get::<DataKey3, u64>(&DataKey3::DisputeWindowSecs(offering_id))
+            .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS)
     }
 
     /// Emergency unfreeze a holder for an offering.
