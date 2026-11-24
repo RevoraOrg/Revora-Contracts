@@ -6,12 +6,19 @@
 # caused issue #1353 — where src/test.rs (634 tests, 15,469 lines) was never
 # compiled or run because lib.rs never declared `mod test;`.
 #
+# Additional checks:
+#   - every ALLOWLIST entry must point to an existing file (stale entries fail)
+#   - an ALLOWLIST entry that is already declared as a module in src/lib.rs
+#     must be removed from the list (fails)
+#
 # Usage:
 #   bash scripts/check_test_modules.sh          # run from repo root
 #
 # Exit codes:
 #   0  all test files are declared
-#   1  one or more test files are undeclared (prints them to stderr)
+#   1  one or more test files are undeclared, or an ALLOWLIST entry is stale
+#      (missing file, or already declared in lib.rs) — problems are printed
+#      to stderr
 #
 # Note: files that are intentionally not wired yet can be added to the
 # ALLOWLIST below.  Each entry should reference the issue that will wire it.
@@ -70,7 +77,6 @@ ALLOWLIST=(
     "src/test_transfer_restrictions.rs"
     "src/test_transfer_with_attestation.rs"
     "src/test_twap_window.rs"
-    "src/vesting_test.rs"
 )
 
 # ── Find every candidate test file in src/ ─────────────────────────────────────
@@ -86,6 +92,21 @@ if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "INFO: no src/test*.rs or src/*_test*.rs files found — nothing to check."
     exit 0
 fi
+
+# ── Validate ALLOWLIST entries (stale entries fail) ─────────────────────────────
+stale=()
+for a in "${ALLOWLIST[@]}"; do
+    if [[ ! -f "${REPO_ROOT}/${a}" ]]; then
+        echo "stale allowlist entry: ${a} (file does not exist)" >&2
+        stale+=("$a")
+        continue
+    fi
+    a_base="$(basename "$a" .rs)"
+    if grep -qE "(^|[^a-zA-Z0-9_])mod[[:space:]]+${a_base}[[:space:]]*;" "${REPO_ROOT}/src/lib.rs"; then
+        echo "stale allowlist entry: ${a} (already declared as a module in src/lib.rs; remove from ALLOWLIST)" >&2
+        stale+=("$a")
+    fi
+done
 
 # ── Extract declared test modules from lib.rs ───────────────────────────────────
 # Match patterns like:
@@ -147,6 +168,11 @@ for f in "${candidates[@]}"; do
 done
 
 # ── Report ──────────────────────────────────────────────────────────────────────
+if [[ ${#stale[@]} -gt 0 ]]; then
+    echo "ERROR: ${#stale[@]} stale ALLOWLIST entr$([[ ${#stale[@]} -eq 1 ]] && echo y || echo ies) found in scripts/check_test_modules.sh." >&2
+    exit 1
+fi
+
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "ERROR: the following test files are NOT declared as a module in src/lib.rs:" >&2
     for m in "${missing[@]}"; do
