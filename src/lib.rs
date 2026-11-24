@@ -476,6 +476,8 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
+mod test_dispute_window;
+#[cfg(test)]
 #[cfg(feature = "testnet")]
 mod test_faucet_metrics;
 /// Self-test module providing a `self_test()` entrypoint that runs contract-internal
@@ -13786,6 +13788,12 @@ impl RevoraRevenueShare {
             return Err(RevoraError::NotAuthorized);
         }
 
+        // Enforce the dispute window for IssuerDispute freezes.
+        // Other freeze reasons (Sanctions, CourtOrder, Manual, etc.) bypass this check.
+        if reason == FreezeReason::IssuerDispute {
+            Self::enforce_dispute_window(&env, &offering_id)?;
+        }
+
         // Read existing bitmask (migrating legacy single-reason key on read).
         let key = DataKey2::HolderFreezeMask(offering_id.clone(), holder.clone());
         let legacy_key = DataKey2::EmergencyFreeze(offering_id.clone(), holder.clone());
@@ -13924,6 +13932,84 @@ impl RevoraRevenueShare {
         env.storage()
             .persistent()
             .get::<DataKey3, TwapConfig>(&DataKey3::TwapWindowSecs(offering_id))
+    }
+
+    // ── Dispute window configurability ───────────────────────────────────────
+
+    /// Configure the dispute window (in seconds) for `IssuerDispute` freezes on
+    /// an offering.
+    ///
+    /// The dispute window is the number of seconds after a period is closed during
+    /// which an issuer may still raise an `IssuerDispute` freeze. After the
+    /// deadline (`period_close_timestamp + window_secs`) the freeze is rejected
+    /// with [`RevoraError::DisputeWindowClosed`].
+    ///
+    /// A window of `0` means disputes are only accepted at the **exact** second
+    /// the period was closed. This is intentional but operationally fragile.
+    ///
+    /// When no window has been configured the default
+    /// (`DEFAULT_DISPUTE_WINDOW_SECS` = 30 days) is used.
+    ///
+    /// # Authorization
+    /// `caller` must be either the offering's current issuer or the contract admin.
+    /// `caller.require_auth()` is called before any state reads (auth-first pattern).
+    ///
+    /// # Errors
+    /// | Error | Condition |
+    /// |---|---|
+    /// | `ContractFrozen` | Contract is globally frozen |
+    /// | `OfferingNotFound` | No offering matches `(issuer, namespace, token)` |
+    /// | `NotAuthorized` | `caller` is neither issuer nor admin |
+    ///
+    /// # Events
+    /// On success emits:
+    /// ```text
+    /// topic: (disp_win, issuer, namespace, token)
+    /// data:  (caller, window_secs)
+    /// ```
+    pub fn set_dispute_window(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        namespace: Symbol,
+        token: Address,
+        window_secs: u64,
+    ) -> Result<(), RevoraError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let offering_id =
+            Self::canonical_offering_id(&env, issuer.clone(), namespace.clone(), token.clone());
+
+        // Verify offering exists and resolve authorization.
+        let current_issuer =
+            Self::get_current_issuer(&env, issuer.clone(), namespace.clone(), token.clone())
+                .ok_or(RevoraError::OfferingNotFound)?;
+        let admin = Self::get_admin(env.clone());
+        let is_admin = admin.as_ref().map(|a| caller == *a).unwrap_or(false);
+        if caller != current_issuer && !is_admin {
+            return Err(RevoraError::NotAuthorized);
+        }
+
+        env.storage().persistent().set(&DataKey3::DisputeWindowSecs(offering_id), &window_secs);
+
+        env.events()
+            .publish((EVENT_DISPUTE_WINDOW_SET, issuer, namespace, token), (caller, window_secs));
+        Ok(())
+    }
+
+    /// Return the dispute window in seconds for the given offering.
+    ///
+    /// Returns `DEFAULT_DISPUTE_WINDOW_SECS` (30 days) if no custom window has
+    /// been set via [`set_dispute_window`].
+    ///
+    /// This is a read-only view — no auth required.
+    pub fn get_dispute_window(env: Env, issuer: Address, namespace: Symbol, token: Address) -> u64 {
+        let offering_id = Self::canonical_offering_id(&env, issuer, namespace, token);
+        env.storage()
+            .persistent()
+            .get::<DataKey3, u64>(&DataKey3::DisputeWindowSecs(offering_id))
+            .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS)
     }
 
     /// Emergency unfreeze a holder for an offering.
