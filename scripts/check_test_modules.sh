@@ -38,7 +38,6 @@ ALLOWLIST=(
     "src/test_blacklist_batch_prop.rs"
     "src/test_class_transfer_lock.rs"
     "src/test_cross_contract.rs"
-    "src/test_cross_contract_transfer_fail.rs"
     "src/test_dispute.rs"
     "src/test_dispute_resolve.rs"
     "src/test_dispute_window.rs"
