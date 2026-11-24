@@ -453,6 +453,8 @@ mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_compute_share_invariants;
 #[cfg(test)]
+mod test_cross_contract_transfer_fail;
+#[cfg(test)]
 mod test_disclosure;
 #[cfg(test)]
 mod test_duplicates;
