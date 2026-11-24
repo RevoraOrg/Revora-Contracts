@@ -50,6 +50,10 @@ extern crate std;
 
 #[cfg(test)]
 mod revenue_deposit_contract;
+// Test modules wired in by later issues are declared here so parallel
+// test-module PRs do not conflict with the main `mod test_*` block.
+#[cfg(test)]
+mod invalid_amount_matrix_tests;
 mod safe_math;
 
 use crate::safe_math::SafeMath;
