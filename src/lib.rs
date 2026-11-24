@@ -458,6 +458,8 @@ mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_pending_issuer_transfer;
 #[cfg(test)]
+mod test_pause_tiers;
+#[cfg(test)]
 mod test_snapshot_shares_accounting;
 #[cfg(test)]
 mod test_testnet_mode;
