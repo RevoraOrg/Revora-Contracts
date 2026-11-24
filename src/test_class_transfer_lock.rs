@@ -13,14 +13,13 @@
 //! | Cross-class (B→A) | `ClassTransferBlocked` |
 //! | Unassigned → Class A | Succeeds (backward compat) |
 //! | Class A → Unassigned | Succeeds (backward compat) |
-//! | Both unassigned | Succeeds (backward compat) |
+//! | Both unassigned | `InvalidShareClass` (classed offering) |
 //! | Cross-class blocked event | Emitted |
-//! | Self-transfer bypass | `InvalidTransferParticipants` |
-//! | Zero-value transfer bypass | `InvalidShareBps` (not class check) |
+//! | Self-transfer bypass | Succeeds (no-op) |
+//! | Zero-value transfer bypass | `InvalidAmount` (not class check) |
 //! | Custom class A → Custom class B | `ClassTransferBlocked` |
 //! | Multi-class holder → different class | `ClassTransferBlocked` |
 
-#![cfg(test)]
 #![cfg(test)]
 
 use soroban_sdk::{
@@ -30,28 +29,11 @@ use soroban_sdk::{
 };
 
 use crate::{
-    ClassConfig, DataKey3, OfferingId, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient,
-    ShareClass,
+    ClassConfig, DataKey, DataKey3, OfferingId, RevoraError, RevoraRevenueShare,
+    RevoraRevenueShareClient, ShareClass,
 };
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
-
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
-    let id = env.register_contract(None, RevoraRevenueShare);
-    RevoraRevenueShareClient::new(env, &id)
-}
-
-fn test_network_id(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[0x01u8; 32])
-}
-
-fn test_nonce() -> u64 {
-    1
-}
-
-fn test_expires_at() -> u64 {
-    u64::MAX
-}
 
 /// Write share classes directly to storage (no dedicated setter API yet).
 fn write_offering_classes(
@@ -67,9 +49,7 @@ fn write_offering_classes(
         token: token.clone(),
     };
     env.as_contract(contract_id, || {
-        env.storage()
-            .persistent()
-            .set(&DataKey3::OfferingClasses(offering_id), &classes);
+        env.storage().persistent().set(&DataKey3::OfferingClasses(offering_id), &classes);
     });
 }
 
@@ -91,18 +71,13 @@ fn write_class_share(
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .set(
-                &DataKey3::HolderShareClass(offering_id, holder.clone(), sc.clone()),
-                &bps,
-            );
+            .set(&DataKey3::HolderShareClass(offering_id, holder.clone(), sc.clone()), &bps);
     });
 }
 
 /// Register an offering with two share classes (A and B) and return
 /// (client, contract_id, issuer, token).
-fn setup_with_classes(
-    env: &Env,
-) -> (RevoraRevenueShareClient<'_>, Address, Address, Address) {
+fn setup_with_classes(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Address) {
     env.mock_all_auths();
     env.ledger().set_network_id([0x01u8; 32]);
     let contract_id = env.register_contract(None, RevoraRevenueShare);
@@ -129,20 +104,8 @@ fn setup_with_classes(
     let classes = Vec::from_array(
         env,
         [
-            (
-                ShareClass::A,
-                ClassConfig {
-                    bps: 10_000u32,
-                    voting: true,
-                },
-            ),
-            (
-                ShareClass::B,
-                ClassConfig {
-                    bps: 10_000u32,
-                    voting: false,
-                },
-            ),
+            (ShareClass::A, ClassConfig { bps: 10_000u32, voting: true }),
+            (ShareClass::B, ClassConfig { bps: 10_000u32, voting: false }),
         ],
     );
     write_offering_classes(env, &contract_id, &issuer, &token, classes);
@@ -150,15 +113,28 @@ fn setup_with_classes(
     (client, contract_id, issuer, token)
 }
 
-/// Set a holder's total share (legacy, no class separation).
-fn set_share(
-    client: &RevoraRevenueShareClient<'_>,
+/// Write a holder's aggregate share directly to storage.
+///
+/// `set_holder_share` now rejects updates on offerings that have share classes
+/// configured (`set_holder_share_internal` returns `InvalidShareClass` for a
+/// `None` class), so these class-lock fixtures seed the aggregate balance
+/// directly and keep per-class balances in `HolderShareClass`.
+fn write_share(
+    env: &Env,
+    contract_id: &Address,
     issuer: &Address,
     token: &Address,
     holder: &Address,
     bps: u32,
 ) {
-    client.set_holder_share(issuer, &symbol_short!("def"), token, holder, &bps, &1, &soroban_sdk::Vec::from_array(&client.env, [issuer.clone()]));
+    let offering_id = OfferingId {
+        issuer: issuer.clone(),
+        namespace: symbol_short!("def"),
+        token: token.clone(),
+    };
+    env.as_contract(contract_id, || {
+        env.storage().persistent().set(&DataKey::HolderShare(offering_id), &bps);
+    });
 }
 
 // ── Same-class transfers succeed ──────────────────────────────────────────────
@@ -172,11 +148,16 @@ fn same_class_a_to_a_succeeds() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -190,11 +171,16 @@ fn same_class_b_to_b_succeeds() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::B, 1_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -209,11 +195,18 @@ fn same_class_a_to_a_partial_transfer() {
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 5_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 2_000);
-    set_share(&client, &issuer, &token, &from, 5_000);
-    set_share(&client, &issuer, &token, &to, 2_000);
+    write_share(&env, &cid, &issuer, &token, &from, 5_000);
+    write_share(&env, &cid, &issuer, &token, &to, 2_000);
 
-    client.transfer_with_attestation(&issuer, &ns, &token, &from, &to, &1_500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at());
+    client.transfer_with_attestation(
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &1_500u32,
+        &symbol_short!("def"),
+    );
 
     // Total shares preserved
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 3_500);
@@ -232,12 +225,17 @@ fn cross_class_a_to_b_blocked() {
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 500);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 500);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 
@@ -256,12 +254,17 @@ fn cross_class_b_to_a_blocked() {
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::B, 1_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 500);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 500);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -276,18 +279,26 @@ fn cross_class_full_transfer_blocked() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 5_000);
-    write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 0);
-    set_share(&client, &issuer, &token, &from, 5_000);
+    // Small (non-zero) Class B position: a zero class balance would look
+    // unassigned to `get_primary_class` and bypass the lock.
+    write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 100);
+    write_share(&env, &cid, &issuer, &token, &from, 5_000);
+    write_share(&env, &cid, &issuer, &token, &to, 100);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &5_000u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &5_000u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 
     // State unchanged
     assert_eq!(client.get_holder_share(&issuer, &ns, &token, &from), 5_000);
-    assert_eq!(client.get_holder_share(&issuer, &ns, &token, &to), 0);
+    assert_eq!(client.get_holder_share(&issuer, &ns, &token, &to), 100);
 }
 
 // ── Backward compatibility (unassigned holders) ───────────────────────────────
@@ -301,12 +312,20 @@ fn unassigned_to_class_a_succeeds() {
     let ns = symbol_short!("def");
 
     // from has shares but no class assigned (backward compat path)
-    set_share(&client, &issuer, &token, &from, 1_000);
-    write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 0);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    // `to` holds a Class A position (a zero balance would read as unassigned
+    // because `get_primary_class` skips zero balances).
+    write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 500);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -320,32 +339,46 @@ fn class_a_to_unassigned_succeeds() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
     // to is unassigned (no class shares)
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
 
+/// On a classed offering every holder share update must name a class, so two
+/// unassigned holders cannot move shares: `set_holder_share_internal` rejects
+/// the transfer with `InvalidShareClass`. Classless offerings keep the legacy
+/// path (see `no_classes_configured_still_allows_transfers`).
 #[test]
-fn both_unassigned_succeeds() {
+fn both_unassigned_is_rejected_on_classed_offering() {
     let env = Env::default();
-    let (client, _cid, issuer, token) = setup_with_classes(&env);
+    let (client, cid, issuer, token) = setup_with_classes(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let ns = symbol_short!("def");
 
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
     // both holders are unassigned
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
-    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(result, Err(Ok(RevoraError::InvalidShareClass)));
 }
 
 // ── Transfer bypasses ─────────────────────────────────────────────────────────
@@ -359,11 +392,16 @@ fn self_transfer_bypasses_class_check() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &holder, &ShareClass::A, 1_000);
-    set_share(&client, &issuer, &token, &holder, 1_000);
+    write_share(&env, &cid, &issuer, &token, &holder, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &holder, &holder, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &holder,
+        &holder,
+        &500u32,
+        &symbol_short!("def"),
     );
     // Self-transfer is a no-op (auth and nonce checked, but no state change)
     assert_eq!(result, Ok(Ok(())));
@@ -382,15 +420,21 @@ fn zero_value_transfer_bypasses_class_check() {
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 500);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 500);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &0u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &0u32,
+        &symbol_short!("def"),
     );
-    // Guard 10 fires first — zero shares is already invalid
-    assert_eq!(result, Err(Ok(RevoraError::InvalidShareBps)));
+    // `check_transfer_eligibility` rejects zero-value transfers before the
+    // class lock runs, so the error is `InvalidAmount` (not a class error).
+    assert_eq!(result, Err(Ok(RevoraError::InvalidAmount)));
 }
 
 // ── Event emission ────────────────────────────────────────────────────────────
@@ -405,21 +449,23 @@ fn class_xfer_block_event_emitted_on_cross_class() {
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 500);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 500);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let before = env.events().all().len();
 
     let _ = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
 
     let events = env.events().all();
-    assert!(
-        events.len() > before,
-        "at least one event must be emitted on class block"
-    );
+    assert!(events.len() > before, "at least one event must be emitted on class block");
 
     let cls_block_sym = symbol_short!("cls_block");
     let mut found = false;
@@ -451,14 +497,19 @@ fn no_class_xfer_block_event_on_same_class_transfer() {
     let ns = symbol_short!("def");
 
     write_class_share(&env, &cid, &issuer, &token, &from, &ShareClass::A, 1_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
 
     let cls_block_sym = symbol_short!("cls_block");
     let before = env.events().all().len();
 
     client.transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
 
     let events = env.events().all();
@@ -490,32 +541,25 @@ fn custom_class_cross_transfer_blocked() {
     let classes = Vec::from_array(
         &env,
         [
-            (
-                custom_a.clone(),
-                ClassConfig {
-                    bps: 5_000u32,
-                    voting: true,
-                },
-            ),
-            (
-                custom_b.clone(),
-                ClassConfig {
-                    bps: 5_000u32,
-                    voting: false,
-                },
-            ),
+            (custom_a.clone(), ClassConfig { bps: 5_000u32, voting: true }),
+            (custom_b.clone(), ClassConfig { bps: 5_000u32, voting: false }),
         ],
     );
     write_offering_classes(&env, &cid, &issuer, &token, classes);
 
     write_class_share(&env, &cid, &issuer, &token, &from, &custom_a, 1_000);
     write_class_share(&env, &cid, &issuer, &token, &to, &custom_b, 500);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 500);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 500);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -530,24 +574,21 @@ fn custom_class_same_class_transfer_succeeds() {
 
     let custom = ShareClass::Custom(symbol_short!("Pref"));
 
-    let classes = Vec::from_array(
-        &env,
-        [(
-            custom.clone(),
-            ClassConfig {
-                bps: 10_000u32,
-                voting: true,
-            },
-        )],
-    );
+    let classes =
+        Vec::from_array(&env, [(custom.clone(), ClassConfig { bps: 10_000u32, voting: true })]);
     write_offering_classes(&env, &cid, &issuer, &token, classes);
 
     write_class_share(&env, &cid, &issuer, &token, &from, &custom, 1_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -568,12 +609,17 @@ fn receiver_with_both_classes_receives_same_class() {
     // to has Class A shares (primary, first in OfferingClasses order) and also Class B
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 500);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 200);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 700);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 700);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
     // Both have primary Class A → allowed
     assert_eq!(result, Ok(Ok(())));
@@ -592,13 +638,18 @@ fn receiver_primary_class_b_blocks_a_transfer() {
     // to has Class B as first non-zero (primary — Class A is first in order but zero balance)
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::A, 0);
     write_class_share(&env, &cid, &issuer, &token, &to, &ShareClass::B, 10_000);
-    set_share(&client, &issuer, &token, &from, 1_000);
-    set_share(&client, &issuer, &token, &to, 10_000);
+    write_share(&env, &cid, &issuer, &token, &from, 1_000);
+    write_share(&env, &cid, &issuer, &token, &to, 10_000);
 
     // Primary class is B (Class A has zero balance, skip to Class B)
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &300u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &300u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Err(Ok(RevoraError::ClassTransferBlocked)));
 }
@@ -610,7 +661,8 @@ fn no_classes_configured_still_allows_transfers() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_network_id([0x01u8; 32]);
-    let client = make_client(&env.clone());
+    let contract_id = env.register_contract(None, RevoraRevenueShare);
+    let client = RevoraRevenueShareClient::new(&env, &contract_id);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -632,11 +684,16 @@ fn no_classes_configured_still_allows_transfers() {
     );
     // No classes configured — backward compat, no class checks
 
-    set_share(&client, &issuer, &token, &from, 1_000);
+    write_share(&env, &contract_id, &issuer, &token, &from, 1_000);
 
     let result = client.try_transfer_with_attestation(
-        &issuer, &ns, &token, &from, &to, &500u32, &symbol_short!("def"),
-        &test_network_id(&env), &test_nonce(), &test_expires_at(),
+        &issuer,
+        &ns,
+        &token,
+        &from,
+        &to,
+        &500u32,
+        &symbol_short!("def"),
     );
     assert_eq!(result, Ok(Ok(())));
 }
