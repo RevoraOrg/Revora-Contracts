@@ -53,6 +53,7 @@ ALLOWLIST=(
     "src/test_issue_1313.rs"
     "src/test_dividend_accrual_ledger.rs"
     "src/test_fork_replay_regression.rs"
+    "src/test_freeze_matrix.rs"
     "src/test_get_offering_platform_fee.rs"
     "src/test_governance_proposals.rs"
     "src/test_issue_1312.rs" # Issue #1312
@@ -60,6 +61,9 @@ ALLOWLIST=(
     "src/test_holder_share_sum_invariant.rs"
     "src/test_indexer_fixtures.rs"
     "src/test_issue_1312.rs"
+    # Orphaned regression tests for issue #1312; wired in a separate change.
+    "src/test_issue_1312.rs"
+    # Orphaned regression tests for issue #1313; wired in a separate change.
     "src/test_issue_1313.rs"
     "src/test_jurisdiction.rs"
     "src/test_multisig_gas.rs"
@@ -75,7 +79,6 @@ ALLOWLIST=(
     "src/test_self_test.rs"
     "src/test_snapshot_finalization.rs"
     "src/test_snapshot_monotonicity_replay.rs"
-    "src/test_snapshot_negative_matrix.rs"
     "src/test_transfer_restriction.rs"
     "src/test_transfer_restrictions.rs"
     "src/test_transfer_with_attestation.rs"

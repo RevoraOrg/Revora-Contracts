@@ -434,13 +434,24 @@ pub mod security_assertions;
 pub mod kani_harness;
 
 #[cfg(test)]
+mod proptest_helpers;
+#[cfg(test)]
+mod test_accrual_overflow;
+#[cfg(test)]
+mod test_accrual_reconciliation_prop;
+#[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_class_transfer_lock;
+mod test_close_period;
+#[cfg(test)]
+mod test_compute_share_decomposition_prop;
 #[cfg(test)]
 mod test_compute_share_invariants;
+#[cfg(test)]
+mod test_disclosure;
 #[cfg(test)]
 mod test_duplicates;
 #[cfg(test)]
@@ -489,6 +500,8 @@ mod test_faucet_metrics;
 #[cfg(feature = "testnet")]
 mod test_faucet_seed;
 #[cfg(test)]
+mod test_fork_replay_regression;
+#[cfg(test)]
 mod test_freeze_reason_bitmask;
 #[cfg(test)]
 mod test_freeze_matrix;
@@ -504,8 +517,11 @@ mod test_governance_proposals;
 mod test_holder_share_class;
 #[cfg(test)]
 mod test_holder_share_sum_invariant;
+mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_meta_revenue_approval;
+#[cfg(test)]
+mod test_min_revenue_threshold_boundary;
 #[cfg(test)]
 mod test_multi_token_independence;
 #[cfg(test)]
@@ -513,12 +529,21 @@ mod test_multisig_regression;
 #[cfg(test)]
 mod test_ofac_snapshot_pin;
 mod test_multisig_gas;
+mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
 #[cfg(test)]
+mod test_snapshot_negative_matrix;
+#[cfg(test)]
+mod test_snapshot_shares_accounting;
+#[cfg(test)]
 mod test_tax_year;
+#[cfg(test)]
+mod test_testnet_mode;
+#[cfg(test)]
+mod test_time_windows;
 #[cfg(test)]
 mod test_transfer_cooldown;
 #[cfg(test)]
