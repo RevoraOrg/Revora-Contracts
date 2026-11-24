@@ -466,6 +466,8 @@ mod test_time_windows;
 #[cfg(test)]
 mod proptest_helpers;
 #[cfg(test)]
+mod test_accrual_ledger;
+#[cfg(test)]
 mod test_accrual_overflow;
 #[cfg(test)]
 mod test_accrual_reconciliation_prop;

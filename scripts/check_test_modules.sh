@@ -39,6 +39,7 @@ ALLOWLIST=(
     "src/security_assertions_integration_tests.rs"
     "src/self_test.rs"
     "src/test_accrual_ledger.rs"
+    "src/structured_error_tests.rs"
     "src/test_auth.rs"
     "src/test_blacklist_batch_gas.rs"
     "src/test_blacklist_batch_prop.rs"
