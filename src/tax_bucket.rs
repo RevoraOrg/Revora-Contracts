@@ -228,3 +228,99 @@ impl Default for TaxBucket {
         TaxBucket::Ordinary
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fiscal_year_from_ts, timestamp_to_month};
+
+    // Unix timestamps (UTC) for the first and last second of selected months.
+    const TS_1970_JAN_01: u64 = 0;
+    const TS_1970_JAN_31_END: u64 = 2_678_399;
+    const TS_2024_JAN_01: u64 = 1_704_067_200;
+    const TS_2024_FEB_01: u64 = 1_706_745_600;
+    const TS_2024_FEB_29_END: u64 = 1_709_251_199;
+    const TS_2024_MAR_01: u64 = 1_709_251_200;
+    const TS_2024_MAR_31_END: u64 = 1_711_929_599;
+    const TS_2024_APR_01: u64 = 1_711_929_600;
+    const TS_2024_JUN_15: u64 = 1_718_409_600;
+    const TS_2024_SEP_30_END: u64 = 1_727_740_799;
+    const TS_2024_OCT_01: u64 = 1_727_740_800;
+    const TS_2024_DEC_31_END: u64 = 1_735_689_599;
+    const TS_2025_JAN_01: u64 = 1_735_689_600;
+    const TS_2023_FEB_28_END: u64 = 1_677_628_799;
+    const TS_2023_MAR_01: u64 = 1_677_628_800;
+
+    #[test]
+    fn timestamp_to_month_covers_first_and_last_second_of_month() {
+        // January 1970: epoch start and the final second of the month.
+        assert_eq!(timestamp_to_month(TS_1970_JAN_01), 1);
+        assert_eq!(timestamp_to_month(TS_1970_JAN_31_END), 1);
+
+        // February 2024 is a leap month: both edges must stay in month 2.
+        assert_eq!(timestamp_to_month(TS_2024_FEB_01), 2);
+        assert_eq!(timestamp_to_month(TS_2024_FEB_29_END), 2);
+
+        // The first second of March must roll over.
+        assert_eq!(timestamp_to_month(TS_2024_MAR_01), 3);
+
+        // February 2023 is not a leap year; the 28th is still month 2.
+        assert_eq!(timestamp_to_month(TS_2023_FEB_28_END), 2);
+        assert_eq!(timestamp_to_month(TS_2023_MAR_01), 3);
+
+        // First/last second around the September → October boundary.
+        assert_eq!(timestamp_to_month(TS_2024_SEP_30_END), 9);
+        assert_eq!(timestamp_to_month(TS_2024_OCT_01), 10);
+
+        // Year rollover: final second of December vs first second of January.
+        assert_eq!(timestamp_to_month(TS_2024_DEC_31_END), 12);
+        assert_eq!(timestamp_to_month(TS_2025_JAN_01), 1);
+    }
+
+    #[test]
+    fn fiscal_year_from_ts_january_start_boundary() {
+        // January start: the fiscal year equals the calendar year.
+        assert_eq!(fiscal_year_from_ts(TS_2024_JAN_01, 1), 2024);
+        assert_eq!(fiscal_year_from_ts(TS_2024_DEC_31_END, 1), 2024);
+        assert_eq!(fiscal_year_from_ts(TS_2025_JAN_01, 1), 2025);
+    }
+
+    #[test]
+    fn fiscal_year_from_ts_april_start_boundary() {
+        // April start: Mar 31 2024 belongs to FY2024, Apr 1 2024 starts FY2025.
+        assert_eq!(fiscal_year_from_ts(TS_2024_MAR_31_END, 4), 2024);
+        assert_eq!(fiscal_year_from_ts(TS_2024_APR_01, 4), 2025);
+
+        // Any month before April maps to the previous calendar year.
+        assert_eq!(fiscal_year_from_ts(TS_2024_JAN_01, 4), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_DEC_31_END, 4), 2024);
+    }
+
+    #[test]
+    fn fiscal_year_from_ts_october_start_boundary() {
+        // October start: Sep 30 2024 belongs to FY2023, Oct 1 2024 starts FY2024.
+        assert_eq!(fiscal_year_from_ts(TS_2024_SEP_30_END, 10), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_OCT_01, 10), 2024);
+
+        // Mid-year and end-of-year timestamps remain in the same fiscal year.
+        assert_eq!(fiscal_year_from_ts(TS_2024_JUN_15, 10), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_DEC_31_END, 10), 2024);
+    }
+
+    #[test]
+    fn fiscal_year_from_ts_documents_invalid_start_month_behaviour() {
+        // The contract rejects start months outside 1..=12 at the entrypoint
+        // (`set_fiscal_year_start`), but this helper does not validate its
+        // argument.  Document the current behaviour so a future hardening
+        // change is a deliberate one.
+        //
+        // month 0: `month < 0` is never true, so it behaves like a January start.
+        assert_eq!(fiscal_year_from_ts(TS_2024_JAN_01, 0), 2024);
+        assert_eq!(fiscal_year_from_ts(TS_2024_JUN_15, 0), 2024);
+
+        // month 13: every calendar month satisfies `month < 13`, so the
+        // helper always returns the previous calendar year.
+        assert_eq!(fiscal_year_from_ts(TS_2024_JAN_01, 13), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_JUN_15, 13), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_DEC_31_END, 13), 2023);
+    }
+}
