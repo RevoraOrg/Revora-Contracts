@@ -75,7 +75,6 @@ ALLOWLIST=(
     "src/test_redemption.rs"
     "src/test_self_test.rs"
     "src/test_snapshot_finalization.rs"
-    "src/test_snapshot_monotonicity_replay.rs"
     "src/test_transfer_restriction.rs"
     "src/test_transfer_restrictions.rs"
     "src/test_snapshot_negative_matrix.rs"
