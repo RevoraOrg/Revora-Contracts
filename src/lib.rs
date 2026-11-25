@@ -563,6 +563,8 @@ mod test_transfer_cooldown;
 mod test_utils;
 
 #[cfg(test)]
+mod test_override_audit_trail;
+#[cfg(test)]
 mod test_platform_fee_per_asset;
 
 #[cfg(test)]
