@@ -29,7 +29,7 @@ use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger as _},
-    token, Address, Env,
+    token, Address, Env, Vec,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,18 +50,18 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
     token::StellarAssetClient::new(env, token).mint(to, &amount);
 }
 
-/// Full setup: env + client + registered offering + funded issuer.
-/// Returns (env, client, issuer, offering_token, payment_token).
-fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address) {
-    let env = Env::default();
+/// Full setup: client + registered offering + funded issuer.
+/// The caller owns `env`; the returned client borrows it.
+/// Returns (client, issuer, offering_token, payment_token).
+fn setup_funded(env: &Env) -> (RevoraRevenueShareClient<'_>, Address, Address, Address) {
     env.mock_all_auths();
-    let client = make_client(&env.clone());
-    let issuer = Address::generate(&env);
-    let offering_token = Address::generate(&env);
-    let (payment_token, _pt_admin) = create_payment_token(&env);
+    let client = make_client(env);
+    let issuer = Address::generate(env);
+    let offering_token = Address::generate(env);
+    let (payment_token, _pt_admin) = create_payment_token(env);
     client.register_offering(
         &issuer,
-        &Vec::new(&env),
+        &Vec::new(env),
         &1u32,
         &symbol_short!("def"),
         &offering_token,
@@ -69,9 +69,10 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
-    mint(&env, &payment_token, &issuer, 1_000_000_000);
-    (env, client, issuer, offering_token, payment_token)
+        &0,
+    );
+    mint(env, &payment_token, &issuer, 1_000_000);
+    (client, issuer, offering_token, payment_token)
 }
 
 // ── Zero period_id rejection ──────────────────────────────────────────────────
@@ -82,10 +83,21 @@ fn setup_funded() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, 
 fn report_revenue_zero_period_id_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let result =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &100, &0, &false);
@@ -98,19 +110,19 @@ fn report_revenue_zero_period_id_rejected() {
 /// `deposit_revenue` with non-sequential period (gap) must return `InvalidPeriodId`.
 #[test]
 fn deposit_revenue_gap_period_rejected() {
-    let (_env, client, issuer, offering_token, payment_token) = setup_funded();
+    let _env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&_env);
 
     // Deposit period 1
-    client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &offering_token,
-            &payment_token,
-            &1_000,
-            &1,
-         &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &1_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     // Try to deposit period 3 (gap)
     let result = client.try_deposit_revenue(
@@ -120,27 +132,27 @@ fn deposit_revenue_gap_period_rejected() {
         &payment_token,
         &1_000,
         &3,
-     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 }
 
 /// `report_revenue` with non-sequential period (gap) must return `InvalidPeriodId`.
 #[test]
 fn report_revenue_gap_period_rejected() {
-    let (_env, client, issuer, offering_token, _payment_token) = setup_funded();
+    let _env = Env::default();
+    let (client, issuer, offering_token, _payment_token) = setup_funded(&_env);
 
     // Report period 1
-    client
-        .report_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &offering_token,
-            &offering_token,
-            &1_000,
-            &1,
-            &false,
-        )
-        .unwrap();
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &offering_token,
+        &1_000,
+        &1,
+        &false,
+    );
 
     // Try to report period 3 (gap)
     let result = client.try_report_revenue(
@@ -158,7 +170,8 @@ fn report_revenue_gap_period_rejected() {
 /// `deposit_revenue` with period_id=0 must return `InvalidPeriodId`.
 #[test]
 fn deposit_revenue_zero_period_id_rejected() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -167,7 +180,8 @@ fn deposit_revenue_zero_period_id_rejected() {
         &payment_token,
         &1_000,
         &0u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
 
     // No period should have been recorded
@@ -181,10 +195,21 @@ fn deposit_revenue_zero_period_id_rejected() {
 fn report_revenue_period_id_one_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let result =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &1, &false);
@@ -196,10 +221,21 @@ fn report_revenue_period_id_one_accepted() {
 fn report_revenue_period_id_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let result = client.try_report_revenue(
         &issuer,
@@ -218,10 +254,21 @@ fn report_revenue_period_id_max_rejected() {
 fn report_revenue_period_id_near_max_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let result = client.try_report_revenue(
         &issuer,
@@ -238,7 +285,8 @@ fn report_revenue_period_id_near_max_rejected() {
 /// period_id=1 (minimum valid) is accepted by `deposit_revenue`.
 #[test]
 fn deposit_revenue_period_id_one_accepted() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -247,7 +295,8 @@ fn deposit_revenue_period_id_one_accepted() {
         &payment_token,
         &1_000,
         &1u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert!(result.is_ok());
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 1);
 }
@@ -255,7 +304,8 @@ fn deposit_revenue_period_id_one_accepted() {
 /// period_id=u64::MAX is rejected by `deposit_revenue` (gap disallowed).
 #[test]
 fn deposit_revenue_period_id_max_rejected() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -264,7 +314,8 @@ fn deposit_revenue_period_id_max_rejected() {
         &payment_token,
         &1_000,
         &u64::MAX,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::InvalidPeriodId)));
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 0);
 }
@@ -274,18 +325,18 @@ fn deposit_revenue_period_id_max_rejected() {
 /// Depositing the same period_id twice must return `PeriodAlreadyDeposited` on the second call.
 #[test]
 fn deposit_revenue_duplicate_period_rejected() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
-    client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &offering_token,
-            &payment_token,
-            &1_000,
-            &42u64,
-         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &1_000,
+        &42u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     let result = client.try_deposit_revenue(
         &issuer,
@@ -294,7 +345,8 @@ fn deposit_revenue_duplicate_period_rejected() {
         &payment_token,
         &1_000,
         &42u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 
     // Period count must remain 1
@@ -305,19 +357,19 @@ fn deposit_revenue_duplicate_period_rejected() {
 /// even if it's technically also a non-sequential period (e.g. depositing 1 again when last is 1).
 #[test]
 fn deposit_revenue_duplicate_next_period_rejected() {
-    let (_env, client, issuer, offering_token, payment_token) = setup_funded();
+    let _env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&_env);
 
     // Deposit period 1
-    client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &offering_token,
-            &payment_token,
-            &1_000,
-            &1,
-         &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &1_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
 
     // Try to deposit period 1 again
     let result = client.try_deposit_revenue(
@@ -327,7 +379,8 @@ fn deposit_revenue_duplicate_next_period_rejected() {
         &payment_token,
         &1_000,
         &1,
-     &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&_env, [issuer.clone()]),
+    );
     assert_eq!(result, Err(Ok(RevoraError::PeriodAlreadyDeposited)));
 }
 
@@ -337,22 +390,29 @@ fn deposit_revenue_duplicate_next_period_rejected() {
 fn report_revenue_duplicate_without_override_no_state_change() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false)
-        .unwrap();
+    client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false);
 
     // Second report for same period without override
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &999, &7, &false)
-        .unwrap();
+    client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &999, &7, &false);
 
     // Revenue index for period 7 must still reflect the first report (500)
-    let indexed = client.get_revenue_index(&issuer, &symbol_short!("def"), &token, &7u64);
+    let indexed = client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &7u64);
     assert_eq!(indexed, 500);
 }
 
@@ -361,22 +421,29 @@ fn report_revenue_duplicate_without_override_no_state_change() {
 fn report_revenue_duplicate_with_override_updates_state() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false)
-        .unwrap();
+    client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &500, &7, &false);
 
     // Override with a new amount
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token, &token, &1_500, &7, &true)
-        .unwrap();
+    client.report_revenue(&issuer, &symbol_short!("def"), &token, &token, &1_500, &7, &true);
 
     // Revenue index should reflect the override (cumulative: 500 + 1500 = 2000)
-    let indexed = client.get_revenue_index(&issuer, &symbol_short!("def"), &token, &7u64);
+    let indexed = client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token, &7u64);
     assert!(indexed >= 1_500);
 }
 
@@ -388,10 +455,21 @@ fn report_revenue_duplicate_with_override_updates_state() {
 fn negative_amount_rejected_before_period_id_check() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Negative amount with valid period_id
     let r =
@@ -404,10 +482,21 @@ fn negative_amount_rejected_before_period_id_check() {
 fn zero_amount_accepted_by_report_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let r =
         client.try_report_revenue(&issuer, &symbol_short!("def"), &token, &token, &0, &3, &false);
@@ -417,7 +506,8 @@ fn zero_amount_accepted_by_report_revenue() {
 /// Zero amount is rejected by `deposit_revenue` (must transfer a positive value).
 #[test]
 fn zero_amount_rejected_by_deposit_revenue() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     let r = client.try_deposit_revenue(
         &issuer,
@@ -426,7 +516,8 @@ fn zero_amount_rejected_by_deposit_revenue() {
         &payment_token,
         &0,
         &3u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(r, Err(Ok(RevoraError::InvalidAmount)));
 }
 
@@ -437,12 +528,23 @@ fn zero_amount_rejected_by_deposit_revenue() {
 #[test]
 fn report_revenue_wrong_issuer_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
     let issuer = Address::generate(&env);
     let attacker = Address::generate(&env);
     let token = Address::generate(&env);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
     let r = client.try_report_revenue(
         &attacker,
@@ -460,7 +562,8 @@ fn report_revenue_wrong_issuer_rejected() {
 /// A different address (attacker) cannot deposit revenue for an offering it does not own.
 #[test]
 fn deposit_revenue_wrong_issuer_rejected() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
     let attacker = Address::generate(&env);
     mint(&env, &payment_token, &attacker, 1_000_000);
 
@@ -471,7 +574,8 @@ fn deposit_revenue_wrong_issuer_rejected() {
         &payment_token,
         &1_000,
         &1u64,
-     &soroban_sdk::Vec::from_array(&env, [attacker.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [attacker.clone()]),
+    );
     assert!(r.is_err());
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 0);
 }
@@ -483,7 +587,7 @@ fn deposit_revenue_wrong_issuer_rejected() {
 fn period_id_isolated_across_offerings() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
 
     let issuer_a = Address::generate(&env);
     let issuer_b = Address::generate(&env);
@@ -501,7 +605,8 @@ fn period_id_isolated_across_offerings() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     client.register_offering(
         &issuer_b,
         &Vec::new(&env),
@@ -512,23 +617,36 @@ fn period_id_isolated_across_offerings() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
 
     mint(&env, &payment_token, &issuer_a, 1_000_000);
     mint(&env, &payment_token, &issuer_b, 1_000_000);
 
     // Deposit period 5 for offering A
-    client
-        .deposit_revenue(&issuer_a, &symbol_short!("def"), &token_a, &payment_token, &1_000, &5u64, &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer_a,
+        &symbol_short!("def"),
+        &token_a,
+        &payment_token,
+        &1_000,
+        &5u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer_a.clone()]),
+    );
 
     // Offering B period 5 must still be available (not yet deposited)
     assert_eq!(client.get_period_count(&issuer_b, &symbol_short!("def"), &token_b), 0);
 
     // Deposit period 5 for offering B independently
-    client
-        .deposit_revenue(&issuer_b, &symbol_short!("def"), &token_b, &payment_token, &2_000, &5u64, &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer_b,
+        &symbol_short!("def"),
+        &token_b,
+        &payment_token,
+        &2_000,
+        &5u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer_b.clone()]),
+    );
 
     assert_eq!(client.get_period_count(&issuer_a, &symbol_short!("def"), &token_a), 1);
     assert_eq!(client.get_period_count(&issuer_b, &symbol_short!("def"), &token_b), 1);
@@ -539,24 +657,42 @@ fn period_id_isolated_across_offerings() {
 fn report_revenue_period_id_isolated_across_offerings() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
 
     let issuer = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
 
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_a, &1_000, &token_a, &0, &symbol_short!(""), &0);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token_b, &1_000, &token_b, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_a,
+        &1_000,
+        &token_a,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token_b,
+        &1_000,
+        &token_b,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
 
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token_a, &token_a, &100, &9, &false)
-        .unwrap();
-    client
-        .report_revenue(&issuer, &symbol_short!("def"), &token_b, &token_b, &200, &9, &false)
-        .unwrap();
+    client.report_revenue(&issuer, &symbol_short!("def"), &token_a, &token_a, &100, &9, &false);
+    client.report_revenue(&issuer, &symbol_short!("def"), &token_b, &token_b, &200, &9, &false);
 
-    let idx_a = client.get_revenue_index(&issuer, &symbol_short!("def"), &token_a, &9u64);
-    let idx_b = client.get_revenue_index(&issuer, &symbol_short!("def"), &token_b, &9u64);
+    let idx_a = client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_a, &9u64);
+    let idx_b = client.get_revenue_by_period(&issuer, &symbol_short!("def"), &token_b, &9u64);
     assert_eq!(idx_a, 100);
     assert_eq!(idx_b, 200);
 }
@@ -568,13 +704,24 @@ fn report_revenue_period_id_isolated_across_offerings() {
 fn frozen_contract_rejects_report_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
 
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &token, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &token,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
     client.freeze();
 
     let r =
@@ -587,7 +734,7 @@ fn frozen_contract_rejects_report_revenue() {
 fn frozen_contract_rejects_deposit_revenue() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
@@ -604,7 +751,8 @@ fn frozen_contract_rejects_deposit_revenue() {
         &payment_token,
         &0,
         &symbol_short!(""),
-        &0);
+        &0,
+    );
     mint(&env, &payment_token, &issuer, 1_000_000);
     client.freeze();
 
@@ -615,7 +763,8 @@ fn frozen_contract_rejects_deposit_revenue() {
         &payment_token,
         &1_000,
         &1u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(r, Err(Ok(RevoraError::ContractFrozen)));
 }
 
@@ -624,19 +773,19 @@ fn frozen_contract_rejects_deposit_revenue() {
 /// Depositing periods 1, 2, 3 in order must result in period_count=3 and correct enumeration.
 #[test]
 fn sequential_period_ids_stored_in_order() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     for p in 1u64..=3u64 {
-        client
-            .deposit_revenue(
-                &issuer,
-                &symbol_short!("def"),
-                &offering_token,
-                &payment_token,
-                &1_000,
-                &p,
-             &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
-            .unwrap();
+        client.deposit_revenue(
+            &issuer,
+            &symbol_short!("def"),
+            &offering_token,
+            &payment_token,
+            &1_000,
+            &p,
+            &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+        );
     }
 
     assert_eq!(client.get_period_count(&issuer, &symbol_short!("def"), &offering_token), 3);
@@ -645,19 +794,19 @@ fn sequential_period_ids_stored_in_order() {
 /// Depositing periods out of order must be rejected (gaps disallowed).
 #[test]
 fn out_of_order_period_ids_rejected() {
-    let (env, client, issuer, offering_token, payment_token) = setup_funded();
+    let env = Env::default();
+    let (client, issuer, offering_token, payment_token) = setup_funded(&env);
 
     // period 1 succeeds
-    client
-        .deposit_revenue(
-            &issuer,
-            &symbol_short!("def"),
-            &offering_token,
-            &payment_token,
-            &500,
-            &1u64,
-         &soroban_sdk::Vec::from_array(&env, [issuer.clone()]))
-        .unwrap();
+    client.deposit_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &offering_token,
+        &payment_token,
+        &500,
+        &1u64,
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
 
     // period 3 fails (gap)
     let res = client.try_deposit_revenue(
@@ -667,7 +816,8 @@ fn out_of_order_period_ids_rejected() {
         &payment_token,
         &500,
         &3u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(res, Err(Ok(RevoraError::InvalidPeriodId)));
 
     // period 1 fails (non-increasing)
@@ -678,6 +828,7 @@ fn out_of_order_period_ids_rejected() {
         &payment_token,
         &500,
         &1u64,
-     &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &soroban_sdk::Vec::from_array(&env, [issuer.clone()]),
+    );
     assert_eq!(res2, Err(Ok(RevoraError::InvalidPeriodId)));
 }
