@@ -74,7 +74,6 @@ ALLOWLIST=(
     "src/test_prove_distribution.rs"
     "src/test_reconciliation_bug.rs"
     "src/test_redemption.rs"
-    "src/test_reject_issuer_transfer.rs"
     "src/test_self_test.rs"
     "src/test_snapshot_finalization.rs"
     "src/test_snapshot_monotonicity_replay.rs"

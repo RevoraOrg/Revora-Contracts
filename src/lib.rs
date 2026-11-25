@@ -548,6 +548,8 @@ mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
 #[cfg(test)]
+mod test_reject_issuer_transfer;
+#[cfg(test)]
 mod test_snapshot_negative_matrix;
 #[cfg(test)]
 mod test_snapshot_shares_accounting;
