@@ -448,6 +448,8 @@ mod test_accrual_reconciliation_prop;
 #[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
+mod test_blacklist_batch_gas;
+#[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_class_transfer_lock;
