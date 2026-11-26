@@ -448,6 +448,8 @@ mod test_accrual_reconciliation_prop;
 #[cfg(test)]
 mod test_audit_summary_getter;
 #[cfg(test)]
+mod test_blacklist_batch_gas;
+#[cfg(test)]
 mod test_claim_transfer_fail;
 #[cfg(test)]
 mod test_class_transfer_lock;
@@ -549,6 +551,10 @@ mod test_pending_issuer_transfer;
 mod test_quorum_check;
 #[cfg(test)]
 mod test_reg_limit_delta;
+#[cfg(test)]
+mod test_reject_issuer_transfer;
+#[cfg(test)]
+mod test_snapshot_monotonicity_replay;
 #[cfg(test)]
 mod test_snapshot_negative_matrix;
 #[cfg(test)]
