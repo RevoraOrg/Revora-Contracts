@@ -481,6 +481,8 @@ mod test_pending_issuer_transfer;
 #[cfg(test)]
 mod test_pause_tiers;
 #[cfg(test)]
+mod test_period_id_boundary;
+#[cfg(test)]
 mod test_snapshot_shares_accounting;
 #[cfg(test)]
 mod test_testnet_mode;
@@ -569,6 +571,8 @@ mod test_transfer_cooldown;
 mod test_utils;
 
 #[cfg(test)]
+mod test_override_audit_trail;
+#[cfg(test)]
 mod test_platform_fee_per_asset;
 
 #[cfg(test)]
@@ -579,6 +583,8 @@ mod test;
 mod test_revenue_deposit_with_snapshot;
 #[cfg(test)]
 mod test_share_conservation_prop;
+#[cfg(test)]
+mod test_snapshot_finalization;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
@@ -8407,9 +8413,20 @@ impl RevoraRevenueShare {
         // move must go through `convert_class` with an issuer-approved ratio.
         // Holders without an assigned class keep the legacy behaviour.
         {
-            let from_class =
-                Self::get_primary_class(env.clone(), offering_id.clone(), from.clone());
-            let to_class = Self::get_primary_class(env.clone(), offering_id.clone(), to.clone());
+            let from_class = Self::get_primary_class(
+                env.clone(),
+                issuer.clone(),
+                namespace.clone(),
+                token.clone(),
+                from.clone(),
+            );
+            let to_class = Self::get_primary_class(
+                env.clone(),
+                issuer.clone(),
+                namespace.clone(),
+                token.clone(),
+                to.clone(),
+            );
             if from_class.is_some() && to_class.is_some() && from_class != to_class {
                 env.events().publish(
                     (EVENT_CLASS_XFER_BLOCK, issuer.clone(), namespace.clone(), token.clone()),
