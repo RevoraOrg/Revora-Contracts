@@ -63,4 +63,27 @@ mod tests {
         assert_eq!(20_u32.s_div(10_u32), Ok(2_u32));
         assert_eq!(20_u32.s_div(0), Err(RevoraError::LimitReached));
     }
+
+    #[test]
+    fn rejects_signed_overflow_and_underflow() {
+        let limit = Err(RevoraError::LimitReached);
+        assert_eq!(i128::MAX.s_add(1), limit);
+        assert_eq!(i128::MIN.s_sub(1), limit);
+        assert_eq!(i128::MAX.s_mul(2), limit);
+    }
+
+    #[test]
+    fn rejects_signed_zero_division_and_division_overflow() {
+        let limit = Err(RevoraError::LimitReached);
+        assert_eq!(42_i128.s_div(0), limit);
+        assert_eq!(i128::MIN.s_div(-1), limit);
+    }
+
+    #[test]
+    fn signed_additive_and_multiplicative_identities_hold_at_the_limits() {
+        for amount in [i128::MIN, -1, 0, 1, i128::MAX] {
+            assert_eq!(amount.s_add(0), Ok(amount));
+            assert_eq!(amount.s_mul(1), Ok(amount));
+        }
+    }
 }
