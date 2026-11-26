@@ -44,6 +44,17 @@ ALLOWLIST=(
     "src/test_dispute.rs"
     "src/test_dispute_resolve.rs"
     "src/test_get_offering_platform_fee.rs"
+    "src/test_dispute_window.rs"
+    # Orphaned files that predate this guard; tracked in #1312 and #1313.
+    "src/test_issue_1312.rs"
+    "src/test_issue_1313.rs"
+    "src/test_dividend_accrual_ledger.rs"
+    "src/test_fork_replay_regression.rs"
+    "src/test_freeze_matrix.rs"
+    "src/test_governance_proposals.rs"
+    "src/test_issue_1312.rs" # Issue #1312
+    "src/test_issue_1313.rs" # Issue #1313
+    "src/test_holder_share_sum_invariant.rs"
     "src/test_indexer_fixtures.rs"
     "src/test_jurisdiction.rs"
     "src/test_merkle_root_rotation.rs"

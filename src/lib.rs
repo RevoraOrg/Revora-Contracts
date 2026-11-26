@@ -473,6 +473,8 @@ mod test_event_indexed_v2;
 #[cfg(test)]
 mod test_event_indexed_v3;
 #[cfg(test)]
+mod test_get_offering_platform_fee;
+#[cfg(test)]
 mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_min_revenue_threshold_boundary;
