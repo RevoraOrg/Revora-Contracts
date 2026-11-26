@@ -1,7 +1,11 @@
 #![cfg(test)]
 
 use crate::{RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::{Address as _, Events}, Address, Env, Vec};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events},
+    Address, Env, Vec,
+};
 
 fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
     let id = env.register_contract(None, RevoraRevenueShare);
@@ -13,7 +17,7 @@ fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
 fn blacklist_add_many_gas_bound_worst_case() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
 
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
@@ -21,7 +25,18 @@ fn blacklist_add_many_gas_bound_worst_case() {
 
     // Initialize and register offering
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &ns, &token, &1000u32, &token, &0_i128, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &ns,
+        &token,
+        &1000u32,
+        &token,
+        &0_i128,
+        &symbol_short!(""),
+        &0,
+    );
 
     // Prefill blacklist to half the default cap (MAX_BLACKLIST_SIZE = 200 -> 100)
     let mut prefilled: Vec<Address> = Vec::new(&env);
@@ -64,8 +79,10 @@ fn blacklist_add_many_gas_bound_worst_case() {
     assert_eq!(new_events, 25);
 
     // Assert CPU instruction delta is under a conservative ceiling
-    // (keeps worst-case bounded; adjust if upstream budget changes)
+    // (`blacklist_add_many` now checks canonical offering id, current issuer,
+    // effective blacklist limit, and maintains BlacklistOrder + SanctionsAttestation,
+    // measuring ~5.71M CPU instructions in this 50-entry mixed batch).
     let consumed = cpu_after - cpu_before;
-    let ceiling: u64 = 5_000_000;
+    let ceiling: u64 = 7_500_000;
     assert!(consumed <= ceiling, "Consumed CPU {} exceeded ceiling {}", consumed, ceiling);
 }
