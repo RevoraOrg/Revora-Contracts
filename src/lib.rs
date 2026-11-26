@@ -565,6 +565,8 @@ mod test_transfer_cooldown;
 mod test_utils;
 
 #[cfg(test)]
+mod test_override_audit_trail;
+#[cfg(test)]
 mod test_platform_fee_per_asset;
 
 #[cfg(test)]
@@ -575,6 +577,8 @@ mod test;
 mod test_revenue_deposit_with_snapshot;
 #[cfg(test)]
 mod test_share_conservation_prop;
+#[cfg(test)]
+mod test_snapshot_finalization;
 
 // â”€â”€ Event symbols â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const EVENT_REVENUE_REPORTED: Symbol = symbol_short!("rev_rep");
