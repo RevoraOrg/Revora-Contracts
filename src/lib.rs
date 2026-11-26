@@ -482,6 +482,7 @@ mod test_pending_issuer_transfer;
 mod test_pause_tiers;
 #[cfg(test)]
 mod test_period_id_boundary;
+mod test_platform_fee_model;
 #[cfg(test)]
 mod test_snapshot_shares_accounting;
 #[cfg(test)]
