@@ -46,7 +46,18 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let token = Address::generate(&env);
     let payout_asset = Address::generate(&env);
     client.initialize(&issuer, &None::<Address>, &None::<bool>);
-    client.register_offering(&issuer, &Vec::new(&env), &1u32, &symbol_short!("def"), &token, &1_000, &payout_asset, &0, &symbol_short!(""), &0);
+    client.register_offering(
+        &issuer,
+        &Vec::new(&env),
+        &1u32,
+        &symbol_short!("def"),
+        &token,
+        &1_000,
+        &payout_asset,
+        &0,
+        &symbol_short!(""),
+        &0,
+    );
     (env, contract_id, issuer, token, payout_asset)
 }
 
@@ -392,9 +403,6 @@ fn override_audit_trail_report_count_unchanged_across_overrides() {
     client.report_revenue(&issuer, &ns, &token, &payout_asset, &999, &2, &true);
 
     let summary = client.get_audit_summary(&issuer, &ns, &token).unwrap();
-    assert_eq!(
-        summary.report_count, count_before,
-        "report_count must not change after overrides"
-    );
+    assert_eq!(summary.report_count, count_before, "report_count must not change after overrides");
     assert_eq!(summary.report_count, 2);
 }
