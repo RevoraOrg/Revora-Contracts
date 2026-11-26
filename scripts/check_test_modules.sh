@@ -37,7 +37,6 @@ ALLOWLIST=(
     "src/normalize_share_tests.rs"
     "src/payout_test.rs"
     "src/security_assertions_integration_tests.rs"
-    "src/self_test.rs"
     "src/test_accrual_ledger.rs"
     "src/structured_error_tests.rs"
     "src/test_auth.rs"
@@ -75,7 +74,6 @@ ALLOWLIST=(
     "src/test_reconciliation_bug.rs"
     "src/test_redemption.rs"
     "src/test_reject_issuer_transfer.rs"
-    "src/test_self_test.rs"
     "src/test_snapshot_finalization.rs"
     "src/test_snapshot_monotonicity_replay.rs"
     "src/test_transfer_restriction.rs"
@@ -96,7 +94,8 @@ ALLOWLIST=(
 shopt -s nullglob
 candidates=()
 for pattern in "src/test*.rs" "src/*_test*.rs"; do
-    for f in $pattern; do
+    for f in $pattern;
+    do
         candidates+=("$f")
     done
 done
@@ -122,22 +121,13 @@ for a in "${ALLOWLIST[@]}"; do
 done
 
 # ── Extract declared test modules from lib.rs ───────────────────────────────────
-# Match patterns like:
-#   #[cfg(test)]
-#   mod foo;
-#   #[cfg(test)] mod bar;
 declared=()
-
-# Single-line: #[cfg(test)] mod foo;
 while IFS= read -r mod_part; do
     if [[ -n "$mod_part" ]]; then
         declared+=("$mod_part")
     fi
 done < <(grep -oE '#\[cfg\(test\)\]\s*mod\s+[a-zA-Z_][a-zA-Z0-9_]*' "${REPO_ROOT}/src/lib.rs" | sed 's/.*mod //' || true)
 
-# All mod declarations (handles both single-line #[cfg(test)] mod foo; and
-# multi-line #[cfg(test)]\nmod foo; forms, plus plain mod foo; for non-test
-# modules like revenue_deposit_contract, safe_math, etc.)
 declare -A seen
 while IFS= read -r mod_name; do
     if [[ -n "$mod_name" && -z "${seen[$mod_name]+set}" ]]; then
@@ -146,7 +136,6 @@ while IFS= read -r mod_name; do
     fi
 done < <(grep -oE 'mod\s+[a-zA-Z_][a-zA-Z0-9_]*' "${REPO_ROOT}/src/lib.rs" | sed 's/mod //' || true)
 
-# Deduplicate declared
 declare -A declared_map
 for m in "${declared[@]}"; do
     declared_map["$m"]=1
@@ -156,15 +145,9 @@ done
 missing=()
 for f in "${candidates[@]}"; do
     base="$(basename "$f" .rs)"
-
-    # Skip files that are not meant to be compiled as a module (e.g. standalone
-    # test harnesses that are included by other files).
-    # Every real test module is declared in lib.rs; if it isn't, flag it unless
-    # it is in the allowlist.
     if [[ -n "${declared_map[$base]+set}" ]]; then
         continue
     fi
-
     allowed=false
     for a in "${ALLOWLIST[@]}"; do
         if [[ "$f" == "$a" ]]; then
@@ -172,15 +155,12 @@ for f in "${candidates[@]}"; do
             break
         fi
     done
-
     if [[ "$allowed" == "true" ]]; then
         continue
     fi
-
     missing+=("$f")
 done
 
-# ── Report ──────────────────────────────────────────────────────────────────────
 if [[ ${#stale[@]} -gt 0 ]]; then
     echo "ERROR: ${#stale[@]} stale ALLOWLIST entr$([[ ${#stale[@]} -eq 1 ]] && echo y || echo ies) found in scripts/check_test_modules.sh." >&2
     exit 1
@@ -191,9 +171,6 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     for m in "${missing[@]}"; do
         echo "  - $m" >&2
     done
-    echo "" >&2
-    echo "Add a #[cfg(test)] mod <name>; line to src/lib.rs for each, or add the" >&2
-    echo "file to scripts/check_test_modules.sh ALLOWLIST with a tracking issue." >&2
     exit 1
 fi
 
