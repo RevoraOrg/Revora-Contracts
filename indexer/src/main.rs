@@ -2,25 +2,17 @@ use axum::{
     async_trait,
     extract::{FromRequestParts, Query, State},
     http::{header, request::Parts, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
-use revora_indexer::{EventFilter, EventIndexer, NewContractEvent, Result};
-    extract::{Query, State},
-    http::header,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{get, post},
-    Router,
-};
 use revora_indexer::{
-    normalize_pagination, ContractEvent, EventFilter, EventIndexer, NewContractEvent, Result,
+    normalize_pagination, EventFilter, EventIndexer, IndexerError, NewContractEvent, Result,
     MAX_PAGE_SIZE,
 };
-use revora_indexer::{EventFilter, EventIndexer, IndexerError, NewContractEvent, Result};
 use serde::Deserialize;
 use std::env;
+use std::net::SocketAddr;
 use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber;
@@ -127,25 +119,17 @@ async fn get_events(
     State(state): State<AppState>,
     Query(filter): Query<EventFilter>,
     Query(pagination): Query<PaginationParams>,
-) -> impl IntoResponse {
-    match state
-        .indexer
-        .query_events(&filter, pagination.limit, pagination.offset)
-        .await
-    {
-        Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to query events").into_response(),
 ) -> Response {
     let (limit, offset) = match validate_pagination(pagination.limit, pagination.offset) {
         Ok(values) => values,
         Err(message) => return (StatusCode::BAD_REQUEST, axum::Json(message)).into_response(),
     };
 
-    match state.indexer.query_events(&filter, Some(limit), Some(offset)).await {
-        Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json("Failed to query events"))
-            .into_response(),
-    match state.indexer.query_events(&filter, pagination.limit, pagination.offset).await {
+    match state
+        .indexer
+        .query_events(&filter, Some(limit), Some(offset))
+        .await
+    {
         Ok(events) => (StatusCode::OK, axum::Json(events)).into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
     }
@@ -159,7 +143,6 @@ async fn create_event(
     match state.indexer.insert_event(&new_event).await {
         Ok(event) => (StatusCode::CREATED, axum::Json(event)).into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to insert event").into_response(),
     }
 }
 
@@ -167,9 +150,6 @@ async fn get_analytics(State(state): State<AppState>) -> Response {
     match state.indexer.get_analytics().await {
         Ok(analytics) => (StatusCode::OK, axum::Json(analytics)).into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get analytics").into_response()
-        }
     }
 }
 
@@ -189,7 +169,6 @@ async fn export_csv(
         )
             .into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to export CSV").into_response(),
     }
 }
 
@@ -209,7 +188,6 @@ async fn export_json(
         )
             .into_response(),
         Err(error) => IndexerErrorResponse(error).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to export JSON").into_response(),
     }
 }
 
@@ -271,7 +249,6 @@ pub fn build_router(state: AppState) -> Router {
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     Router::new()
-    let app = Router::new()
         // GET /events: limit defaults to 100 and is capped at 1000; offset must be >= 0.
         // Invalid limit/offset values (including non-integers) return HTTP 400.
         .route("/events", get(get_events).post(create_event))
@@ -280,6 +257,49 @@ pub fn build_router(state: AppState) -> Router {
         .route("/export/json", get(export_json))
         .with_state(state)
         .layer(cors)
+}
+
+// ---------------------------------------------------------------------------
+// Configuration helpers
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
+
+/// Parse `INDEXER_BIND_ADDR` into a [`SocketAddr`], defaulting to `127.0.0.1:3000`
+/// when unset. Fails with a clear error message if set to an empty or invalid value.
+fn parse_bind_addr(raw: Option<&str>) -> std::result::Result<SocketAddr, String> {
+    let addr_str = match raw {
+        Some(s) if !s.trim().is_empty() => s.trim(),
+        Some(_) => {
+            return Err(
+                "INDEXER_BIND_ADDR is set but empty. Set a valid socket address such as 127.0.0.1:3000."
+                    .to_string(),
+            );
+        }
+        None => DEFAULT_BIND_ADDR,
+    };
+
+    addr_str.parse::<SocketAddr>().map_err(|err| {
+        format!(
+            "Invalid INDEXER_BIND_ADDR '{addr_str}': {err}. Expected <ip>:<port>, e.g. 127.0.0.1:3000."
+        )
+    })
+}
+
+/// Validate required `DATABASE_URL` environment variable without falling back to
+/// hard-coded credentials.
+fn parse_database_url(raw: Option<String>) -> std::result::Result<String, String> {
+    match raw {
+        Some(url) if !url.trim().is_empty() => Ok(url),
+        Some(_) => Err(
+            "DATABASE_URL is set but empty. Set DATABASE_URL to a valid PostgreSQL connection string."
+                .to_string(),
+        ),
+        None => Err(
+            "DATABASE_URL is not set. Set DATABASE_URL to a valid PostgreSQL connection string."
+                .to_string(),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,8 +331,16 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let database_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:password@localhost/revora_indexer".to_string());
+    let database_url = parse_database_url(env::var("DATABASE_URL").ok()).unwrap_or_else(|err| {
+        tracing::error!("{err}");
+        std::process::exit(1);
+    });
+
+    let bind_addr =
+        parse_bind_addr(env::var("INDEXER_BIND_ADDR").ok().as_deref()).unwrap_or_else(|err| {
+            tracing::error!("{err}");
+            std::process::exit(1);
+        });
 
     let indexer = EventIndexer::new(&database_url).await?;
     indexer.initialize_schema().await?;
@@ -324,16 +352,33 @@ async fn main() -> Result<()> {
 
     let app = build_router(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::error!("Failed to bind to {bind_addr}: {err}");
+            std::process::exit(1);
+        });
     tracing::info!("Listening on http://{}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{self, Request},
+        routing::post,
+        Router,
+    };
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn error_responses_map_status_and_hide_internal_details() {
@@ -358,21 +403,7 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&internal_body).unwrap(),
             serde_json::json!({ "error": "Internal server error" })
         );
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{
-        body::Body,
-        http::{self, Request},
-        routing::post,
-        Router,
-    };
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    }
 
     /// Minimal state that satisfies `AsRef<ApiKey>` without a real DB.
     #[derive(Clone)]
@@ -533,5 +564,64 @@ mod tests {
         let status = router.oneshot(req).await.unwrap().status();
         // 405 means the router reached the routing layer, not a 401 auth gate.
         assert_ne!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuration parsing tests (INDEXER_BIND_ADDR & DATABASE_URL)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_bind_addr_defaults_to_loopback() {
+        let addr = parse_bind_addr(None).expect("default bind address should parse");
+        assert_eq!(addr, "127.0.0.1:3000".parse::<SocketAddr>().unwrap());
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn parse_bind_addr_accepts_valid_ipv4_and_ipv6_overrides() {
+        let ipv4 = parse_bind_addr(Some("0.0.0.0:8080")).expect("IPv4 override should parse");
+        assert_eq!(ipv4, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
+
+        let trimmed = parse_bind_addr(Some("  127.0.0.1:4000  "))
+            .expect("whitespace-padded override should parse");
+        assert_eq!(trimmed, "127.0.0.1:4000".parse::<SocketAddr>().unwrap());
+
+        let ipv6 = parse_bind_addr(Some("[::1]:9090")).expect("IPv6 override should parse");
+        assert_eq!(ipv6, "[::1]:9090".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn parse_bind_addr_rejects_empty_and_invalid_inputs() {
+        let empty_err = parse_bind_addr(Some("")).unwrap_err();
+        assert!(empty_err.contains("INDEXER_BIND_ADDR"));
+        assert!(empty_err.contains("empty"));
+
+        let whitespace_err = parse_bind_addr(Some("   ")).unwrap_err();
+        assert!(whitespace_err.contains("INDEXER_BIND_ADDR"));
+
+        let missing_port_err = parse_bind_addr(Some("127.0.0.1")).unwrap_err();
+        assert!(missing_port_err.contains("Invalid INDEXER_BIND_ADDR"));
+        assert!(missing_port_err.contains("127.0.0.1"));
+
+        let bad_port_err = parse_bind_addr(Some("127.0.0.1:99999")).unwrap_err();
+        assert!(bad_port_err.contains("Invalid INDEXER_BIND_ADDR"));
+
+        let hostname_err = parse_bind_addr(Some("localhost:3000")).unwrap_err();
+        assert!(hostname_err.contains("Invalid INDEXER_BIND_ADDR"));
+    }
+
+    #[test]
+    fn parse_database_url_requires_non_empty_value() {
+        let missing_err = parse_database_url(None).unwrap_err();
+        assert!(missing_err.contains("DATABASE_URL"));
+        assert!(missing_err.contains("not set"));
+
+        let empty_err = parse_database_url(Some("   ".to_string())).unwrap_err();
+        assert!(empty_err.contains("DATABASE_URL"));
+        assert!(empty_err.contains("empty"));
+
+        let valid = parse_database_url(Some("postgres://user@localhost/revora_indexer".to_string()))
+            .expect("valid DATABASE_URL should succeed");
+        assert_eq!(valid, "postgres://user@localhost/revora_indexer");
     }
 }
