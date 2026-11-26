@@ -231,7 +231,7 @@ impl Default for TaxBucket {
 
 #[cfg(test)]
 mod tests {
-    use super::{fiscal_year_from_ts, timestamp_to_month};
+    use super::{fiscal_year_from_ts, is_leap_year, timestamp_to_month, timestamp_to_year};
 
     // Unix timestamps (UTC) for the first and last second of selected months.
     const TS_1970_JAN_01: u64 = 0;
@@ -249,6 +249,25 @@ mod tests {
     const TS_2025_JAN_01: u64 = 1_735_689_600;
     const TS_2023_FEB_28_END: u64 = 1_677_628_799;
     const TS_2023_MAR_01: u64 = 1_677_628_800;
+
+    #[test]
+    fn timestamp_to_year_covers_epoch_rollovers_and_leap_day() {
+        assert_eq!(timestamp_to_year(TS_1970_JAN_01), 1970);
+        assert_eq!(timestamp_to_year(946_684_799), 1999); // 1999-12-31 23:59:59 UTC
+        assert_eq!(timestamp_to_year(946_684_800), 2000); // 2000-01-01 00:00:00 UTC
+        assert_eq!(timestamp_to_year(1_709_164_800), 2024); // 2024-02-29 00:00:00 UTC
+        assert_eq!(timestamp_to_year(TS_2024_DEC_31_END), 2024);
+        assert_eq!(timestamp_to_year(TS_2025_JAN_01), 2025);
+    }
+
+    #[test]
+    fn leap_year_obeys_gregorian_century_rules() {
+        assert!(!is_leap_year(1900));
+        assert!(is_leap_year(2000));
+        assert!(!is_leap_year(2023));
+        assert!(is_leap_year(2024));
+        assert!(!is_leap_year(2100));
+    }
 
     #[test]
     fn timestamp_to_month_covers_first_and_last_second_of_month() {
@@ -286,9 +305,9 @@ mod tests {
 
     #[test]
     fn fiscal_year_from_ts_april_start_boundary() {
-        // April start: Mar 31 2024 belongs to FY2024, Apr 1 2024 starts FY2025.
-        assert_eq!(fiscal_year_from_ts(TS_2024_MAR_31_END, 4), 2024);
-        assert_eq!(fiscal_year_from_ts(TS_2024_APR_01, 4), 2025);
+        // April start: Mar 31 2024 belongs to FY2023, Apr 1 2024 starts FY2024.
+        assert_eq!(fiscal_year_from_ts(TS_2024_MAR_31_END, 4), 2023);
+        assert_eq!(fiscal_year_from_ts(TS_2024_APR_01, 4), 2024);
 
         // Any month before April maps to the previous calendar year.
         assert_eq!(fiscal_year_from_ts(TS_2024_JAN_01, 4), 2023);
