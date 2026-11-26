@@ -70,7 +70,6 @@ ALLOWLIST=(
     "src/test_namespaces.rs"
     "src/test_override_audit_trail.rs"
     "src/test_period_id_boundary.rs"
-    "src/test_platform_fee_model.rs"
     "src/test_prove_distribution.rs"
     "src/test_reconciliation_bug.rs"
     "src/test_redemption.rs"
