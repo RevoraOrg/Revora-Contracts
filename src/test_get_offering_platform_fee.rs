@@ -16,7 +16,7 @@
 //! | 5 | Wrong token, right issuer/namespace | `None` |
 //! | 6 | Same (issuer, token), colliding namespace key | `None` |
 //! | 7 | Happy path round-trip: exact model is returned | `Some(model)` |
-//! | 8 | Multi-offering isolation (6-tuple independence) | only exact key hits |
+//! | 8 | Multi-offering isolation | only registered keys assigned a fee hit |
 //! | 9 | Read is non-mutating (storage len unchanged) | unchanged |
 //! |10 | Read emits no events | no new events |
 //! |11 | Fee update via overwrite is observable through the getter | latest wins |
@@ -30,17 +30,19 @@
 //! calls close the "state must not move on rejected operations" requirement of
 //! the audit item.
 
-#![cfg(test)]
-
 use crate::{PlatformFeeModel, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{storage::Persistent as _, Address as _, Events as _},
+    Address, Env, Symbol, Vec,
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
 struct Ctx {
     env: Env,
     client: RevoraRevenueShareClient<'static>,
-    admin: Address,
+    contract_id: Address,
     issuer: Address,
     ns: Symbol,
     token: Address,
@@ -58,25 +60,30 @@ fn setup() -> Ctx {
     let token = Address::generate(&env);
     let payout = Address::generate(&env);
     client.initialize(&admin, &None::<Address>, &None::<bool>);
-    client.register_offering(
-        &issuer,
-        &Vec::new(&env),
+    let c = Ctx { env, client, contract_id, issuer, ns, token, payout };
+    register_offering(&c, &c.issuer, &c.ns, &c.token);
+    c
+}
+
+fn register_offering(c: &Ctx, issuer: &Address, ns: &Symbol, token: &Address) {
+    c.client.register_offering(
+        issuer,
+        &Vec::new(&c.env),
         &1u32,
-        &ns,
-        &token,
+        ns,
+        token,
         &2_500,
-        &payout,
+        &c.payout,
         &0,
         &symbol_short!(""),
         &0u32,
     );
-    Ctx { env, client, admin, issuer, ns, token, payout }
 }
 
 /// Persistent storage footprint of the contract (used to prove a rejected or
 /// read-only operation did not move state).
-fn persistent_len(c: &Ctx) -> usize {
-    c.env.storage().persistent().len()
+fn persistent_len(c: &Ctx) -> u32 {
+    c.env.as_contract(&c.contract_id, || c.env.storage().persistent().all().len())
 }
 
 /// Count events emitted at or after `start_idx`.
@@ -165,6 +172,7 @@ fn getter_isolates_namespace_case_collision() {
     // Two namespaces differing only by case are distinct storage keys: writes to
     // one must be invisible to reads of the other, in both directions.
     let upper = Symbol::new(&c.env, "DEF");
+    register_offering(&c, &c.issuer, &upper, &c.token);
     c.client.set_offering_platform_fee(&c.issuer, &upper, &c.token, &9_000, &treasury);
 
     assert_eq!(
@@ -202,23 +210,13 @@ fn getter_distinguishes_all_offerings_independently() {
     let token2 = Address::generate(&c.env);
     let issuer2 = Address::generate(&c.env);
 
-    c.client.register_offering(
-        &issuer2,
-        &Vec::new(&c.env),
-        &1u32,
-        &ns2,
-        &token2,
-        &1_000,
-        &c.payout,
-        &0,
-        &symbol_short!(""),
-        &0u32,
-    );
+    register_offering(&c, &c.issuer, &ns2, &token2);
+    register_offering(&c, &issuer2, &ns2, &token2);
     c.client.set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &111, &t1);
     c.client.set_offering_platform_fee(&c.issuer, &ns2, &token2, &222, &t2);
     c.client.set_offering_platform_fee(&issuer2, &ns2, &token2, &333, &t1);
 
-    // Every configured 6-tuple resolves to its own model...
+    // Every configured offering resolves to its own model...
     assert_eq!(
         c.client.get_offering_platform_fee(&c.issuer, &c.ns, &c.token),
         Some(model(111, &t1))
@@ -290,7 +288,15 @@ fn rejected_fee_exceeds_holder_share_leaves_state_unchanged() {
     let holder = Address::generate(&c.env);
 
     // Aggregate holder share = 7_000; any fee above 3_000 exceeds the 10_000 budget.
-    c.client.set_holder_share(&c.issuer, &c.ns, &c.token, &holder, &7_000, &1, &soroban_sdk::Vec::from_array(&c.env, [c.issuer.clone()]));
+    c.client.set_holder_share(
+        &c.issuer,
+        &c.ns,
+        &c.token,
+        &holder,
+        &7_000,
+        &1,
+        &soroban_sdk::Vec::from_array(&c.env, [c.issuer.clone()]),
+    );
     let before = persistent_len(&c);
     let res = c.client.try_set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &3_001, &treasury);
     assert_eq!(res, Err(Ok(RevoraError::FeeExceedsHolderShare)));
@@ -357,15 +363,13 @@ fn getter_round_trips_boundary_fees() {
 fn auth_failure_leaves_state_unchanged() {
     let c = setup();
     let treasury = Address::generate(&c.env);
-    let attacker = Address::generate(&c.env);
-
     // Seed a valid model first.
     c.client.set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &500, &treasury);
     let before = persistent_len(&c);
 
     // Unset the admin's auth so the setter's require_auth fails, then replay.
     c.env.set_auths(&[]);
-    let res = c.client.try_set_offering_platform_fee(&attacker, &c.ns, &c.token, &9_999, &attacker);
+    let res = c.client.try_set_offering_platform_fee(&c.issuer, &c.ns, &c.token, &9_999, &treasury);
     assert!(res.is_err(), "setter must fail without admin auth");
 
     // The existing model was neither replaced nor deleted.

@@ -53,7 +53,6 @@ ALLOWLIST=(
     "src/test_dividend_accrual_ledger.rs"
     "src/test_fork_replay_regression.rs"
     "src/test_freeze_matrix.rs"
-    "src/test_get_offering_platform_fee.rs"
     "src/test_governance_proposals.rs"
     "src/test_issue_1312.rs" # Issue #1312
     "src/test_issue_1313.rs" # Issue #1313
