@@ -210,20 +210,6 @@ fn set_twap_window_emits_event() {
     client.set_twap_window(&issuer, &issuer, &ns, &token, &window);
 
     let events = env.events().all();
-    // At least one event must have been published; find the one with our topic symbol.
-    let found = events.iter().any(|(topics, _data)| {
-        // topics is a Vec<Val> — check that the first topic encodes the right symbol.
-        // We rely on the fact that symbol_short!("twap_win") matches EVENT_TWAP_WINDOW_SET.
-        if let Some(first) = soroban_sdk::Vec::<soroban_sdk::Val>::try_from(topics)
-            .ok()
-            .and_then(|v| v.first_unchecked_ref().map(|_| true).ok_or(()).ok())
-        {
-            first
-        } else {
-            false
-        }
-    });
-    // Simpler and more reliable: just assert there is at least one new event after the call.
     assert!(!events.is_empty(), "set_twap_window must emit at least one event");
 }
 

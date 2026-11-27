@@ -3,7 +3,7 @@
 #
 # CI guard: fails if any src/test*.rs or src/*_test*.rs file is NOT declared
 # as a #[cfg(test)] mod in src/lib.rs.  This prevents the silent rot that
-# caused issue #1353 â€” where src/test.rs (634 tests, 15,469 lines) was never
+# caused issue #1353 — where src/test.rs (634 tests, 15,469 lines) was never
 # compiled or run because lib.rs never declared `mod test;`.
 #
 # Additional checks:
@@ -17,7 +17,7 @@
 # Exit codes:
 #   0  all test files are declared
 #   1  one or more test files are undeclared, or an ALLOWLIST entry is stale
-#      (missing file, or already declared in lib.rs) â€” problems are printed
+#      (missing file, or already declared in lib.rs) — problems are printed
 #      to stderr
 #
 # Note: files that are intentionally not wired yet can be added to the
@@ -72,10 +72,11 @@ ALLOWLIST=(
     "src/test_transfer_restrictions.rs"
     "src/test_snapshot_negative_matrix.rs"
     "src/test_transfer_with_attestation.rs"
+    "src/vesting_test.rs"
     "src/test_twap_window.rs"
 )
 
-# â”€â”€ Find every candidate test file in src/ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Find every candidate test file in src/ ─────────────────────────────────
 shopt -s nullglob
 candidates=()
 for pattern in "src/test*.rs" "src/*_test*.rs"; do
@@ -85,11 +86,11 @@ for pattern in "src/test*.rs" "src/*_test*.rs"; do
 done
 
 if [[ ${#candidates[@]} -eq 0 ]]; then
-    echo "INFO: no src/test*.rs or src/*_test*.rs files found â€” nothing to check."
+    echo "INFO: no src/test*.rs or src/*_test*.rs files found — nothing to check."
     exit 0
 fi
 
-# â”€â”€ Validate ALLOWLIST entries (stale entries fail) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Validate ALLOWLIST entries (stale entries fail) ────────────────────────
 stale=()
 for a in "${ALLOWLIST[@]}"; do
     if [[ ! -f "${REPO_ROOT}/${a}" ]]; then
@@ -104,7 +105,7 @@ for a in "${ALLOWLIST[@]}"; do
     fi
 done
 
-# â”€â”€ Extract declared test modules from lib.rs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Extract declared test modules from lib.rs ──────────────────────────────
 # Match patterns like:
 #   #[cfg(test)]
 #   mod foo;
@@ -135,7 +136,7 @@ for m in "${declared[@]}"; do
     declared_map["$m"]=1
 done
 
-# â”€â”€ Check each candidate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Check each candidate ───────────────────────────────────────────────────
 missing=()
 for f in "${candidates[@]}"; do
     base="$(basename "$f" .rs)"
@@ -163,7 +164,7 @@ for f in "${candidates[@]}"; do
     missing+=("$f")
 done
 
-# â”€â”€ Report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Report ─────────────────────────────────────────────────────────────────
 if [[ ${#stale[@]} -gt 0 ]]; then
     echo "ERROR: ${#stale[@]} stale ALLOWLIST entr$([[ ${#stale[@]} -eq 1 ]] && echo y || echo ies) found in scripts/check_test_modules.sh." >&2
     exit 1
