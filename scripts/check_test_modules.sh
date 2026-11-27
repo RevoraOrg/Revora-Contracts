@@ -41,8 +41,6 @@ ALLOWLIST=(
     "src/test_auth.rs"
     "src/test_blacklist_batch_prop.rs"
     "src/test_cross_contract.rs"
-    "src/test_dispute.rs"
-    "src/test_dispute_resolve.rs"
     "src/test_get_offering_platform_fee.rs"
     "src/test_dispute_window.rs"
     # Orphaned files that predate this guard; tracked in #1312 and #1313.
