@@ -18,6 +18,19 @@ pub enum IndexerError {
 
 pub type Result<T> = std::result::Result<T, IndexerError>;
 
+/// Default page size used when an events query omits `limit`.
+pub const DEFAULT_PAGE_SIZE: i64 = 100;
+
+/// Largest page size allowed for an events query.
+pub const MAX_PAGE_SIZE: i64 = 1000;
+
+/// Clamp optional pagination values into the range accepted by PostgreSQL.
+pub fn normalize_pagination(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
+    let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let offset = offset.unwrap_or(0).max(0);
+    (limit, offset)
+}
+
 /// Represents a stored smart contract event
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ContractEvent {
@@ -55,6 +68,7 @@ pub struct EventAnalytics {
 }
 
 /// Event indexer service
+#[derive(Clone)]
 pub struct EventIndexer {
     pool: sqlx::PgPool,
 }
@@ -228,8 +242,9 @@ impl EventIndexer {
             wtr.serialize(event)?;
         }
 
-        wtr.flush()?;
-        Ok(wtr.into_inner()?)
+        wtr.flush().map_err(|e| IndexerError::CsvError(csv::Error::from(e)))?;
+        wtr.into_inner()
+            .map_err(|e| IndexerError::CsvError(csv::Error::from(e.into_error())))
     }
 
     /// Export events to JSON
@@ -249,4 +264,46 @@ pub struct NewContractEvent {
     pub transaction_hash: Option<String>,
     pub topics: serde_json::Value,
     pub data: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_omitted_pagination() {
+        assert_eq!(normalize_pagination(None, None), (DEFAULT_PAGE_SIZE, 0));
+    }
+
+    #[test]
+    fn normalizes_omitted_limit_with_explicit_offset() {
+        assert_eq!(normalize_pagination(None, Some(25)), (DEFAULT_PAGE_SIZE, 25));
+    }
+
+    #[test]
+    fn normalizes_omitted_offset_with_explicit_limit() {
+        assert_eq!(normalize_pagination(Some(10), None), (10, 0));
+    }
+
+    #[test]
+    fn keeps_valid_pagination_values() {
+        assert_eq!(normalize_pagination(Some(1), Some(0)), (1, 0));
+        assert_eq!(normalize_pagination(Some(MAX_PAGE_SIZE), Some(100)), (MAX_PAGE_SIZE, 100));
+        assert_eq!(normalize_pagination(Some(50), Some(i64::MAX)), (50, i64::MAX));
+    }
+
+    #[test]
+    fn clamps_out_of_range_limits() {
+        assert_eq!(normalize_pagination(Some(0), None), (1, 0));
+        assert_eq!(normalize_pagination(Some(-5), None), (1, 0));
+        assert_eq!(normalize_pagination(Some(MAX_PAGE_SIZE + 1), None), (MAX_PAGE_SIZE, 0));
+        assert_eq!(normalize_pagination(Some(i64::MAX), None), (MAX_PAGE_SIZE, 0));
+        assert_eq!(normalize_pagination(Some(i64::MIN), None), (1, 0));
+    }
+
+    #[test]
+    fn clamps_negative_offsets() {
+        assert_eq!(normalize_pagination(None, Some(-1)), (DEFAULT_PAGE_SIZE, 0));
+        assert_eq!(normalize_pagination(None, Some(i64::MIN)), (DEFAULT_PAGE_SIZE, 0));
+    }
 }

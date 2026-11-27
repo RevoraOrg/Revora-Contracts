@@ -33,7 +33,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol, Vec};
 
 use crate::{RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
 
@@ -84,13 +84,17 @@ fn event_position(env: &Env, sym: Symbol) -> Option<u32> {
 
 // ── 1. Event ordering ─────────────────────────────────────────────────────────
 
-/// `rev_rep` must appear after `offer_reg` in the event log.
-/// An indexer processing events in ledger order will always see the offering
-/// registration before any revenue report for that offering.
+/// `rev_rep` must appear after the offering registration event in the event
+/// log. An indexer processing events in ledger order will always see the
+/// offering registration before any revenue report for that offering.
+///
+/// Drift note: `register_offering` now emits `ofr_reg2` (EVENT_OFFER_REG_V2);
+/// the old `offer_reg` symbol is no longer published, so assert on the symbol
+/// the contract actually emits.
 #[test]
 fn milestone_event_ordering_offer_before_rev_rep() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -103,24 +107,30 @@ fn milestone_event_ordering_offer_before_rev_rep() {
         &false,
     );
 
-    let offer_pos = event_position(&env, symbol_short!("offer_reg"));
+    let offer_pos = event_position(&env, symbol_short!("ofr_reg2"));
     let rev_rep_pos = event_position(&env, symbol_short!("rev_rep"));
 
-    assert!(offer_pos.is_some(), "offer_reg event must be emitted");
+    assert!(offer_pos.is_some(), "ofr_reg2 event must be emitted");
     assert!(rev_rep_pos.is_some(), "rev_rep event must be emitted");
     assert!(
         offer_pos.unwrap() < rev_rep_pos.unwrap(),
-        "offer_reg must precede rev_rep in event log"
+        "ofr_reg2 must precede rev_rep in event log"
     );
 }
 
 // ── 2. period_id monotonicity ─────────────────────────────────────────────────
 
-/// Successive `report_revenue` calls must use strictly increasing period_ids.
+/// Successive `report_revenue` calls must use the next sequential period_id.
+///
+/// Drift note: `report_revenue_internal` calls `require_next_period_id`, which
+/// rejects any id other than `last + 1` with `InvalidPeriodId`. The invariant is
+/// therefore sequential progression, not merely "strictly increasing": gaps
+/// are rejected too. Updated from the original `10/5/11` sequence, which the
+/// contract now rejects as invalid.
 #[test]
 fn milestone_period_id_must_be_strictly_increasing() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     client.report_revenue(
@@ -129,50 +139,51 @@ fn milestone_period_id_must_be_strictly_increasing() {
         &token,
         &payout,
         &500i128,
-        &10u64,
+        &1u64,
         &false,
     );
 
-    // Same period_id rejected
-    assert!(
-        client
-            .try_report_revenue(
-                &issuer,
-                &symbol_short!("def"),
-                &token,
-                &payout,
-                &500i128,
-                &10u64,
-                &false
-            )
-            .is_err(),
-        "duplicate period_id must be rejected"
-    );
-
-    // Lower period_id rejected
-    assert!(
-        client
-            .try_report_revenue(
-                &issuer,
-                &symbol_short!("def"),
-                &token,
-                &payout,
-                &500i128,
-                &5u64,
-                &false
-            )
-            .is_err(),
-        "period_id lower than last must be rejected"
-    );
-
-    // Higher period_id succeeds
+    // A duplicate period_id with override_existing=false is a no-op: the
+    // contract emits rev_rej and returns Ok without changing audit state.
+    // Drift note: the original assertion expected an error; report_revenue_internal
+    // now reports the rejection via the rev_rej event instead.
     client.report_revenue(
         &issuer,
         &symbol_short!("def"),
         &token,
         &payout,
         &500i128,
-        &11u64,
+        &1u64,
+        &false,
+    );
+    let after_duplicate = client.get_audit_summary(&issuer, &symbol_short!("def"), &token).unwrap();
+    assert_eq!(after_duplicate.total_revenue, 500i128);
+    assert_eq!(after_duplicate.report_count, 1u64);
+
+    // Skipping ahead is rejected; the contract requires the next sequential id.
+    assert!(
+        client
+            .try_report_revenue(
+                &issuer,
+                &symbol_short!("def"),
+                &token,
+                &payout,
+                &500i128,
+                &3u64,
+                &false
+            )
+            .is_err(),
+        "period_id gap must be rejected"
+    );
+
+    // The next sequential period_id succeeds.
+    client.report_revenue(
+        &issuer,
+        &symbol_short!("def"),
+        &token,
+        &payout,
+        &500i128,
+        &2u64,
         &false,
     );
 }
@@ -181,7 +192,7 @@ fn milestone_period_id_must_be_strictly_increasing() {
 #[test]
 fn milestone_period_id_zero_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
 
     assert!(
@@ -207,7 +218,7 @@ fn milestone_period_id_zero_rejected() {
 #[test]
 fn milestone_audit_summary_accumulates_correctly() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -229,7 +240,7 @@ fn milestone_audit_summary_accumulates_correctly() {
 #[test]
 fn milestone_audit_summary_not_updated_on_rejected_report() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -249,7 +260,7 @@ fn milestone_audit_summary_not_updated_on_rejected_report() {
 #[test]
 fn milestone_concentration_enforcement_blocks_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -272,7 +283,7 @@ fn milestone_concentration_enforcement_blocks_revenue_report() {
 #[test]
 fn milestone_concentration_at_limit_allows_revenue_report() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -288,7 +299,7 @@ fn milestone_concentration_at_limit_allows_revenue_report() {
 #[test]
 fn milestone_concentration_warning_does_not_block_report() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -308,7 +319,7 @@ fn milestone_concentration_warning_does_not_block_report() {
 #[test]
 fn milestone_concentration_warning_event_emitted() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, _payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -325,7 +336,7 @@ fn milestone_concentration_warning_event_emitted() {
 #[test]
 fn milestone_concentration_one_bps_over_limit_rejected() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -340,7 +351,7 @@ fn milestone_concentration_one_bps_over_limit_rejected() {
 #[test]
 fn milestone_concentration_testnet_mode_bypasses_enforcement() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
@@ -367,7 +378,7 @@ fn milestone_concentration_testnet_mode_bypasses_enforcement() {
 #[test]
 fn milestone_blacklist_snapshot_captured_at_report_time() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
     let investor = Address::generate(&env);
@@ -388,17 +399,24 @@ fn milestone_blacklist_snapshot_captured_at_report_time() {
 
 /// Every accepted `report_revenue` emits an `ev_idx2` topic with the correct
 /// `event_type` (`rv_rep`), `period_id`, `issuer`, `namespace`, and `token`.
+///
+/// `get_indexer_fixture_topics` is a testnet-only entrypoint (issue #1356), so
+/// these fixture assertions run only under `--features testnet`.
+#[cfg(feature = "testnet")]
 #[test]
 fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let (issuer, token, payout) = setup_offering(&env, &client);
     let ns = symbol_short!("def");
 
-    client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &42u64, &false);
+    // The contract requires sequential period ids (`require_next_period_id`), so
+    // the first report must be period 1. Drift note: this test previously used
+    // period 42, which `report_revenue` now rejects with `InvalidPeriodId`.
+    client.report_revenue(&issuer, &ns, &token, &payout, &1_000i128, &1u64, &false);
 
     // The fixture helper returns canonical v2 topics — verify rv_rep shape
-    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &42u64);
+    let (v2_fixtures, _) = client.get_indexer_fixture_topics(&issuer, &ns, &token, &1u64);
     let mut rv_rep_opt = None;
     for f in v2_fixtures.iter() {
         if f.event_type == symbol_short!("rv_rep") {
@@ -409,17 +427,18 @@ fn milestone_indexed_v2_topic_emitted_on_report_revenue() {
     let rv_rep = rv_rep_opt.expect("rv_rep fixture must exist");
 
     assert_eq!(rv_rep.version, 2u32);
-    assert_eq!(rv_rep.period_id, 42u64);
+    assert_eq!(rv_rep.period_id, 1u64);
     assert_eq!(rv_rep.issuer, issuer);
     assert_eq!(rv_rep.namespace, ns);
     assert_eq!(rv_rep.token, token);
 }
 
 /// Fixture topics must cover all six canonical event types in stable order.
+#[cfg(feature = "testnet")]
 #[test]
 fn milestone_fixture_covers_all_canonical_event_types() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -445,10 +464,11 @@ fn milestone_fixture_covers_all_canonical_event_types() {
 
 /// Non-period-scoped fixture topics (offer, claim) must have period_id = 0.
 /// Period-scoped topics must carry the requested period_id.
+#[cfg(feature = "testnet")]
 #[test]
 fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     let issuer = Address::generate(&env);
     let token = Address::generate(&env);
     let ns = symbol_short!("def");
@@ -474,7 +494,7 @@ fn milestone_non_period_scoped_fixtures_have_zero_period_id() {
 #[test]
 fn milestone_audit_summary_isolated_per_offering() {
     let env = Env::default();
-    let client = make_client(&env.clone());
+    let client = make_client(&env);
     env.mock_all_auths();
 
     let issuer = Address::generate(&env);
