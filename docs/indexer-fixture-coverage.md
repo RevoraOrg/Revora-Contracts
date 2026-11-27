@@ -42,3 +42,12 @@ Added deterministic tests:
 - `fixture_topics_bind_to_requested_identity`
 
 These validate event ordering, event type identity, version pinning, and issuer/namespace/token binding.
+
+The test module runs its feature-independent tests with `cargo test`. Tests for
+the fixture entrypoints and faucet metrics require the `testnet` feature. Run
+the full module with:
+
+```sh
+cargo test --lib test_indexer_fixtures
+cargo test --lib --features testnet test_indexer_fixtures
+```

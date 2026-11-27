@@ -536,6 +536,8 @@ mod test_governance_proposals;
 mod test_holder_share_class;
 #[cfg(test)]
 mod test_holder_share_sum_invariant;
+#[cfg(test)]
+mod test_indexer_fixtures;
 mod test_merkle_canonical_order;
 #[cfg(test)]
 mod test_meta_revenue_approval;
