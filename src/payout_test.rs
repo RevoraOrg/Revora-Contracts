@@ -5,29 +5,23 @@
 //!
 //! ## Invariants verified
 //!
-//! 1. **Payout conservation** — the sum of all holder payouts for a period
-//!    is always ≤ the deposited `period_revenue` for that period.
-//!    Equality holds only when `sum(share_bps) == 10 000` and there is no
-//!    rounding deficit; strict inequality is acceptable and expected for
-//!    Truncation rounding.
+//! 1. **Payout conservation** — Truncation payouts sum to at most the deposited
+//!    `period_revenue`. With RoundHalfUp, independently rounded holder payouts
+//!    can exceed it by up to one stroop per holder.
 //!
 //! 2. **No single-holder over-payment** — an individual holder's payout
 //!    never exceeds `period_revenue * share_bps / 10 000` (Truncation) or
 //!    the rounded-half-up equivalent, both of which are ≤ `period_revenue`.
 //!
-//! 3. **Share-sum ceiling** — the contract's `set_holder_share` stores
-//!    per-holder `share_bps` independently; the *sum* of all holder bps is
-//!    not enforced on-chain (issuers are responsible).  These tests prove
-//!    that even adversarial bps distributions that sum to exactly 10 000,
-//!    exceed 10 000, or fall below 10 000 all satisfy payout conservation
-//!    (total payout ≤ deposited amount).
+//! 3. **Share-sum ceiling** — `set_holder_share` stores each holder's bps
+//!    independently; the sum is not enforced on-chain. Tests cover valid
+//!    distributions and document over-allocation when the sum exceeds 10 000.
 //!
-//! 4. **Dust / rounding deficit** — for any combination of holder counts
-//!    and bps values, the total undistributed "dust" is non-negative and
-//!    bounded by `holder_count` stroops (Truncation) or `holder_count / 2`
-//!    (RoundHalfUp).
+//! 4. **Dust / rounding deficit** — for shares summing to at most 10 000,
+//!    Truncation dust is non-negative; RoundHalfUp excess is bounded by the
+//!    holder count.
 //!
-//! 5. **Both rounding modes** — all properties hold under both
+//! 5. **Both rounding modes** — per-holder bounds hold under both
 //!    `RoundingMode::Truncation` and `RoundingMode::RoundHalfUp`.
 //!
 //! ## Notes
@@ -156,7 +150,12 @@ mod payout_conservation_tests {
         for revenue in [100_i128, 101, 999, 1_000, 1_000_001] {
             let shares = [5_000_u32, 5_000];
             assert_conservation(revenue, &shares, RoundingMode::Truncation, "halves_trunc");
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "halves_trunc");
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::Truncation,
+                "halves_trunc",
+            );
         }
     }
 
@@ -185,7 +184,12 @@ mod payout_conservation_tests {
         let revenue = 1_000_000_i128;
         let shares = [1_000_u32; 10]; // 10 × 10 %
         assert_conservation(revenue, &shares, RoundingMode::Truncation, "10_equal_trunc");
-        assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "10_equal_trunc");
+        assert_no_single_holder_overpay(
+            revenue,
+            &shares,
+            RoundingMode::Truncation,
+            "10_equal_trunc",
+        );
         let (total, dust) = total_payout_and_dust(revenue, &shares, RoundingMode::Truncation);
         assert_eq!(total, revenue); // perfectly divisible
         assert_eq!(dust, 0);
@@ -196,7 +200,12 @@ mod payout_conservation_tests {
         let revenue = 1_000_000_i128;
         let shares = [1_000_u32; 10];
         assert_conservation(revenue, &shares, RoundingMode::RoundHalfUp, "10_equal_rhu");
-        assert_no_single_holder_overpay(revenue, &shares, RoundingMode::RoundHalfUp, "10_equal_rhu");
+        assert_no_single_holder_overpay(
+            revenue,
+            &shares,
+            RoundingMode::RoundHalfUp,
+            "10_equal_rhu",
+        );
     }
 
     #[test]
@@ -220,8 +229,18 @@ mod payout_conservation_tests {
             let (total, _) =
                 total_payout_and_dust(revenue, &shares, RoundingMode::RoundHalfUp);
             assert!(total <= revenue + shares.len() as i128);
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "7h_prime_trunc");
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::RoundHalfUp, "7h_prime_rhu");
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::Truncation,
+                "7h_prime_trunc",
+            );
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::RoundHalfUp,
+                "7h_prime_rhu",
+            );
         }
     }
 
@@ -323,7 +342,12 @@ mod payout_conservation_tests {
 
         for revenue in [1_i128, 99, 100, 10_000, 999_999, 100_000_000] {
             assert_conservation(revenue, &shares, RoundingMode::Truncation, "100h_stress_trunc");
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "100h_stress_trunc");
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::Truncation,
+                "100h_stress_trunc",
+            );
         }
     }
 
@@ -347,11 +371,23 @@ mod payout_conservation_tests {
         for revenue in [
             0_i128, 1, 9_999, 10_000, 10_001, 1_000_000, i64::MAX as i128,
         ] {
-            if revenue < 0 { continue; }
+            if revenue < 0 {
+                continue;
+            }
             assert_conservation(revenue, &shares, RoundingMode::Truncation, "1bps_trunc");
             assert_conservation(revenue, &shares, RoundingMode::RoundHalfUp, "1bps_rhu");
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "1bps_trunc");
-            assert_no_single_holder_overpay(revenue, &shares, RoundingMode::RoundHalfUp, "1bps_rhu");
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::Truncation,
+                "1bps_trunc",
+            );
+            assert_no_single_holder_overpay(
+                revenue,
+                &shares,
+                RoundingMode::RoundHalfUp,
+                "1bps_rhu",
+            );
         }
     }
 
@@ -380,8 +416,17 @@ mod payout_conservation_tests {
         let revenue = i64::MAX as i128; // 9_223_372_036_854_775_807
         let shares = [5_000_u32, 5_000];
         assert_conservation(revenue, &shares, RoundingMode::Truncation, "large_rev_trunc");
-        assert_conservation(revenue, &shares, RoundingMode::RoundHalfUp, "large_rev_rhu");
-        assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "large_rev_trunc");
+        // compute_share rounds both odd-revenue halves up, so the aggregate is one stroop over.
+        let (total, dust) =
+            total_payout_and_dust(revenue, &shares, RoundingMode::RoundHalfUp);
+        assert_eq!(total, revenue + 1);
+        assert_eq!(dust, -1);
+        assert_no_single_holder_overpay(
+            revenue,
+            &shares,
+            RoundingMode::Truncation,
+            "large_rev_trunc",
+        );
     }
 
     // ── 10. RoundHalfUp vs Truncation comparison ──────────────────────────────
@@ -529,7 +574,12 @@ mod payout_conservation_tests {
                 let shares = [bps_a, bps_b];
                 // Truncation is always safe.
                 assert_conservation(revenue, &shares, RoundingMode::Truncation, "exhaustive_trunc");
-                assert_no_single_holder_overpay(revenue, &shares, RoundingMode::Truncation, "exhaustive_trunc");
+                assert_no_single_holder_overpay(
+                    revenue,
+                    &shares,
+                    RoundingMode::Truncation,
+                    "exhaustive_trunc",
+                );
             }
         }
     }
