@@ -10,6 +10,7 @@ Top-level overview: [../README.md](../README.md). Each file below is a per-featu
 ## Admin, pause, freeze and governance
 
 - [admin-rotation-safety-flow.md](admin-rotation-safety-flow.md)
+- [freeze-authority.md](freeze-authority.md) - documents freeze authority, legacy compatibility and events.
 - [freeze-reason-v1-event.md](freeze-reason-v1-event.md)
 - [freeze-scope-clarification.md](freeze-scope-clarification.md)
 - [issuer-only-blacklist-governance.md](issuer-only-blacklist-governance.md)
@@ -38,6 +39,7 @@ Top-level overview: [../README.md](../README.md). Each file below is a per-featu
 - [multi-offering-payment-token-independence.md](multi-offering-payment-token-independence.md)
 - [multi-offering-payment-token-security-assertions.md](multi-offering-payment-token-security-assertions.md)
 - [multi-period-revenue-deposit.md](multi-period-revenue-deposit.md)
+- [meta-revenue-report-approvals.md](meta-revenue-report-approvals.md) - explains how signed revenue-report approvals are relayed.
 - [negative-amount-validation-matrix.md](negative-amount-validation-matrix.md)
 - [payment-token-decimal-compatibility.md](payment-token-decimal-compatibility.md)
 - [payment-token-locking.md](payment-token-locking.md)
