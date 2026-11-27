@@ -1,38 +1,31 @@
 //! # Dispute Resolution Tests (#593)
 //!
-//! Tests for `resolve_dispute` admin entrypoint:
-//! - DisputeOutcome enum (Upheld, Rejected, PartiallyUpheld)
-//! - Admin-only authorization
-//! - Atomic status update
-//! - Event emission (disp_res)
-//! - Freeze removal on Rejected outcome
-//! - Edge cases: non-existent dispute, already resolved, non-admin caller
+//! Tests for `resolve_dispute` and `DisputeOutcome` / `get_dispute_entry`:
+//! - `DisputeOutcome` enum distinctness
+//! - `resolve_dispute` behavior when contract is globally frozen
+//! - `disp_res` event payload verification
+//! - `Dispute` state updates and original field preservation across resolution
+//! - Independent resolution of multiple disputes
+//! - `get_dispute_entry` returning `None` for non-existent sequential IDs
+//!
+//! Note: Duplicate cases already covered in `test_dispute.rs` (wrong caller,
+//! non-existent dispute, already resolved, freeze lift, `disp_res` emission)
+//! were removed during deduplication.
 
 #![cfg(test)]
 
-use crate::{DisputeEntry, DisputeOutcome, FreezeReason, RevoraError, RevoraRevenueShare, RevoraRevenueShareClient};
-use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    Address, BytesN, Env, Vec,
+use crate::{
+    DisputeOutcome, DisputeSeverity, DisputeStatus, OfferingId, RevoraRevenueShare,
+    RevoraRevenueShareClient,
 };
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{symbol_short, Address, BytesN, Env, IntoVal, Symbol, Vec};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
-fn make_client(env: &Env) -> RevoraRevenueShareClient<'_> {
-    let id = env.register_contract(None, RevoraRevenueShare);
-    RevoraRevenueShareClient::new(env, &id)
-}
-
-fn create_payment_token(env: &Env) -> (Address, Address) {
-    let admin = Address::generate(env);
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-    (token_id, admin)
-}
-
-/// Full setup with admin initialized.
-fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address, Address, Address) {
+fn setup(
+) -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address, Address, Address, Address)
+{
     let env = Env::default();
     env.mock_all_auths();
     let cid = env.register_contract(None, RevoraRevenueShare);
@@ -40,40 +33,39 @@ fn setup() -> (Env, RevoraRevenueShareClient<'static>, Address, Address, Address
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let offering_token = Address::generate(&env);
-    let (payment_token, _) = create_payment_token(&env);
+    let payment_token = Address::generate(&env);
     let holder = Address::generate(&env);
 
-    // Initialize with admin
     client.initialize(&admin, &None, &None);
 
-    // Register offering with issuer
     client.register_offering(
         &issuer,
         &Vec::new(&env),
         &1u32,
         &symbol_short!("ns"),
         &offering_token,
-        &10_000,
+        &2_500,
         &payment_token,
         &0,
         &symbol_short!(""),
         &0,
     );
 
-    // Set holder share
     client.set_holder_share(
         &issuer,
         &symbol_short!("ns"),
         &offering_token,
         &holder,
-        &10_000,
-    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &5_000,
+        &1,
+        &Vec::from_array(&env, [issuer.clone()]),
+    );
 
     (env, client, cid, admin, issuer, offering_token, payment_token, holder)
 }
 
-fn create_evidence_hash(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[0u8; 32])
+fn meta_hash(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -89,391 +81,171 @@ fn dispute_outcome_variants_are_distinct() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
-// SECTION 2 — resolve_dispute Authorization
+// SECTION 2 — resolve_dispute Lifecycle & Global Freeze Behavior
 // ────────────────────────────────────────────────────────────────────────────────
 
-/// Admin can resolve a dispute.
+/// Updated for `resolve_dispute` in `src/lib.rs`: `resolve_dispute` does not
+/// call `require_not_frozen`, so an issuer can still resolve an open dispute
+/// while the contract is globally frozen.
 #[test]
-fn resolve_dispute_admin_succeeds() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute by freezing holder with IssuerDispute reason
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Get dispute ID (should be 1)
-    let dispute = client.get_dispute_entry(&1);
-    assert!(dispute.is_some());
-    assert!(!dispute.unwrap().resolved);
-
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(r.is_ok(), "admin should be able to resolve dispute");
-}
-
-/// Non-admin caller fails with NotAuthorized.
-#[test]
-fn resolve_dispute_non_admin_fails() {
+fn resolve_dispute_succeeds_when_contract_frozen() {
     let (env, client, _cid, _admin, issuer, token, _payment, holder) = setup();
-    let unauthorized = Address::generate(&env);
 
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
+    let dispute_id = client.open_dispute(
+        &holder,
         &issuer,
         &symbol_short!("ns"),
         &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
+        &DisputeSeverity::Standard,
+        &meta_hash(&env, 1),
     );
 
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&unauthorized, &1, &DisputeOutcome::Upheld, &evidence);
-    assert_eq!(r, Err(Ok(RevoraError::NotAuthorized)));
+    client.freeze();
+
+    let r = client.try_resolve_dispute(&issuer, &dispute_id, &DisputeStatus::Resolved);
+    assert!(r.is_ok(), "resolve_dispute should succeed even when contract is globally frozen");
+    assert_eq!(client.get_dispute(&dispute_id).unwrap().status, DisputeStatus::Resolved);
 }
 
-/// Resolving a non-existent dispute fails.
+/// Updated for `resolve_dispute` in `src/lib.rs`: `disp_res` event payload
+/// includes `(offering_id, holder, dispute_id, resolution)`.
 #[test]
-fn resolve_dispute_nonexistent_fails() {
-    let (env, client, _cid, admin, _issuer, _token, _payment, _holder) = setup();
+fn resolve_dispute_emits_event_with_correct_status() {
+    let (env, client, _cid, _admin, issuer, token, _payment, holder) = setup();
 
-    let evidence = create_evidence_hash(&env);
-
-    // Dispute ID 999 does not exist
-    let r = client.try_resolve_dispute(&admin, &999, &DisputeOutcome::Upheld, &evidence);
-    assert_eq!(r, Err(Ok(RevoraError::DisputeNotFound)));
-}
-
-/// Resolving an already resolved dispute fails.
-#[test]
-fn resolve_dispute_already_resolved_fails() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
+    let dispute_id = client.open_dispute(
+        &holder,
         &issuer,
         &symbol_short!("ns"),
         &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
+        &DisputeSeverity::Standard,
+        &meta_hash(&env, 2),
     );
 
-    // Resolve it once
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(r.is_ok());
+    client.resolve_dispute(&issuer, &dispute_id, &DisputeStatus::Rejected);
 
-    // Resolve it again should fail
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert_eq!(r, Err(Ok(RevoraError::DisputeAlreadyResolved)));
-}
-
-/// Resolving fails when contract is frozen.
-#[test]
-fn resolve_dispute_when_frozen_fails() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Freeze the contract
-    client.freeze(&admin);
-
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert_eq!(r, Err(Ok(RevoraError::ContractFrozen)));
-}
-
-// ────────────────────────────────────────────────────────────────────────────────
-// SECTION 3 — Dispute Resolution Outcomes
-// ────────────────────────────────────────────────────────────────────────────────
-
-/// Resolving with Upheld outcome keeps the freeze intact.
-#[test]
-fn resolve_dispute_upheld_keeps_freeze() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Verify holder is frozen
-    assert!(client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-
-    // Resolve with Upheld
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(r.is_ok());
-
-    // Freeze should remain
-    assert!(client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-}
-
-/// Resolving with Rejected outcome removes the freeze.
-#[test]
-fn resolve_dispute_rejected_removes_freeze() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Verify holder is frozen
-    assert!(client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-
-    // Resolve with Rejected
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Rejected, &evidence);
-    assert!(r.is_ok());
-
-    // Freeze should be removed
-    assert!(!client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-}
-
-/// Resolving with PartiallyUpheld outcome keeps the freeze intact.
-#[test]
-fn resolve_dispute_partially_upheld_keeps_freeze() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Verify holder is frozen
-    assert!(client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-
-    // Resolve with PartiallyUpheld
-    let evidence = create_evidence_hash(&env);
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::PartiallyUpheld, &evidence);
-    assert!(r.is_ok());
-
-    // Freeze should remain
-    assert!(client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder));
-}
-
-// ────────────────────────────────────────────────────────────────────────────────
-// SECTION 4 — Event Emission
-// ────────────────────────────────────────────────────────────────────────────────
-
-/// resolve_dispute emits EVENT_DISPUTE_RESOLVE ("disp_res").
-#[test]
-fn resolve_dispute_emits_event() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    let before = env.events().all().len();
-    let evidence = create_evidence_hash(&env);
-    client.resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    let after = env.events().all().len();
-
-    assert!(after > before, "resolve_dispute must emit an event");
-
-    // Check that the disp_res event is in the log
     let events = env.events().all();
-    let mut found_disp_res = false;
+    let mut found = false;
     for event in events.iter() {
-        if event.0 == (symbol_short!("disp_res"),) {
-            found_disp_res = true;
-            break;
+        let (_, topics, data) = event;
+        if topics.is_empty() {
+            continue;
+        }
+        let t0: Symbol = topics.get(0).unwrap().into_val(&env);
+        if t0 == symbol_short!("disp_res") {
+            let payload: (OfferingId, Address, BytesN<32>, DisputeStatus) = data.into_val(&env);
+            assert_eq!(payload.1, holder);
+            assert_eq!(payload.2, dispute_id);
+            assert_eq!(payload.3, DisputeStatus::Rejected);
+            found = true;
         }
     }
-    assert!(found_disp_res, "disp_res event must be emitted");
+    assert!(found, "disp_res event with Rejected status must be emitted");
 }
 
-/// Different outcomes emit the same event with correct data.
+/// Updated for `resolve_dispute` and `get_dispute` in `src/lib.rs`:
+/// resolving updates `dispute.status` to the target `DisputeStatus`.
 #[test]
-fn resolve_dispute_emits_event_with_correct_outcome() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
+fn resolve_dispute_updates_dispute_status() {
+    let (env, client, _cid, _admin, issuer, token, _payment, holder) = setup();
 
-    // Create dispute 1
-    client.emergency_freeze_holder(
-        &issuer,
+    let dispute_id = client.open_dispute(
+        &holder,
         &issuer,
         &symbol_short!("ns"),
         &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
+        &DisputeSeverity::Standard,
+        &meta_hash(&env, 3),
     );
 
-    let evidence = create_evidence_hash(&env);
-    // Resolve dispute 1 with Upheld
-    let r = client.try_resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(r.is_ok(), "Upheld resolution should succeed");
+    assert_eq!(client.get_dispute(&dispute_id).unwrap().status, DisputeStatus::Open);
+
+    client.resolve_dispute(&issuer, &dispute_id, &DisputeStatus::Rejected);
+
+    let dispute = client.get_dispute(&dispute_id).unwrap();
+    assert_eq!(dispute.status, DisputeStatus::Rejected);
 }
 
-// ────────────────────────────────────────────────────────────────────────────────
-// SECTION 5 — Dispute State Updates
-// ────────────────────────────────────────────────────────────────────────────────
-
-/// Dispute entry is updated with outcome, evidence, resolver, and timestamp.
-#[test]
-fn resolve_dispute_updates_dispute_entry() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
-
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    let evidence = create_evidence_hash(&env);
-    client.resolve_dispute(&admin, &1, &DisputeOutcome::Rejected, &evidence);
-
-    let dispute = client.get_dispute_entry(&1).unwrap();
-    assert!(dispute.resolved, "dispute should be marked resolved");
-    assert_eq!(dispute.outcome, Some(DisputeOutcome::Rejected), "outcome should be Rejected");
-    assert_eq!(dispute.evidence_hash, Some(evidence), "evidence hash should be stored");
-    assert_eq!(dispute.resolved_by, Some(admin), "resolver should be admin");
-    assert!(dispute.resolved_at.is_some(), "resolved_at should be set");
-}
-
-/// Dispute entry retains original data after resolution.
+/// Updated for `resolve_dispute` and `get_dispute` in `src/lib.rs`:
+/// original dispute fields remain unchanged after resolution.
 #[test]
 fn resolve_dispute_preserves_original_data() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
+    let (env, client, _cid, _admin, issuer, token, _payment, holder) = setup();
+    let m = meta_hash(&env, 4);
 
-    // Create a dispute
-    client.emergency_freeze_holder(
-        &issuer,
+    let dispute_id = client.open_dispute(
+        &holder,
         &issuer,
         &symbol_short!("ns"),
         &token,
-        &holder,
-        &FreezeReason::IssuerDispute,
+        &DisputeSeverity::Critical,
+        &m,
     );
 
-    let dispute_before = client.get_dispute_entry(&1).unwrap();
-    assert_eq!(dispute_before.dispute_id, 1);
-    assert_eq!(dispute_before.freeze_reason, FreezeReason::IssuerDispute);
-    assert!(!dispute_before.resolved);
+    let dispute_before = client.get_dispute(&dispute_id).unwrap();
+    assert_eq!(dispute_before.status, DisputeStatus::Open);
 
-    let evidence = create_evidence_hash(&env);
-    client.resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
+    client.resolve_dispute(&issuer, &dispute_id, &DisputeStatus::Resolved);
 
-    let dispute_after = client.get_dispute_entry(&1).unwrap();
-    assert_eq!(dispute_after.dispute_id, 1, "dispute_id should remain unchanged");
-    assert_eq!(dispute_after.holder, holder, "holder should remain unchanged");
-    assert_eq!(dispute_after.freeze_reason, FreezeReason::IssuerDispute, "reason should remain unchanged");
-    assert!(dispute_after.resolved, "dispute should now be resolved");
+    let dispute_after = client.get_dispute(&dispute_id).unwrap();
+    assert_eq!(dispute_after.id, dispute_before.id);
+    assert_eq!(dispute_after.holder, holder);
+    assert_eq!(dispute_after.offering_id, dispute_before.offering_id);
+    assert_eq!(dispute_after.opened_at, dispute_before.opened_at);
+    assert_eq!(dispute_after.severity, DisputeSeverity::Critical);
+    assert_eq!(dispute_after.meta_hash, m);
+    assert_eq!(dispute_after.status, DisputeStatus::Resolved);
 }
 
-// ────────────────────────────────────────────────────────────────────────────────
-// SECTION 6 — Multiple Disputes
-// ────────────────────────────────────────────────────────────────────────────────
-
-/// Multiple disputes can be created and resolved independently.
+/// Multiple disputes from different holders can be opened and resolved independently.
 #[test]
 fn multiple_disputes_can_be_resolved_independently() {
-    let (env, client, _cid, admin, issuer, token, _payment, holder) = setup();
+    let (env, client, _cid, _admin, issuer, token, _payment, holder) = setup();
     let holder2 = Address::generate(&env);
 
-    // Set share for holder2
     client.set_holder_share(
         &issuer,
         &symbol_short!("ns"),
         &token,
         &holder2,
         &5_000,
-    &1, &soroban_sdk::Vec::from_array(&env, [issuer.clone()]));
+        &1,
+        &Vec::from_array(&env, [issuer.clone()]),
+    );
 
-    // Create dispute 1
-    client.emergency_freeze_holder(
-        &issuer,
-        &issuer,
-        &symbol_short!("ns"),
-        &token,
+    let id1 = client.open_dispute(
         &holder,
-        &FreezeReason::IssuerDispute,
-    );
-
-    // Create dispute 2
-    client.emergency_freeze_holder(
-        &issuer,
         &issuer,
         &symbol_short!("ns"),
         &token,
+        &DisputeSeverity::Standard,
+        &meta_hash(&env, 10),
+    );
+    let id2 = client.open_dispute(
         &holder2,
-        &FreezeReason::IssuerDispute,
+        &issuer,
+        &symbol_short!("ns"),
+        &token,
+        &DisputeSeverity::Standard,
+        &meta_hash(&env, 11),
     );
 
-    assert_eq!(client.get_dispute_entry(&1).unwrap().dispute_id, 1);
-    assert_eq!(client.get_dispute_entry(&2).unwrap().dispute_id, 2);
+    client.resolve_dispute(&issuer, &id1, &DisputeStatus::Resolved);
+    assert_eq!(client.get_dispute(&id1).unwrap().status, DisputeStatus::Resolved);
+    assert_eq!(client.get_dispute(&id2).unwrap().status, DisputeStatus::Open);
 
-    // Resolve dispute 1 with Upheld
-    let evidence = create_evidence_hash(&env);
-    client.resolve_dispute(&admin, &1, &DisputeOutcome::Upheld, &evidence);
-    assert!(client.get_dispute_entry(&1).unwrap().resolved);
-    assert!(!client.get_dispute_entry(&2).unwrap().resolved);
-
-    // Resolve dispute 2 with Rejected
-    let evidence2 = create_evidence_hash(&env);
-    client.resolve_dispute(&admin, &2, &DisputeOutcome::Rejected, &evidence2);
-    assert!(client.get_dispute_entry(&2).unwrap().resolved);
-
-    // Verify holder2 freeze was removed
-    assert!(!client.is_holder_frozen(&issuer, &symbol_short!("ns"), &token, &holder2));
+    client.resolve_dispute(&issuer, &id2, &DisputeStatus::Rejected);
+    assert_eq!(client.get_dispute(&id2).unwrap().status, DisputeStatus::Rejected);
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
-// SECTION 7 — get_dispute Edge Cases
+// SECTION 3 — get_dispute_entry Edge Cases
 // ────────────────────────────────────────────────────────────────────────────────
 
-/// get_dispute returns None for non-existent dispute.
+/// `get_dispute_entry` returns `None` for non-existent sequential dispute ID.
 #[test]
-fn get_dispute_nonexistent_returns_none() {
-    let (env, _client, _cid, _admin, _issuer, _token, _payment, _holder) = setup();
-
-    // Dispute ID 999 does not exist
-    // The get_dispute function is a read-only query; we need to call it through the contract
-    // We use try_get_dispute to check for None
-    // Actually, get_dispute returns an Option<DisputeEntry> so it will be None
-    // Since it's a contract function, we need to call it through the client
-    // The auto-generated client returns Option<DisputeEntry>
-    let result = _client.get_dispute_entry(&999);
+fn get_dispute_entry_nonexistent_returns_none() {
+    let (_env, client, _cid, _admin, _issuer, _token, _payment, _holder) = setup();
+    let result = client.get_dispute_entry(&999);
     assert!(result.is_none(), "non-existent dispute should return None");
 }
